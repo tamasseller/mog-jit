@@ -1,0 +1,4 @@
+.o/
+coverage/
+*.elf
+jit-armv6m-host-tests
