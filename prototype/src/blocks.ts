@@ -29,7 +29,9 @@
 
 import { Emitter } from "./emit"
 import { Window, restoreWindow } from "./window"
-import { AccState, Shape, SCRATCH_REG } from "./accstate"
+import { AccState } from "./accstate"
+import { Shape, materializeShape } from "./shape"
+import { ACC_REG, SCRATCH_REG } from "./registers"
 import * as arm from "./armv6"
 import type { BinaryOpcode } from "@ppl/machine"
 
@@ -154,8 +156,8 @@ export function isComparisonOp(op: BinaryOpcode): boolean
  * (swapping `k < rN` to `rN > k` so an immediate acc can fold as `CMP`'s
  * `Rn`) — this corpus's comparisons always have a register-shaped acc in
  * practice (a just-loaded variable), so the rare imm-on-the-left case just
- * flushes to `ACC_REG` first via `shapeToReg`-equivalent inline logic,
- * always correct, occasionally one instruction longer than optimal.
+ * materializes into `ACC_REG` first, always correct, occasionally one
+ * instruction longer than optimal.
  */
 export function emitComparison(e: Emitter, accState: AccState, op: BinaryOpcode, operand: Shape | undefined): arm.Condition
 {
@@ -165,8 +167,8 @@ export function emitComparison(e: Emitter, accState: AccState, op: BinaryOpcode,
     let left = accState.peek()
     if(left.kind === "imm")
     {
-        arm.synthesizeImm32(3, left.value).forEach(w => e.emit(w)) // ACC_REG=3; kept local to avoid a cross-import just for one constant
-        left = { kind: "reg", reg: 3 }
+        materializeShape(e, left, ACC_REG)
+        left = { kind: "reg", reg: ACC_REG }
     }
 
     if(operand === undefined)
@@ -182,8 +184,35 @@ export function emitComparison(e: Emitter, accState: AccState, op: BinaryOpcode,
     }
     else
     {
-        arm.synthesizeImm32(SCRATCH_REG, operand.value).forEach(w => e.emit(w))
+        materializeShape(e, operand, SCRATCH_REG)
         e.emit(arm.cmpReg(left.reg, SCRATCH_REG))
     }
     return condition
+}
+
+/**
+ * The general case `emitComparison` deliberately doesn't cover: isa-core.md
+ * §7.1/§7.2 make `BR_TABLE`/a `LOOP` condition's `BLOCK_END` lenient by
+ * design — `acc < N` and `acc == 0` test *whatever value acc already
+ * holds*, not specifically a comparison's 0/1 result. `while (n)` or
+ * `if (flag)` never needs the lowerer to insert a normalizing comparison
+ * ahead of the bare variable at all; that omitted instruction is exactly
+ * what the leniency buys. So the immediately-preceding instruction need
+ * not be a comparison — `n`'s own `LOAD`, or any other producer, is just
+ * as valid a thing for `acc` to hold going into one of these.
+ *
+ * This is that general path: materialize whatever's pending, test it
+ * against zero explicitly, and hand back `NE` (acc-is-nonzero) — the same
+ * condition a genuine fused comparison's own "true" condition always
+ * specializes, so callers never need to branch on which path produced it.
+ * `emitComparison` above is strictly the *optimization*: skip this
+ * explicit `CMP #0` (and the priced-in cost of materializing a 0/1 in the
+ * first place) when the value was a comparison's result all along and
+ * nothing else needed it materialized.
+ */
+export function testAccNonzero(e: Emitter, accState: AccState): arm.Condition
+{
+    accState.flush(e, ACC_REG)
+    e.emit(arm.cmpImm8(ACC_REG, 0))
+    return arm.Condition.NE
 }

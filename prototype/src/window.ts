@@ -31,9 +31,7 @@
 
 import {Emitter} from "./emit"
 import * as arm from "./armv6"
-
-export const WINDOW_BASE = 4 // r4
-export const WINDOW_SIZE = 4 // r4..r7
+import {WINDOW_BASE, WINDOW_SIZE} from "./registers"
 
 export function inWindow(tos: number, k: number): boolean
 {

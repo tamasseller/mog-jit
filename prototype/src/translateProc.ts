@@ -23,8 +23,10 @@
 
 import { Emitter } from "./emit"
 import { Window, physReg } from "./window"
-import { AccState, ACC_REG, emitBinary, Shape } from "./accstate"
-import { BlockStack, emitComparison, isComparisonOp } from "./blocks"
+import { AccState, emitBinary } from "./accstate"
+import { Shape } from "./shape"
+import { ACC_REG } from "./registers"
+import { BlockStack, emitComparison, isComparisonOp, testAccNonzero } from "./blocks"
 import * as arm from "./armv6"
 import type { RtlProc, RtlInstr, ComboName } from "@ppl/machine"
 
@@ -101,10 +103,13 @@ export function translateProc(proc: RtlProc, localPeak: number): Uint16Array
             let loopExitCond: arm.Condition | null = null
             if(topKind === "loopCond")
             {
-                if(pendingComparisonCondition === null)
-                    throw new Error(`translateProc: LOOP condition block closed with no fused comparison`)
-                loopExitCond = arm.inverse(pendingComparisonCondition)
+                // isa-core.md §7.2's own leniency (blocks.ts's `testAccNonzero`
+                // doc comment) — fall back to an explicit `CMP #0` when
+                // nothing was fused, rather than requiring the preceding
+                // instruction to have been a comparison.
+                const trueCondition = pendingComparisonCondition ?? testAccNonzero(e, accState)
                 pendingComparisonCondition = null
+                loopExitCond = arm.inverse(trueCondition)
             }
             else if(pendingComparisonCondition !== null)
             {
@@ -119,9 +124,8 @@ export function translateProc(proc: RtlProc, localPeak: number): Uint16Array
 
         if(instr.op === "BR_TABLE")
         {
-            if(pendingComparisonCondition === null)
-                throw new Error(`translateProc: BR_TABLE with no fused comparison — unfused BR_TABLE is not implemented`)
-            blocks.openBrTable(e, window, instr.imm, pendingComparisonCondition)
+            const trueCondition = pendingComparisonCondition ?? testAccNonzero(e, accState)
+            blocks.openBrTable(e, window, instr.imm, trueCondition)
             pendingComparisonCondition = null
             pc++
             continue
