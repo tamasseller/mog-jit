@@ -125,6 +125,21 @@ function spilledCount(tos: number): number
     return Math.max(0, tos - WINDOW_SIZE)
 }
 
+/** Byte offset from the *current* `sp` for slot `k`, valid only when `k` is
+ *  genuinely spilled (`!inWindow(tos,k)`) — "most recently spilled closest
+ *  to sp" (this file's header) means `k`'s distance from `sp`, in words, is
+ *  exactly how many slots spilled *after* it are still resident on the
+ *  stack. General — not `CALL`-specific: any local that falls out of the
+ *  window (e.g. a procedure with more than `WINDOW_SIZE` concurrently-live
+ *  locals, no `CALL` involved at all) needs this same addressing for its
+ *  own `LOAD`/`STORE`, exactly as much as a callee whose `argCount` puts
+ *  some of its own arguments below the window from the very first
+ *  instruction (translateProc.ts's `LOAD`/`STORE` cases). */
+export function spillOffset(tos: number, k: number): number
+{
+    return 4 * (spilledCount(tos) - 1 - k)
+}
+
 /** The (unordered) register set holding `k = bottom .. bottom+count-1` —
  *  a valid `PUSH`/`POP` mask regardless of wrap, since the mask itself
  *  doesn't care what order its members are listed in. */
@@ -222,19 +237,27 @@ export class Window
      * slot about to become the *most recently* spilled one, so it always
      * lands at the fresh top of the spill stack, no address computation
      * needed), materialize the value into its new home (`physReg(tos)`),
-     * then bump `tos`. Throws the rotation-eviction guard (this file's
-     * header; §10.1's "essentially never fires" case) if the value about
-     * to be evicted is exactly what `accState` still depends on.
+     * then bump `tos`.
+     *
+     * §10.1's "rotation eviction" hazard — a fused value living only in a
+     * window register getting silently destroyed by the very rotation
+     * this function performs — turns out not to need a rescue instruction
+     * here, once actually worked through (docs/jit-armv6m.md §16 item 6):
+     * `physReg(evictedByPush) === physReg(this.tos)` always (both reduce to
+     * the same `k mod WINDOW_SIZE`), so *if* `accState` currently depends
+     * on exactly that register, the value about to be pushed and the value
+     * about to be evicted are provably the same value — the only way
+     * `accState` could have come to depend on `physReg(evictedByPush)` in
+     * the first place is a direct reference to slot `evictedByPush` itself
+     * (nothing else currently maps to that register), and PUSH's own
+     * semantics push whatever `accState` currently holds. The spill below
+     * captures that value for the evicted slot's own record; the flush
+     * that follows is then a same-register self-move, which
+     * `materializeShape` already elides — no separate case needed.
      */
     pushValue(e: Emitter, accState: AccState): void
     {
-        if(this.pushEvicts)
-        {
-            const dep = accState.dependsOnReg()
-            if(dep !== null && dep === physReg(this.evictedByPush))
-                throw new Error(`window: rotation-eviction fallback not implemented (docs/jit-armv6m.md §10.1, "essentially never fires" — this corpus apparently hit it)`)
-            e.emit(arm.push([physReg(this.evictedByPush)]))
-        }
+        if(this.pushEvicts) e.emit(arm.push([physReg(this.evictedByPush)]))
         accState.flush(e, physReg(this.tos))
         this.tos += 1
     }
@@ -336,23 +359,48 @@ export function spillForCall(e: Emitter, window: Window, stackArgs: number): voi
 
 /**
  * `CALL`'s shuffle, second half: fill the callee's own canonical phase-0
- * window (`physReg(0)..physReg(stackArgs-1)`) by reading back the `m`
- * args `spillForCall` just pushed via `pushLargestKClosest` — one plain
- * multi-register `POP`, valid because (for `stackArgs ≤ WINDOW_SIZE`,
- * this prototype's only supported case — see translateProc.ts's own
- * guard) `regsFor(0, m)` is always a single, un-wrapped register run, and
- * `pushLargestKClosest` arranged the args so that the ascending batched
- * `POP` here — which always assigns the *smallest* register in the set
- * to the address closest to `sp` — lands the highest-indexed arg (the
- * *smallest* register, per `physReg`'s reversed cyclic direction; this
- * file's header) exactly where it was left, and every other arg follows
- * down the same run.
+ * window — `physReg(stackArgs - m)..physReg(stackArgs - 1)`, the top `m =
+ * min(stackArgs, WINDOW_SIZE - 1)` args — by reading back what
+ * `spillForCall` just pushed via `pushLargestKClosest` (plus, when `m <
+ * stackArgs`, whatever's genuinely deeper, spilled long before this call).
+ * Capped at `WINDOW_SIZE - 1`, not `WINDOW_SIZE`: the callee's own last
+ * argument (`argCount - 1`, delivered via `acc`, not through this function
+ * at all) always lands at `physReg(argCount - 1)`, which is the *same*
+ * physical register as `physReg(0)` whenever `stackArgs === WINDOW_SIZE`
+ * exactly (`physReg` is periodic mod `WINDOW_SIZE`) — popping a full
+ * `WINDOW_SIZE` args here would have this function's own arg 0 clobbered
+ * the instant the callee's prologue writes its acc-delivered argument.
+ *
+ * Deliberately *not* one plain `pop(regsFor(...))` the way an earlier
+ * version of this function did: that's only a single, un-wrapped register
+ * run when the args being filled start at phase 0 (`stackArgs ≤ WINDOW_SIZE
+ * - 1`, i.e. `m === stackArgs`) — once genuinely deep args exist (`m <
+ * stackArgs`), the range `stackArgs - m .. stackArgs - 1` is phase-shifted
+ * and can wrap `physReg`'s own cyclic boundary, and a *combined* pop across
+ * that wrap silently reassigns which value lands in which register (traced
+ * concretely while building `test/deep-args.test.ts`: `physReg(3)` came out
+ * holding arg 5's value, not arg 3's). `popRuns` — the same "at most two
+ * batched `POP`s, larger-`k`-first" mechanism `restoreWindow`/
+ * `reloadAfterCall` already use for historical spilled data — handles the
+ * wrap correctly, because the ordering it produces is exactly the ordering
+ * `pushLargestKClosest` (this batch) and ordinary chronological spilling
+ * (anything deeper) both already committed to on the real stack.
+ *
+ * No upper bound on `stackArgs` itself: whatever's left over (`stackArgs -
+ * m`, if any) simply stays on the real stack, below what this function
+ * pops — exactly where the callee's own out-of-window `LOAD`/`STORE`
+ * (translateProc.ts, `spillOffset` above) expects to find it. `spillForCall`
+ * needs no matching change: its own cap (`w = min(window.tos, WINDOW_SIZE)`)
+ * already treats anything beyond the caller's own currently-resident window
+ * as untouched, chronologically spilled long before this call — which is
+ * precisely the same storage a deep callee argument needs to already be
+ * sitting in.
  */
 export function fillCalleeArgs(e: Emitter, stackArgs: number): void
 {
-    const m = Math.min(stackArgs, WINDOW_SIZE)
+    const m = Math.min(stackArgs, WINDOW_SIZE - 1)
     if(m === 0) return
-    e.emit(arm.pop(regsFor(0, m)))
+    popRuns(e, stackArgs - m, m)
 }
 
 /**
@@ -382,7 +430,17 @@ export function reloadAfterCall(e: Emitter, window: Window, targetTos: number): 
 
     if(targetTos > bottom) e.emit(arm.pop(regsFor(bottom, targetTos - bottom)))
 
-    popRuns(e, deeperFloor, bottom - deeperFloor)
+    // `bottom` alone assumes everything below it is the caller's own older
+    // data, untouched by this call — true whenever `stackArgs ≤ w` (every
+    // existing test before deep-args.test.ts), but not once `stackArgs`
+    // exceeds the caller's own currently-resident window: some of what's
+    // "below bottom" was *also* consumed as an argument (spilled there by
+    // ordinary chronological pushes long before this call, same as any
+    // other historical data, but still logically gone post-call, not
+    // surviving caller state) — capped at `targetTos` so nothing at or
+    // above it (still part of the arg range) gets reloaded at all.
+    const historicalTop = Math.min(bottom, targetTos)
+    popRuns(e, deeperFloor, historicalTop - deeperFloor)
 
     window.tos = targetTos
 }

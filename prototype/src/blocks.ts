@@ -18,13 +18,19 @@
  * `BR_TABLE` case's "skip to next case"/"skip to end" targets resolve the
  * moment that case (or the whole construct) closes. No separate pass over
  * the whole procedure is needed for *this* — only for what emit.ts's own
- * header flags as still open (out-of-range branches, `BR_TABLE N>2` jump
- * tables), neither implemented here.
+ * header still flags as open: out-of-range conditional branches needing
+ * the invert-and-long-branch idiom.
  *
- * Scope: `BR_TABLE` is only implemented for `N ∈ {1, 2}` — isa-core.md
- * §7.1's `if`/`if-else` forms, which is everything the current test corpus
- * (leb128_len plus the four core-testsuite algorithms — none use `switch`)
- * needs; `N > 2` throws.
+ * `BR_TABLE N ∈ {1, 2}` (isa-core.md §7.1's `if`/`if-else` forms) fuses
+ * against a preceding comparison, branch-fusion style (`openBrTable`). `N >
+ * 2` (a genuine multi-way selector, no comparison to fuse against) instead
+ * compiles to a shared per-procedure jump-table helper (`openBrTableJump`/
+ * `emitBrTableHelper`) — a small validation of docs/jit-armv6m.md §11's own
+ * "shared reserved routine, amortized over every call site" pattern
+ * (there envisioned for `RETURN`'s `dispatch_return` and the `CLZ`/
+ * `REVBITS` helpers), just reached by a local `BL` here since this
+ * prototype has no cross-procedure dispatch table (§9) to hang a shared
+ * *global* copy off of.
  */
 
 import { Emitter } from "./emit"
@@ -35,14 +41,44 @@ import { ACC_REG, SCRATCH_REG } from "./registers"
 import * as arm from "./armv6"
 import type { BinaryOpcode } from "@ppl/machine"
 
+const LR = 14
+/** Low-register scratch the jump-table helper copies `lr` into — `lr`
+ *  itself can't be the base register of a register-offset `LDRH`
+ *  (Thumb-1's 3-register addressing forms are low-register-only). Purely
+ *  local to `emitBrTableHelper`'s own few instructions. */
+const TABLE_PTR_REG = 3
+/** The clamped case index, computed without ever touching `r0`/`ACC_REG`
+ *  — `emitBrTableHelper`'s own doc comment explains why that matters.
+ *  Purely local to the helper. */
+const INDEX_REG = 1
+
 type Frame =
-    | { kind: "case"; entryTos: number; remaining: number; nextCaseFixup: number | null; endFixups: number[] }
+    | {
+        kind: "case"; entryTos: number; remaining: number
+        nextCaseFixup: number | null
+        /** Set only by `openBrTableJump` (`N > 2`): the jump table's own
+         *  base offset (`lr`'s value once the dispatching `BL` runs), the
+         *  still-unpatched slots for cases not yet opened (case 0's slot
+         *  is always patched immediately, needing no fixup at all), and
+         *  the one extra slot — index `N`, beyond every real case — for a
+         *  genuinely out-of-range selector (isa-core.md's own "acc ≥ N":
+         *  falls through with *no* case body run at all, same target as
+         *  `endFixups` below, patched alongside them). */
+        table: { base: number; fixups: number[]; endSlot: number } | null
+        endFixups: number[]
+      }
     | { kind: "loopCond"; entryTos: number; loopStart: number }
     | { kind: "loopBody"; entryTos: number; loopStart: number; exitFixup: number }
 
 export class BlockStack
 {
     private readonly frames: Frame[] = []
+
+    /** Pending local `BL` sites (from `openBrTableJump`) waiting on
+     *  `emitBrTableHelper`'s own offset — patched once, by translateProc.ts,
+     *  after the procedure's main body is fully translated (the helper
+     *  itself is emitted last, as dead code reached only by these `BL`s). */
+    readonly brTableHelperSites: number[] = []
 
     get isEmpty(): boolean { return this.frames.length === 0 }
 
@@ -65,11 +101,55 @@ export class BlockStack
         if(n !== 1 && n !== 2)
             throw new Error(`blocks: BR_TABLE ${n} not implemented — only if/if-else (N∈{1,2}, isa-core.md §7.1) are supported so far`)
 
-        const frame: Frame = { kind: "case", entryTos: window.tos, remaining: n, nextCaseFixup: null, endFixups: [] }
+        const frame: Frame = { kind: "case", entryTos: window.tos, remaining: n, nextCaseFixup: null, table: null, endFixups: [] }
         const site = e.emit(arm.condBranch(condition, 0))
         if(n === 1) frame.endFixups.push(site) // no case[1] to skip to — the branch's target IS "end of construct"
         else frame.nextCaseFixup = site // target is "start of case[1]", resolved the moment case[0] closes below
         this.frames.push(frame)
+    }
+
+    /** `isa-core.md §7.1` for `N > 2`: a genuine multi-way selector, not a
+     *  boolean — dispatches via a shared per-procedure helper
+     *  (`emitBrTableHelper`) instead of a fused conditional branch. Emits,
+     *  in order: materialize `acc`'s real value into `ACC_REG` (the
+     *  helper needs the actual selector, not a condition — no
+     *  `testAccNonzero` `CMP` to pay for, unlike `openBrTable`), load `N`
+     *  (the clamp ceiling — one *past* the last real case, see below) into
+     *  `SCRATCH_REG`, a placeholder local `BL` (recorded in
+     *  `brTableHelperSites`, patched once `emitBrTableHelper` runs — this
+     *  file's header), then `N + 1` literal halfword table slots: one per
+     *  real case, plus one extra for a genuinely out-of-range selector.
+     *
+     *  That extra slot matters for more than tidiness: isa-core.md's own
+     *  `acc ≥ N` behavior is "fall through, no case body runs at all, acc
+     *  left untouched" — clamping to `N - 1` (re-running the *last* case)
+     *  would silently diverge from that the moment a selector genuinely
+     *  exceeds every case, executing code that shouldn't run at all.
+     *
+     *  Slot 0's target (right after the table) is known immediately and
+     *  patched inline; slots 1..N-1 resolve the same way `nextCaseFixup`
+     *  does above — the moment each preceding case's own `BLOCK_END`
+     *  closes (`closeBlockEnd` below); the last slot (index `N`) resolves
+     *  alongside `endFixups`, once the whole construct closes — so this
+     *  function never needs to know where any case, or the construct's
+     *  own end, actually lands. */
+    openBrTableJump(e: Emitter, window: Window, n: number, accState: AccState): void
+    {
+        accState.flush(e, ACC_REG)
+        arm.synthesizeImm32(SCRATCH_REG, n).forEach(w => e.emit(w))
+        this.brTableHelperSites.push(e.placeholderBL())
+
+        const base = e.pc // == lr, once the BL above actually executes
+        const slots: number[] = []
+        for(let i = 0; i <= n; i++) slots.push(e.emit(0))
+        e.patchLiteral(slots[0]!, e.pc - base) // case 0 starts right here — no fixup needed
+
+        this.frames.push({
+            kind: "case", entryTos: window.tos, remaining: n,
+            nextCaseFixup: null,
+            table: { base, fixups: slots.slice(1, n), endSlot: slots[n]! },
+            endFixups: [],
+        })
     }
 
     openLoop(e: Emitter, window: Window): void
@@ -80,8 +160,18 @@ export class BlockStack
     /** `isa-core.md §7.2`/§8.1: any TOS surplus above the block's own
      *  entry depth is dropped here, restoring r4-r7 to what the *target*
      *  depth's window mapping expects (window.ts's `restoreWindow`) before
-     *  any of this function's own branch bookkeeping runs. */
-    closeBlockEnd(e: Emitter, window: Window, loopExitCondition: arm.Condition | null): void
+     *  any of this function's own branch bookkeeping runs.
+     *
+     *  For a `case` frame specifically, `accState.flushLive` also runs
+     *  here, before *any* of this case's own exit branches — every case
+     *  is one linear, compile-time-sequential belief about `acc`, but at
+     *  runtime any one of them (or none, for an out-of-range `BR_TABLE
+     *  N>2` selector) could be the one that actually ran; merging back
+     *  into shared code with something still `PENDING` would let the
+     *  *next* case's own translation silently overwrite it before the
+     *  merged code ever reads it (accstate.ts's own doc comment on
+     *  `flushLive`). */
+    closeBlockEnd(e: Emitter, window: Window, accState: AccState, loopExitCondition: arm.Condition | null): void
     {
         const top = this.frames[this.frames.length - 1]
         if(!top) throw new Error(`blocks: BLOCK_END with no open block`)
@@ -89,6 +179,7 @@ export class BlockStack
         if(top.kind === "case")
         {
             restoreWindow(e, window, top.entryTos)
+            accState.flushLive(e, ACC_REG)
             top.remaining -= 1
             if(top.remaining > 0)
             {
@@ -104,9 +195,18 @@ export class BlockStack
                 top.endFixups.push(e.emit(arm.b(0)))
             }
             if(top.nextCaseFixup !== null) { e.patchBranch(top.nextCaseFixup, e.pc); top.nextCaseFixup = null }
+            else if(top.table !== null && top.table.fixups.length > 0)
+            {
+                // Same moment, same "resolve the next case's entry point"
+                // job as `nextCaseFixup` above — just a raw table slot
+                // (`patchLiteral`) instead of a branch instruction.
+                const site = top.table.fixups.shift()!
+                e.patchLiteral(site, e.pc - top.table.base)
+            }
             if(top.remaining > 0)
                 return // stay on this frame — now translating the next case
             for(const site of top.endFixups) e.patchBranch(site, e.pc)
+            if(top.table !== null) e.patchLiteral(top.table.endSlot, e.pc - top.table.base)
             this.frames.pop()
             return
         }
@@ -129,6 +229,68 @@ export class BlockStack
         e.patchBranch(top.exitFixup, e.pc)
         this.frames.pop()
     }
+}
+
+/**
+ * `BR_TABLE N>2`'s shared per-procedure dispatch routine (this file's
+ * header) — reached by a local `BL` from every `openBrTableJump` site in
+ * the same procedure, `lr` pointing at that call site's own table (the
+ * whole reason this can be one shared routine: every call site supplies
+ * its own table via `lr`, not this routine).
+ *
+ * `r0` (`ACC_REG`) holds the selector, `r2` (`SCRATCH_REG`) the clamp
+ * ceiling `N` (one *past* the last real case — `openBrTableJump`'s own
+ * `N + 1`-slot table) — both set by `openBrTableJump` immediately before
+ * its `BL`. Deliberately computes the clamped index into `r1`
+ * (`INDEX_REG`), never into `r0` itself: isa-core.md's own `acc ≥ N`
+ * behavior leaves `acc` untouched (§7.1 — no case body runs at all), so
+ * `r0` has to survive this routine unmodified on *both* paths, not just
+ * the in-range one. Thumb-1 has no conditional move, so the clamp still
+ * needs an actual branch: `r1 = r0` unconditionally first (the in-range
+ * default), then `CMP r0,r2; BLS .ok; r1 = r2` overwrites it only when
+ * `r0 > N`. `lr` itself can't be a register-offset `LDRH`'s base
+ * (Thumb-1's 3-register addressing is low-register-only — this file's
+ * `TABLE_PTR_REG` doc comment), so it's copied into `r3` first (then has
+ * its own Thumb-mode bit cleared — the `SUBS r3,#1` below, own comment
+ * has why); `r2` is reused (its clamp-ceiling role already done) for the
+ * table entry (`case_i_start - lr`, `openBrTableJump`/`closeBlockEnd`'s
+ * own convention), added back to reconstruct the absolute target — plus
+ * the Thumb-mode bit, dropped by the earlier `SUBS` and restored right
+ * before the final `BX` (this function's later comment has why). 11
+ * instructions total, paid once per procedure regardless of how many
+ * `BR_TABLE N>2` sites (or how large any single `N`) it has.
+ */
+export function emitBrTableHelper(e: Emitter): number
+{
+    const start = e.pc
+    e.emit(arm.movHi(INDEX_REG, ACC_REG)) // default: in range, index = selector
+    e.emit(arm.cmpReg(ACC_REG, SCRATCH_REG))
+    const okSite = e.placeholderCondBranch(arm.Condition.LS)
+    e.emit(arm.movHi(INDEX_REG, SCRATCH_REG)) // out of range: index = N (the extra slot) — r0 untouched either way
+    e.patchBranch(okSite, e.pc)
+    e.emit(arm.lslsImm(INDEX_REG, INDEX_REG, 1)) // halfword-indexed
+    e.emit(arm.movHi(TABLE_PTR_REG, LR)) // lr -> low reg, for LDRH's addressing
+    // `BL` always sets `lr` with bit 0 forced to 1 (the Thumb-mode marker
+    // a later `BX`/`POP{PC}` needs) — harmless for a branch target
+    // (hardware strips it when actually branching there) but fatal for
+    // address arithmetic: `LDRH` needs a halfword-*aligned* (even)
+    // address, and Cortex-M0 faults on an unaligned access, with no real
+    // handler installed to recover from it (found the hard way: the
+    // whole point of this being 1 bit off is a hang, not a wrong answer —
+    // the fault handler spins). Since that bit is *always* exactly 1
+    // right after a `BL`, subtracting 1 clears it for the `LDRH` below —
+    // but the *final* target handed to `BX` needs that same bit set
+    // again (confirmed the hard way too, via a QEMU instruction trace:
+    // without it, `BX` reads bit 0 as "switch to ARM mode" instead of
+    // "stay in Thumb," and starts decoding this same Thumb code as ARM
+    // instructions), so it's added back once the table lookup is done —
+    // clearing it was only ever about `LDRH`'s own addressing.
+    e.emit(arm.subsImm8(TABLE_PTR_REG, 1))
+    e.emit(arm.ldrh3(SCRATCH_REG, TABLE_PTR_REG, INDEX_REG))
+    e.emit(arm.addsReg3(TABLE_PTR_REG, TABLE_PTR_REG, SCRATCH_REG))
+    e.emit(arm.addsImm8(TABLE_PTR_REG, 1))
+    e.emit(arm.bx(TABLE_PTR_REG))
+    return start
 }
 
 // ── Comparison → branch fusion (§10.1's "zero-destination" axis) ───────────

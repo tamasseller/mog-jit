@@ -81,6 +81,26 @@ export class Emitter
             : arm.setUncondBranchOffset(isn, delta)
     }
 
+    /** Overwrite a single already-emitted halfword with an arbitrary raw
+     *  value — a `BR_TABLE N>2` jump-table slot (blocks.ts's
+     *  `openBrTableJump`), not an instruction, so there's no encoding to
+     *  preserve the way `patchBranch` above has to. */
+    patchLiteral(siteOffset: number, value: number): void
+    {
+        this.halfwords[siteOffset / 2] = value & 0xffff
+    }
+
+    /** Resolve a `placeholderBL` site once its target is known *within
+     *  this same procedure* — blocks.ts's `BR_TABLE N>2` helper is emitted
+     *  once per procedure and reached by a local `BL`, unlike `CALL`'s own
+     *  cross-procedure one (program.ts, never through here). */
+    patchBL(siteOffset: number, targetOffset: number): void
+    {
+        const [hw1, hw2] = arm.bl(targetOffset - (siteOffset + 4))
+        this.halfwords[siteOffset / 2] = hw1
+        this.halfwords[siteOffset / 2 + 1] = hw2
+    }
+
     toUint16Array(): Uint16Array
     {
         return Uint16Array.from(this.halfwords)

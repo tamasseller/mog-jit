@@ -5,3 +5,6 @@
 import "./leb128.test"
 import "./algorithms.test"
 import "./call.test"
+import "./rotation.test"
+import "./deep-args.test"
+import "./br-table.test"

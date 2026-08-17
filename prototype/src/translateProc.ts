@@ -18,23 +18,24 @@
  * a procedure can just be a plain native subroutine (saving/restoring its
  * own `lr` only if its own body makes a nested `CALL`, exactly like any
  * ordinary calling convention); the doc's own dispatch-table return path
- * only becomes necessary once eviction does. `BR_TABLE` is implemented
- * for `N ∈ {1, 2}` (if/if-else) only — no `N > 2` jump tables. Unary ops
- * (`NEG`/`NOT`/`CLZ`/`REVBITS`) and `EXT` throw — unexercised by the
- * current test corpus, not yet implemented. Neither a procedure's own
- * `argCount` nor any `CALL`'s stack-passed arg count may exceed
- * `WINDOW_SIZE` (guarded, throws) — beyond that, a callee's own in-window
- * range no longer starts at `physReg(0)`, which both the callee-side
- * prologue fold above and `window.ts`'s `fillCalleeArgs` assume; not
- * exercised by the current test corpus, not yet implemented.
+ * only becomes necessary once eviction does. `BR_TABLE N > 2` compiles to
+ * a shared per-procedure jump-table helper (blocks.ts's
+ * `openBrTableJump`/`emitBrTableHelper`) instead of the branch-fusion path
+ * `N ∈ {1, 2}` uses. No upper bound on a procedure's own `argCount` or any
+ * `CALL`'s stack-passed arg count either — `LOAD`/`STORE`/register-mode
+ * operands all fall back to real stack addressing (`window.ts`'s
+ * `spillOffset`) the moment their target slot has fallen out of the
+ * 4-register window, exactly as `PUSH`/`POP` already do at the window
+ * boundary (§5). Unary ops (`NEG`/`NOT`/`CLZ`/`REVBITS`) and `EXT` still
+ * throw — unexercised by the current test corpus, not yet implemented.
  */
 
 import { Emitter } from "./emit"
-import { Window, physReg, discardWindow, spillForCall, fillCalleeArgs, reloadAfterCall } from "./window"
+import { Window, physReg, inWindow, spillOffset, discardWindow, spillForCall, fillCalleeArgs, reloadAfterCall } from "./window"
 import { AccState, emitBinary } from "./accstate"
 import { Shape } from "./shape"
-import { ACC_REG, WINDOW_SIZE } from "./registers"
-import { BlockStack, emitComparison, isComparisonOp, testAccNonzero } from "./blocks"
+import { ACC_REG, SCRATCH_REG } from "./registers"
+import { BlockStack, emitComparison, isComparisonOp, testAccNonzero, emitBrTableHelper } from "./blocks"
 import * as arm from "./armv6"
 import type { RtlProc, RtlInstr, ComboName } from "@ppl/machine"
 
@@ -52,12 +53,17 @@ export interface CallSite
 }
 
 /** Slot k's window register a peek at `body[pc+1]` resolves to, if that
- *  next instruction is a `STORE` — the one-token destination-fold trigger
- *  every producer/consumer below checks before falling back to `ACC_REG`. */
-function peekStoreFold(body: readonly RtlInstr[], pc: number): number | null
+ *  next instruction is a `STORE` targeting a currently in-window slot —
+ *  the one-token destination-fold trigger every producer/consumer below
+ *  checks before falling back to `ACC_REG`. Out-of-window `STORE` targets
+ *  don't fold: there's no register to fold into (the target lives on the
+ *  real stack, `spillOffset` below), so the fold is skipped and the
+ *  ordinary `STORE` case (which does know how to reach it) handles it on
+ *  the next iteration instead. */
+function peekStoreFold(body: readonly RtlInstr[], pc: number, tos: number): number | null
 {
     const next = body[pc + 1]
-    if(next && next.op === "STORE") return physReg(next.target)
+    if(next && next.op === "STORE" && inWindow(tos, next.target)) return physReg(next.target)
     return null
 }
 
@@ -76,9 +82,6 @@ export interface TranslatedProc
  *  indexes it. */
 export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] = []): TranslatedProc
 {
-    if(proc.argCount > WINDOW_SIZE)
-        throw new Error(`translateProc: argCount ${proc.argCount} > ${WINDOW_SIZE} not implemented — a callee whose own in-window range doesn't start at physReg(0) needs the CALL shuffle's destination side split too (docs/jit-armv6m.md §6, unresolved for stackArgs > ${WINDOW_SIZE})`)
-
     const e = new Emitter()
     const window = new Window(proc.argCount)
     const accState = new AccState()
@@ -92,8 +95,11 @@ export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] 
     // upfront from a plain body scan — not a violation of "no
     // cross-instruction analysis" so much as the one piece of whole-body
     // metadata the prologue's own *shape* needs before it can be emitted
-    // at all.
-    const savesLR = body.some(i => i.op === "CALL")
+    // at all. `BR_TABLE N>2` clobbers `lr` exactly the same way — its own
+    // dispatch is a local `BL` to the shared jump-table helper
+    // (blocks.ts's `openBrTableJump`) — so it needs the identical
+    // save/restore, not a CALL-specific check.
+    const savesLR = body.some(i => i.op === "CALL" || (i.op === "BR_TABLE" && i.imm > 2))
 
     // prologue — save `lr` only if this body needs to. No fixed spill-area
     // reservation at all (window.ts's own header): every spill/fill is a
@@ -134,8 +140,6 @@ export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] 
                 if(calleeArgCount === undefined)
                     throw new Error(`translateProc: CALL ${instr.calleeIndex}: no such procedure`)
                 const stackArgs = Math.max(calleeArgCount - 1, 0) // isa-core.md §4.6
-                if(stackArgs > WINDOW_SIZE)
-                    throw new Error(`translateProc: CALL ${instr.calleeIndex}: ${stackArgs} stack-passed args > ${WINDOW_SIZE} not implemented — the callee's own in-window range would no longer start at physReg(0) (docs/jit-armv6m.md §6)`)
 
                 // acc is unconditionally clobbered by CALL — the callee's
                 // own last argument (if any) going in, its return value
@@ -191,7 +195,7 @@ export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] 
                 {
                     throw new Error(`translateProc: comparison fused into nothing (dangling condition at BLOCK_END, pc=${pc})`)
                 }
-                blocks.closeBlockEnd(e, window, loopExitCond)
+                blocks.closeBlockEnd(e, window, accState, loopExitCond)
                 pc++
                 continue
             }
@@ -203,8 +207,19 @@ export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] 
 
             case "BR_TABLE":
             {
-                const trueCondition = pendingComparisonCondition ?? testAccNonzero(e, accState)
-                blocks.openBrTable(e, window, instr.imm, trueCondition)
+                // N ≤ 2 (if/if-else): a boolean-shaped acc, branch-fusable
+                // (§10.1) against whatever comparison (if any) immediately
+                // preceded this. N > 2: acc is a genuine multi-way selector
+                // — its actual value is what's needed, not a condition, so
+                // there's nothing to fuse (a real switch selector is never
+                // a comparison's own 0/1 result) and no `testAccNonzero`
+                // `CMP #0` to pay for either.
+                if(instr.imm > 2) blocks.openBrTableJump(e, window, instr.imm, accState)
+                else
+                {
+                    const trueCondition = pendingComparisonCondition ?? testAccNonzero(e, accState)
+                    blocks.openBrTable(e, window, instr.imm, trueCondition)
+                }
                 pendingComparisonCondition = null
                 pc++
                 continue
@@ -241,7 +256,20 @@ export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] 
 
             case "LOAD":
             {
-                const foldTarget = peekStoreFold(body, pc)
+                // Out-of-window: `physReg(instr.target)` would name some
+                // *other*, currently-resident slot's register — this
+                // target lives only on the real stack (window.ts's
+                // `spillOffset`). No fold attempted here (matches §5's own
+                // "leaves cheap dead-reload elimination on the table"
+                // trade) — always one `LDR`, straight into `acc`.
+                if(!inWindow(window.tos, instr.target))
+                {
+                    e.emit(arm.ldrSp(ACC_REG, spillOffset(window.tos, instr.target)))
+                    accState.setClean(ACC_REG)
+                    pc++
+                    continue
+                }
+                const foldTarget = peekStoreFold(body, pc, window.tos)
                 accState.producer({ kind: "reg", reg: physReg(instr.target) })
                 if(foldTarget !== null) { accState.flush(e, foldTarget); pc += 2; continue }
                 pc++
@@ -249,13 +277,24 @@ export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] 
             }
 
             case "STORE":
+                // Symmetric with LOAD above: materialize into acc first
+                // (same as the in-window path would eventually need
+                // anyway), then one `STR` to the real stack instead of a
+                // register write.
+                if(!inWindow(window.tos, instr.target))
+                {
+                    accState.flush(e, ACC_REG)
+                    e.emit(arm.strSp(ACC_REG, spillOffset(window.tos, instr.target)))
+                    pc++
+                    continue
+                }
                 accState.flush(e, physReg(instr.target))
                 pc++
                 continue
 
             case "CONST":
             {
-                const foldTarget = peekStoreFold(body, pc)
+                const foldTarget = peekStoreFold(body, pc, window.tos)
                 const target = foldTarget ?? ACC_REG
                 if(arm.fitsImm8(instr.imm) && foldTarget === null)
                 {
@@ -279,7 +318,20 @@ export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] 
                 let operand: Shape | undefined
                 let popAfter = false
 
-                if(instr.combo === "REG_ACC" || instr.combo === "REG_REG") operand = { kind: "reg", reg: physReg(instr.target) }
+                if(instr.combo === "REG_ACC" || instr.combo === "REG_REG")
+                {
+                    // Same out-of-window concern as LOAD above: a register-
+                    // mode operand naming a slot that's fallen out of the
+                    // window has to come from the real stack, into scratch
+                    // — never `physReg(instr.target)`, which would name
+                    // whatever *else* currently lives there instead.
+                    if(inWindow(window.tos, instr.target)) operand = { kind: "reg", reg: physReg(instr.target) }
+                    else
+                    {
+                        e.emit(arm.ldrSp(SCRATCH_REG, spillOffset(window.tos, instr.target)))
+                        operand = { kind: "reg", reg: SCRATCH_REG }
+                    }
+                }
                 else if(instr.combo === "IMM_ACC") operand = { kind: "imm", value: instr.imm }
                 else if(instr.combo === "POP_ACC") { operand = { kind: "reg", reg: window.topReg }; popAfter = true }
                 else operand = undefined // PEEK_PEEK
@@ -296,16 +348,26 @@ export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] 
                 const clobbersAcc = combo === "REG_REG" || combo === "PEEK_PEEK"
                 let dest: number
                 let consumedStore = false
-                if(instr.combo === "REG_REG") dest = physReg(instr.target)
+                // REG_REG writes back in place (isa-core.md §4.1 mode 2) —
+                // out-of-window, that write-back target is memory, not a
+                // register: compute into SCRATCH_REG (already holding the
+                // operand read above) and store it back explicitly.
+                let storeBackOffset: number | null = null
+                if(instr.combo === "REG_REG")
+                {
+                    if(inWindow(window.tos, instr.target)) dest = physReg(instr.target)
+                    else { dest = SCRATCH_REG; storeBackOffset = spillOffset(window.tos, instr.target) }
+                }
                 else if(instr.combo === "PEEK_PEEK") dest = window.topReg
                 else
                 {
-                    const foldTarget = peekStoreFold(body, pc)
+                    const foldTarget = peekStoreFold(body, pc, window.tos)
                     dest = foldTarget ?? ACC_REG
                     consumedStore = foldTarget !== null
                 }
 
                 emitBinary(e, accState, instr.op, combo, operand, dest, clobbersAcc)
+                if(storeBackOffset !== null) e.emit(arm.strSp(dest, storeBackOffset))
                 if(popAfter) window.finishPop(e)
                 pc += consumedStore ? 2 : 1
                 continue
@@ -314,5 +376,16 @@ export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] 
     }
 
     if(!blocks.isEmpty) throw new Error(`translateProc: procedure body ended with an open block`)
+
+    // BR_TABLE N>2's shared helper (blocks.ts's own header) — dead code
+    // from a sequential-execution standpoint, reached only by the local
+    // `BL`s `openBrTableJump` already placed; emitted once, here, only if
+    // this body actually used it.
+    if(blocks.brTableHelperSites.length > 0)
+    {
+        const helperOffset = emitBrTableHelper(e)
+        for(const site of blocks.brTableHelperSites) e.patchBL(site, helperOffset)
+    }
+
     return { code: e.toUint16Array(), callSites }
 }

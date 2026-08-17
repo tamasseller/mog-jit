@@ -73,17 +73,23 @@ export class AccState
         this.state = { kind: "poisoned" }
     }
 
-    /** The register this state currently depends on, if any — an Imm
-     *  shape, a poisoned state, or CLEAN(r0) never depends on a window
-     *  register, so this is `null` for those; a front-folded Reg shape or
-     *  a destination-folded CLEAN(window reg) does. Used by the
-     *  rotation-eviction guard (window.ts's doc comment; translateProc.ts's
-     *  push sites). */
-    dependsOnReg(): number | null
+    /** `flush`, but safe at a control-flow *merge* point (a `case`
+     *  boundary — blocks.ts's `closeBlockEnd`) where `POISONED` isn't an
+     *  error: a no-op there, since the acc-clobbering convention already
+     *  forbids anything downstream from reading it regardless of which
+     *  path arrived. Merge points matter because this state is one
+     *  linear, compile-time-sequential belief — a value left `PENDING`
+     *  at the end of one case (never itself read again *within* that
+     *  case) would otherwise silently survive to be overwritten by the
+     *  next case's own translation, so whatever the merged code reads
+     *  afterward ends up being the *last* case's value, not whichever
+     *  case actually ran at runtime. Flushing every case unconditionally
+     *  before it merges is what keeps that from happening — cheap when
+     *  already `CLEAN(dstReg)` (materializeShape's own no-op), the real
+     *  cost paid only when a case actually left something pending. */
+    flushLive(e: Emitter, dstReg: number): void
     {
-        if(this.state.kind === "pending" && this.state.shape.kind === "reg") return this.state.shape.reg
-        if(this.state.kind === "clean") return this.state.reg
-        return null
+        if(this.state.kind !== "poisoned") this.flush(e, dstReg)
     }
 }
 
