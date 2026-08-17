@@ -30,10 +30,25 @@
  * the context-free property §4 already claims for register-window
  * addressing, now also true of the spill stack itself.
  *
- * **Multi-register `PUSH`/`POP` batching (`CALL`'s shuffle only) — two
- * different tricks for two different consumers, not one.** Thumb's
+ * **`physReg`'s cyclic direction is chosen, not arbitrary — it's what makes
+ * historical reloads batchable at all.** A batched `PUSH{list}`/`POP{list}`
+ * is exactly equivalent to issuing that list as separate single-register
+ * instructions in one specific order: **descending register number for
+ * `PUSH`** (hardware puts the lowest register closest to the final `sp`,
+ * i.e. it must have been written last), **ascending register number for
+ * `POP`** (hardware reads the lowest register from the closest address,
+ * i.e. it's read first). Spills always happen in ascending-`k` chronological
+ * order (previous paragraph); `physReg` maps ascending `k` to *descending*
+ * register number, so that real, already-emitted, non-adjacent spill
+ * sequence is exactly equivalent to one hypothetical batched `PUSH` having
+ * produced it — which means a batched `POP` (its exact, self-consistent
+ * inverse) can read it back later, register-for-register, with no
+ * reordering trick needed within a contiguous run.
+ *
+ * **Multi-register `PUSH`/`POP` batching — three consumers sharing one
+ * `windowRuns` building block, not three separate tricks.** Thumb's
  * `PUSH`/`POP` register-list is an arbitrary 8-bit mask — *not* required
- * to be contiguous — so it has two genuinely different uses here:
+ * to be contiguous:
  *
  * 1. **Same registers in, same registers out ("mirrored").** If nothing
  *    touches a set of registers between a `PUSH{that set}` and a later
@@ -47,26 +62,32 @@
  *    a "reload keyed by `k`" in the first place, just an untouched
  *    round-trip forced by the callee's execution genuinely intervening
  *    (unlike `restoreWindow`'s block-exit case — see below).
- * 2. **Different registers out than in (remapping).** `CALL`'s args need
- *    to land in the *callee's* canonical `physReg(0)..`, not wherever they
- *    happened to live in the caller's own window — a real remap, so
- *    "mirrored" doesn't apply. Hardware ascending-register-order still
- *    constrains what's achievable here: a batched `PUSH` can only
- *    reliably deliver "smallest `k` ends up closest to `sp`" (push the
- *    post-wrap/larger-`k` run first, pre-wrap/smaller-`k` run second, so
- *    whichever executes second — landing lower — is `arg0`). That's
- *    exactly what `fillCalleeArgs`'s one combined ascending-register `POP`
- *    into `physReg(0)..` wants, so `pushSmallestKClosest` is only ever
- *    used for the args, never for a same-register restore.
+ * 2. **Fresh values, remapped (`pushLargestKClosest`/`fillCalleeArgs`).**
+ *    `CALL`'s args need to land in the *callee's* canonical `physReg(0)..`,
+ *    not wherever they happened to live in the caller's own window — a real
+ *    remap of currently-live values, so "mirrored" doesn't apply, but
+ *    nothing pre-existing constrains the layout either: `pushLargestKClosest`
+ *    splits the range with `windowRuns` and pushes the runs *forward*
+ *    (pre-wrap first, post-wrap second) so the largest `k` — the smallest
+ *    register, per `physReg`'s reversed direction — ends up closest to
+ *    `sp`, exactly where `fillCalleeArgs`'s one ascending batched `POP`
+ *    into `physReg(0)..` expects it.
+ * 3. **Historical spilled data, read back (`popRuns`).** `restoreWindow`
+ *    (ordinary `BLOCK_END`/`LOOP` truncation) and `reloadAfterCall`'s own
+ *    deeper tail both need to reload data whose physical layout is already
+ *    fixed by real chronological spills, not freely chosen — but per the
+ *    identity above, that layout already matches a hypothetical batched
+ *    `PUSH`, so `popRuns` splits the range with the same `windowRuns` and
+ *    pops the runs in *reverse* (larger-`k`, closer-to-`sp` run first) —
+ *    the mirror image of `pushLargestKClosest`'s iteration order, same
+ *    building block either way.
  *
- * `restoreWindow` (ordinary `BLOCK_END`/`LOOP` truncation) needs neither
- * trick: nothing intervenes between a truncation point and whatever reads
- * the window next, so any currently-resident, still-live-in-the-target
- * register needs no push *or* pop at all (`physReg(k)` doesn't depend on
- * `tos`, so it's already exactly where it needs to be) — only genuinely
- * historical, individually-and-natural-order-spilled data (from `k`s below
- * the currently-resident window) ever needs an actual reload, and that has
- * no single `PUSH` to mirror, so it stays individual, descending-`k`.
+ * `restoreWindow` also has a no-op case neither trick above needs: nothing
+ * intervenes between a truncation point and whatever reads the window next,
+ * so any currently-resident, still-live-in-the-target register needs no
+ * push *or* pop at all (`physReg(k)` doesn't depend on `tos`, so it's
+ * already exactly where it needs to be) — only `k`s below the currently-
+ * resident window are genuinely historical and go through `popRuns`.
  */
 
 import {Emitter} from "./emit"
@@ -82,10 +103,20 @@ export function inWindow(tos: number, k: number): boolean
 /** Physical register holding frame-relative slot `k`, valid only when
  *  `inWindow(tos, k)` — a pure function of `k` alone, by design (§5): two
  *  control-flow paths that reconverge at the same `tos` always agree on
- *  every live slot's physical register with no reconciliation. */
+ *  every live slot's physical register with no reconciliation.
+ *
+ *  Deliberately *descending*-in-`k` (`k=0` at the top register, `r7`, not
+ *  the bottom): `pushValue` always evicts registers in ascending-`k`
+ *  chronological order, so this makes the real, already-emitted spill
+ *  sequence for any run of consecutive `k`s exactly equivalent to one
+ *  hypothetical batched `PUSH` having happened (batched `PUSH`'s own fixed
+ *  ascending-register/ascending-address rule behaves like separate pushes
+ *  issued in *descending* register order — see this file's header) —
+ *  which is what lets `restoreWindow`/`reloadAfterCall` reload that data
+ *  with a batched `POP` later, instead of one `POP` per register. */
 export function physReg(k: number): number
 {
-    return WINDOW_BASE + (k % WINDOW_SIZE)
+    return WINDOW_BASE + (WINDOW_SIZE - 1 - (k % WINDOW_SIZE))
 }
 
 /** How many slots are currently spilled at a given `tos`. */
@@ -105,10 +136,13 @@ function regsFor(bottom: number, count: number): number[]
 /**
  * The registers holding `k = bottom .. bottom+count-1` (`count ≤
  * WINDOW_SIZE`), split at the point (if any) where `physReg` wraps from
- * `r7` back to `r4` — at most two contiguous, ascending runs, each a
- * valid single `PUSH`/`POP` register-list, in k-ascending order:
- * `[preWrap]` or `[preWrap, postWrap]`. Only `pushSmallestKClosest` (the
- * args' own remap) needs this split; a same-register round-trip doesn't.
+ * `r4` back to `r7` — at most two contiguous, k-ascending-but-register-
+ * descending runs, each a valid single `PUSH`/`POP` register-list, in
+ * k-ascending order: `[preWrap]` or `[preWrap, postWrap]`. Two consumers,
+ * opposite iteration order: `pushLargestKClosest` (fresh call-arg values,
+ * choosing a layout) walks these forward; `popRuns` (historical spilled
+ * data, reading an already-fixed layout back) walks them in reverse — see
+ * this file's header.
  */
 function windowRuns(bottom: number, count: number): number[][]
 {
@@ -123,20 +157,38 @@ function windowRuns(bottom: number, count: number): number[][]
 }
 
 /**
- * Push `k = bottom .. bottom+count-1` such that the *smallest* `k` ends
+ * Push `k = bottom .. bottom+count-1` such that the *largest* `k` ends
  * up closest to the resulting `sp` (one or two `PUSH`es) — the one
  * ordering hardware `PUSH` can actually produce for a batched, wrapped
- * range: push the post-wrap run (the *larger* k's) first, the pre-wrap
- * run (the *smaller* k's, including `bottom` itself) second, since
- * whichever `PUSH` executes second lands at the lower address. Only ever
- * correct to use where the consumer wants exactly this order —
- * `fillCalleeArgs`'s own immediate, remapping `POP`, not a same-register
- * restore (see this file's header).
+ * range: push the pre-wrap run (the *smaller* k's, including `bottom`
+ * itself) first, the post-wrap run (the *larger* k's) second, since
+ * whichever `PUSH` executes second lands at the lower address. (`physReg`'s
+ * own reversed cyclic direction is what makes "largest k" — not
+ * "smallest" — the end `fillCalleeArgs`'s target window needs closest;
+ * see this file's header.) Only ever correct to use where the consumer
+ * wants exactly this order — `fillCalleeArgs`'s own immediate, remapping
+ * `POP`, not a same-register restore.
  */
-function pushSmallestKClosest(e: Emitter, bottom: number, count: number): void
+function pushLargestKClosest(e: Emitter, bottom: number, count: number): void
 {
     const runs = windowRuns(bottom, count) // [preWrap] or [preWrap, postWrap]
-    for(let i = runs.length - 1; i >= 0; i--) e.emit(arm.push(runs[i]!))
+    for(let i = 0; i < runs.length; i++) e.emit(arm.push(runs[i]!))
+}
+
+/**
+ * Pop `k = bottom .. bottom+count-1` — genuinely historical spilled data,
+ * not fresh values — via at most two batched `POP`s instead of one per
+ * slot: split with `windowRuns`, then consume the runs in reverse (the
+ * larger-`k`, closer-to-`sp` run first), mirroring the natural LIFO reload
+ * order. Correct *because* of `physReg`'s reversed cyclic direction: the
+ * real, already-emitted spill sequence for any such run is exactly
+ * equivalent to one hypothetical batched `PUSH` having produced it, so a
+ * batched `POP` is its exact, self-consistent inverse (this file's header).
+ */
+function popRuns(e: Emitter, bottom: number, count: number): void
+{
+    const runs = windowRuns(bottom, count)
+    for(let i = runs.length - 1; i >= 0; i--) e.emit(arm.pop(runs[i]!))
 }
 
 /** Window state for one procedure's translation — just the `tos` counter
@@ -214,22 +266,34 @@ export class Window
  * `tos`, so it's already exactly where it needs to be. What's spilled
  * *above* the target window's own ceiling is abandoned outright (a bare
  * `sp` adjustment — nothing can still read it, isa-core.md §8.1), and
- * what's spilled at or below it — genuinely historical, individually,
- * natural-order data, with no single `PUSH` to mirror — gets reloaded
- * individually, in descending-`k` order, the same order it was spilled
- * in. Mutates `window.tos` to `targetTos` directly.
+ * what's spilled at or below it — genuinely historical, natural-order
+ * data — gets reloaded via `popRuns` (at most two batched `POP`s, per
+ * `physReg`'s own reversed cyclic direction — this file's header), the
+ * same larger-`k`-first order it was spilled in. Mutates `window.tos` to
+ * `targetTos` directly.
  */
 export function restoreWindow(e: Emitter, window: Window, targetTos: number): void
 {
+    // Number of ISA regs currently living physically on the stack.
     const spilledNow = spilledCount(window.tos)
+
+    // Target number of ISA regs that should live on the physical stack.
     const spilledTarget = spilledCount(targetTos)
+
+    // The stack index to be set **before** popping the regs that currently 
+    // live on stack but need to be reloaded into registers
     const reloadTop = Math.min(spilledNow, targetTos) // exclusive; k ≥ this was never spilled at all
 
-    if(spilledNow > reloadTop) e.emit(arm.incrSp(4 * (spilledNow - reloadTop)))
+    // Move SP if needed for reloadTop enforcement
+    if(spilledNow > reloadTop)
+    {
+        e.emit(arm.incrSp(4 * (spilledNow - reloadTop)))
+    } 
 
-    for(let k = reloadTop - 1; k >= spilledTarget; k--)
-        e.emit(arm.pop([physReg(k)]))
+    // Pop the regs that are being filled from stack, at most two batched POPs.
+    popRuns(e, spilledTarget, reloadTop - spilledTarget)
 
+    // All consistent, update bookkeping.
     window.tos = targetTos
 }
 
@@ -255,7 +319,7 @@ export function discardWindow(e: Emitter, window: Window): void
  * differently (this file's header): the locals get one `PUSH` of the
  * whole leftover bitmask, unconditionally correct however it wraps, since
  * `reloadAfterCall` mirrors it back exactly; the args get the
- * remapping-aware `pushSmallestKClosest`, since they're about to be
+ * remapping-aware `pushLargestKClosest`, since they're about to be
  * popped into the *callee's* canonical registers, not their own. Doesn't
  * move `window.tos`.
  */
@@ -267,18 +331,22 @@ export function spillForCall(e: Emitter, window: Window, stackArgs: number): voi
     const base = window.tos - m
 
     if(base > bottom) e.emit(arm.push(regsFor(bottom, base - bottom)))
-    pushSmallestKClosest(e, base, m)
+    pushLargestKClosest(e, base, m)
 }
 
 /**
  * `CALL`'s shuffle, second half: fill the callee's own canonical phase-0
  * window (`physReg(0)..physReg(stackArgs-1)`) by reading back the `m`
- * args `spillForCall` just pushed via `pushSmallestKClosest` — one plain
+ * args `spillForCall` just pushed via `pushLargestKClosest` — one plain
  * multi-register `POP`, valid because (for `stackArgs ≤ WINDOW_SIZE`,
  * this prototype's only supported case — see translateProc.ts's own
- * guard) the callee's own in-window range always starts at `physReg(0)`
- * exactly, and `pushSmallestKClosest` put the smallest arg (`arg0`)
- * closest to `sp`.
+ * guard) `regsFor(0, m)` is always a single, un-wrapped register run, and
+ * `pushLargestKClosest` arranged the args so that the ascending batched
+ * `POP` here — which always assigns the *smallest* register in the set
+ * to the address closest to `sp` — lands the highest-indexed arg (the
+ * *smallest* register, per `physReg`'s reversed cyclic direction; this
+ * file's header) exactly where it was left, and every other arg follows
+ * down the same run.
  */
 export function fillCalleeArgs(e: Emitter, stackArgs: number): void
 {
@@ -298,8 +366,8 @@ export function fillCalleeArgs(e: Emitter, stackArgs: number): void
  * `window.tos`, still valid since nothing has mutated it yet) comes back
  * with one mirrored `POP` of that exact same mask, regardless of wrap.
  * Anything deeper than `bottom` (spilled long before this call, via
- * ordinary individual natural-order spills, with no single `PUSH` to
- * mirror) is reloaded the same individual, descending-`k` way
+ * ordinary natural-order spills, with no single `PUSH` to mirror) is
+ * reloaded via `popRuns` — the same batched, larger-`k`-first way
  * `restoreWindow` uses. Together these always total exactly
  * `min(targetTos, WINDOW_SIZE)` registers restored — never more, since
  * `spillForCall` + `fillCalleeArgs` already left the actual spilled depth
@@ -314,8 +382,7 @@ export function reloadAfterCall(e: Emitter, window: Window, targetTos: number): 
 
     if(targetTos > bottom) e.emit(arm.pop(regsFor(bottom, targetTos - bottom)))
 
-    for(let k = bottom - 1; k >= deeperFloor; k--)
-        e.emit(arm.pop([physReg(k)]))
+    popRuns(e, deeperFloor, bottom - deeperFloor)
 
     window.tos = targetTos
 }
