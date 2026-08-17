@@ -2,7 +2,7 @@
  * @ppl/jit-armv6m-prototype — the acc fusion state machine (docs/jit-armv6m.md §10.1)
  *
  * `acc`'s status at any point in the forward walk is exactly one of:
- *   - CLEAN(reg)   — already committed to a physical register (usually r3).
+ *   - CLEAN(reg)   — already committed to a physical register (usually r0).
  *   - PENDING(shape) — not yet emitted; `shape` is `Imm(k)` or `Reg(r)`.
  *   - POISONED — a write-back-in-place combo (REG_REG/PEEK_PEEK) just ran;
  *     acc is clobbered (isa-core.md convention, rtl.ts's `COMBO` table) and
@@ -74,7 +74,7 @@ export class AccState
     }
 
     /** The register this state currently depends on, if any — an Imm
-     *  shape, a poisoned state, or CLEAN(r3) never depends on a window
+     *  shape, a poisoned state, or CLEAN(r0) never depends on a window
      *  register, so this is `null` for those; a front-folded Reg shape or
      *  a destination-folded CLEAN(window reg) does. Used by the
      *  rotation-eviction guard (window.ts's doc comment; translateProc.ts's

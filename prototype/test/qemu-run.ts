@@ -11,7 +11,9 @@
  *
  * ABI (this prototype's own choice, matching docs/jit-armv6m.md §6/§7
  * exactly since nothing here disagrees with it): the argument (if any)
- * arrives in r3; the result leaves in r0. The result travels back to this
+ * arrives in r0 (acc — §3) and the result leaves in r0 too, the same
+ * register both ways, matching AAPCS's own argument/return convention.
+ * The result travels back to this
  * process via a tagged semihosting `SYS_WRITE0` line, not the process exit
  * code — POSIX exit codes are truncated to 8 bits, nowhere near enough for
  * an arbitrary 32-bit `acc`. `qemu/Makefile` builds `program.c`
@@ -45,7 +47,7 @@ int main(void)
 {
     register unsigned int result;
     asm volatile(
-        "mov r3, %1\\n"
+        "mov r0, %1\\n"
         "blx %2\\n"
         "mov %0, r0\\n"
         : "=r"(result)

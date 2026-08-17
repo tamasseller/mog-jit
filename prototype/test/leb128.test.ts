@@ -43,8 +43,8 @@ describe("leb128_len", () =>
         return n;
     `
     const proc = lowerProc(frag.body, ["v"])
-    const stats = validateProgram({ procedures: [proc] })
-    const code = translateProc(proc, stats.procedures[0]!.localPeak)
+    validateProgram({ procedures: [proc] })
+    const { code } = translateProc(proc)
 
     test("translates without throwing", () =>
     {

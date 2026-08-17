@@ -4,3 +4,4 @@
  */
 import "./leb128.test"
 import "./algorithms.test"
+import "./call.test"

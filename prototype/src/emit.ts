@@ -52,6 +52,22 @@ export class Emitter
         return this.emit(arm.b(0))
     }
 
+    /** A placeholder `BL` (two halfwords) for a `CALL` site — the target
+     *  procedure's own final offset isn't known until program.ts has laid
+     *  out every procedure, well after this one's own translation is done,
+     *  so this only ever gets patched by poking the combined program's
+     *  buffer directly (program.ts), never via `patchBranch` above (that's
+     *  strictly `blocks.ts`'s single-procedure-local scheme). Returns the
+     *  site's own byte offset, local to this procedure. */
+    placeholderBL(): number
+    {
+        const at = this.pc
+        const [hw1, hw2] = arm.bl(0)
+        this.emit(hw1)
+        this.emit(hw2)
+        return at
+    }
+
     /** Resolve a previously-emitted (conditional or unconditional) branch's
      *  target now that it's known — never needs to have seen anything past
      *  `siteOffset` at the time it was placed (see this file's header). */

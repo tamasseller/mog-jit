@@ -29,8 +29,8 @@ function translate(source: string): Uint16Array
 {
     const frag = ir`${source}`
     const proc = lowerProc(frag.body)
-    const stats = validateProgram({ procedures: [proc] })
-    return translateProc(proc, stats.procedures[0]!.localPeak)
+    validateProgram({ procedures: [proc] })
+    return translateProc(proc).code
 }
 
 describe("core-testsuite algorithms on real QEMU", () =>

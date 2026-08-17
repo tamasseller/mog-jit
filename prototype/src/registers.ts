@@ -8,7 +8,9 @@
  * have no counterpart here, since nothing does `CALL`/eviction yet.
  */
 
-export const ACC_REG = 3 // r3 — acc
+export const ACC_REG = 0 // r0 — acc (docs/jit-armv6m.md §3: matches AAPCS's own
+                          // first-argument/return-value register, so a single-
+                          // argument native helper call needs no shuffle at all)
 
 /** Scratch — materializing an immediate operand ahead of an instruction
  *  that has no immediate form, or the rare imm-op-imm degenerate case.

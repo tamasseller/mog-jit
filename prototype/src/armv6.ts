@@ -235,6 +235,59 @@ export const bkpt = (code: number) => 0b10111110_00000000 | imm(code, 8)
 
 export const nop = () => 0b1011_1111_0000_0000
 
+// ── BL — the one 32-bit (Thumb-2-derived) instruction ARMv6-M baseline
+//    keeps, purpose-built for exactly what CALL (docs/jit-armv6m.md §6)
+//    needs: a PC-relative target plus an automatic `lr` = return-address
+//    save, in one instruction. §9's real design reaches a callee through a
+//    dispatch-table `BLX` instead, since a lazily-compiled/evictable
+//    target's address isn't known at the call site's own encoding time —
+//    but this prototype compiles the whole program up front with a fixed
+//    layout, so a direct, plain `BL` is a faithful simplification for this
+//    milestone (§6's shuffle), not a shortcut around it — exactly the same
+//    reasoning `RETURN`'s own plain `BX LR` (translateProc.ts) already
+//    relies on in place of §7's real dispatch_return. ─────────────────────
+
+const BL_N_BITS = 24 // S:I1:I2:imm10:imm11 — a 24-bit signed word-pair count, ±16 MiB byte range
+
+/** `off` is a signed byte offset from this instruction's own address plus
+ *  4 (ARMv6-M's own PC-relative convention, same as every other branch
+ *  here), must be even. Returns the two halfwords in encoding order. */
+export function bl(off: number): [number, number]
+{
+    assert.ok(off % 2 === 0, `bl offset ${off} not 2-aligned`)
+    const raw = off >> 1
+    const lim = 1 << (BL_N_BITS - 1)
+    assert.ok(raw >= -lim && raw < lim, `bl offset ${off} out of range`)
+
+    const S = (raw >>> 23) & 1
+    const I1 = (raw >>> 22) & 1
+    const I2 = (raw >>> 21) & 1
+    const imm10 = (raw >>> 11) & 0x3ff
+    const imm11 = raw & 0x7ff
+    const J1 = (~(I1 ^ S)) & 1
+    const J2 = (~(I2 ^ S)) & 1
+
+    const hw1 = 0b11110_0_0000000000 | (S << 10) | imm10
+    const hw2 = 0b11_0_1_0_00000000000 | (J1 << 13) | (J2 << 11) | imm11
+    return [hw1, hw2]
+}
+
+export function isBL(hw1: number): boolean { return (hw1 >>> 11) === 0b11110 }
+
+export function getBLOffset(hw1: number, hw2: number): number
+{
+    assert.ok(isBL(hw1), `not a bl: 0x${hw1.toString(16)}`)
+    const S = (hw1 >> 10) & 1
+    const imm10 = hw1 & 0x3ff
+    const J1 = (hw2 >> 13) & 1
+    const J2 = (hw2 >> 11) & 1
+    const imm11 = hw2 & 0x7ff
+    const I1 = (~(J1 ^ S)) & 1
+    const I2 = (~(J2 ^ S)) & 1
+    const raw = (S << 23) | (I1 << 22) | (I2 << 21) | (imm10 << 11) | imm11
+    return ((raw << 8) >> 8) << 1 // sign-extend the 24-bit field, then re-scale
+}
+
 /**
  * Materialize an arbitrary 32-bit constant into `dst`, MSB-first byte
  * chunks (`MOVS` for the first nonzero byte, then `LSLS #8; ADDS` per
