@@ -33,12 +33,10 @@ void semihosting_exit(int code)
     for(;;) {}
 }
 
-/** Prints "RESULT:xxxxxxxx\n" (8 lowercase hex digits) — test/qemu-run.ts's
- *  own counterpart parses exactly this tag out of QEMU's captured stdout. */
-void write_hex_result(uint32_t v)
+/** Prints "<prefix>xxxxxxxx\n" (8 lowercase hex digits). */
+static void write_hex_tagged(const char *prefix, uint32_t v)
 {
     static char buf[16];
-    const char *prefix = "RESULT:";
     int i = 0;
     for(; prefix[i]; i++) buf[i] = prefix[i];
     for(int shift = 28; shift >= 0; shift -= 4)
@@ -50,3 +48,12 @@ void write_hex_result(uint32_t v)
     buf[i] = '\0';
     semihosting_write0(buf);
 }
+
+/** Prints "RESULT:xxxxxxxx\n" — test/qemu-run.ts's own counterpart parses
+ *  exactly this tag out of QEMU's captured stdout. */
+void write_hex_result(uint32_t v) { write_hex_tagged("RESULT:", v); }
+
+/** Prints "TRAP:xxxxxxxx\n" — test/qemu-run-abi.ts's own counterpart (the
+ *  real-ABI harness's landing convention, docs/jit-armv6m-dispatch-handoff.
+ *  html §09) parses this tag out for the RESOURCE_ERROR/trap path. */
+void write_hex_trap(uint32_t v) { write_hex_tagged("TRAP:", v); }

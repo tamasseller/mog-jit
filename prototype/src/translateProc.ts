@@ -34,12 +34,113 @@ import { Emitter } from "./emit"
 import { Window, physReg, inWindow, spillOffset, discardWindow, spillForCall, fillCalleeArgs, reloadAfterCall } from "./window"
 import { AccState, emitBinary } from "./accstate"
 import { Shape } from "./shape"
-import { ACC_REG, SCRATCH_REG } from "./registers"
+import { ACC_REG, SCRATCH_REG, ENTRY_IDX_REG, ENTRY_OFFSET_REG, ENTRY_JUMP_REG, HELPER_VEC_REG } from "./registers"
 import { BlockStack, emitComparison, isComparisonOp, testAccNonzero, emitBrTableHelper } from "./blocks"
 import * as arm from "./armv6"
+import * as runtime from "./runtime"
 import type { RtlProc, RtlInstr, ComboName } from "@ppl/machine"
 
 const LR = 14
+
+/** How a `CALL`/`RETURN`/procedure entry actually gets compiled — the one
+ *  seam between the window/accstate/binops/blocks machinery below (which
+ *  doesn't care how a call is dispatched) and the two very different
+ *  call/return mechanisms this prototype now supports: the default
+ *  no-eviction shape (a plain `BL`/`pop{pc}`, this file's own original
+ *  simplification) and the real runtime ABI (docs/jit-armv6m-dispatch-
+ *  handoff.html §06 — `callHelper`/`returnHelper`, no linking pass at all).
+ */
+export interface CallReturnStrategy
+{
+    /** Emitted unconditionally as this procedure's own literal first bytes. */
+    emitPrologue(e: Emitter): void
+    /** Emit a full `CALL` dispatch to `calleeIndex` — the register window
+     *  is already shuffled into the callee's canonical phase-0 layout by
+     *  the time this runs. Returns whatever program.ts's own linking pass
+     *  needs recorded, or `null` if nothing needs linking later (every
+     *  value the ABI-real strategy emits is already a compile-time
+     *  constant, §9/§11). */
+    emitCall(e: Emitter, calleeIndex: number): CallSite | null
+    /** Emit the return sequence — `sp` is already rebalanced
+     *  (`discardWindow`) and the return value already sits in `ACC_REG`. */
+    emitReturn(e: Emitter): void
+}
+
+/** Today's default: `CALL` compiles to a plain, whole-program-linked `BL`
+ *  (program.ts patches it once every procedure's layout is known) and
+ *  `RETURN` to `pop{..,pc}`/`bx lr` — a faithful simplification for a
+ *  translator with no dispatch table, no eviction (this file's own header).
+ */
+export function noEvictionStrategy(proc: RtlProc): CallReturnStrategy
+{
+    const savesLR = proc.body.some(i => i.op === "CALL" || (i.op === "BR_TABLE" && i.imm > 2))
+    return {
+        emitPrologue(e) { if(savesLR) e.emit(arm.pushWithLr([])) },
+        emitCall(e, calleeIndex) { return { siteOffset: e.placeholderBL(), calleeIndex } },
+        emitReturn(e) { if(savesLR) e.emit(arm.popWithPc([])); else e.emit(arm.bx(LR)) },
+    }
+}
+
+/** The real runtime ABI (docs/jit-armv6m-dispatch-handoff.html §06):
+ *  every compiled procedure starts with the fixed prologue stub
+ *  (runtime.ts), `CALL` pushes `REC(procIdx, K+1)` and tail-jumps into
+ *  `callHelper`, `RETURN` tail-jumps into `returnHelper` — no `lr`
+ *  involved anywhere, so no `savesLR` concept either. `procIdx` is this
+ *  procedure's own index (needed for the record it pushes on every `CALL`).
+ */
+export function abiRealStrategy(procIdx: number): CallReturnStrategy
+{
+    function buildCallSequence(calleeIndex: number, k: number): number[]
+    {
+        const record = runtime.packRecord(procIdx, k + 1)
+        return [
+            ...arm.synthesizeImm32(ENTRY_IDX_REG, record),
+            ...(arm.fitsImm8(calleeIndex)
+                ? [arm.movsImm8(ENTRY_OFFSET_REG, calleeIndex)]
+                : arm.synthesizeImm32(ENTRY_OFFSET_REG, calleeIndex)),
+            arm.movHi(ENTRY_JUMP_REG, HELPER_VEC_REG),
+            arm.ldr5(ENTRY_JUMP_REG, ENTRY_JUMP_REG, 0), // callHelper, index 0
+            arm.bx(ENTRY_JUMP_REG),
+        ]
+    }
+
+    return {
+        emitPrologue(e) { runtime.emitPrologueStub().forEach(w => e.emit(w)) },
+        emitCall(e, calleeIndex)
+        {
+            // K is a byte offset from the procedure's own body start (past
+            // the fixed-size stub, runtime.ts's own header) to *this*
+            // sequence's own resume point — which depends on how many
+            // instructions this same sequence takes to encode K itself
+            // (`REC`'s packed immediate). Fixed-point, not two-pass: stable
+            // in one or two iterations for any realistic procedure size
+            // (validated against real QEMU before this was wired in).
+            const preCallPc = e.pc
+            const k = fixedPoint(guess =>
+                (preCallPc - runtime.STUB_SIZE) + buildCallSequence(calleeIndex, guess).length * 2, 0)
+            buildCallSequence(calleeIndex, k).forEach(w => e.emit(w))
+            return null
+        },
+        emitReturn(e)
+        {
+            e.emit(arm.movHi(ENTRY_JUMP_REG, HELPER_VEC_REG))
+            e.emit(arm.ldr5(ENTRY_JUMP_REG, ENTRY_JUMP_REG, 4)) // returnHelper, index 1
+            e.emit(arm.bx(ENTRY_JUMP_REG))
+        },
+    }
+}
+
+function fixedPoint(f: (guess: number) => number, initial: number, maxIters = 5): number
+{
+    let guess = initial
+    for(let i = 0; i < maxIters; i++)
+    {
+        const next = f(guess)
+        if(next === guess) return guess
+        guess = next
+    }
+    throw new Error("translateProc: CALL resume offset failed to converge")
+}
 
 /** One not-yet-resolved `CALL` site — `siteOffset` is local to this
  *  procedure's own emitted code; program.ts is the only thing that can
@@ -80,7 +181,11 @@ export interface TranslatedProc
  *  §4.6) without needing the whole `RtlProgram` type. Defaults to `[]`
  *  since most of the existing test corpus has no `CALL` at all and never
  *  indexes it. */
-export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] = []): TranslatedProc
+export function translateProc(
+    proc: RtlProc,
+    calleeArgCounts: readonly number[] = [],
+    strategy: CallReturnStrategy = noEvictionStrategy(proc),
+): TranslatedProc
 {
     const e = new Emitter()
     const window = new Window(proc.argCount)
@@ -89,23 +194,14 @@ export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] 
     const callSites: CallSite[] = []
     const body = proc.body
 
-    // A `CALL` anywhere in this body clobbers `lr` (`BL` sets it); this
-    // procedure's own incoming `lr` — its return address into *its own*
-    // caller — only survives a nested call if it's saved first. Known
-    // upfront from a plain body scan — not a violation of "no
-    // cross-instruction analysis" so much as the one piece of whole-body
-    // metadata the prologue's own *shape* needs before it can be emitted
-    // at all. `BR_TABLE N>2` clobbers `lr` exactly the same way — its own
-    // dispatch is a local `BL` to the shared jump-table helper
-    // (blocks.ts's `openBrTableJump`) — so it needs the identical
-    // save/restore, not a CALL-specific check.
-    const savesLR = body.some(i => i.op === "CALL" || (i.op === "BR_TABLE" && i.imm > 2))
-
-    // prologue — save `lr` only if this body needs to. No fixed spill-area
-    // reservation at all (window.ts's own header): every spill/fill is a
-    // real sp-adjusting PUSH/POP, so sp naturally tracks actual depth with
-    // nothing reserved up front.
-    if(savesLR) e.emit(arm.pushWithLr([]))
+    // prologue — strategy-defined (noEvictionStrategy: `lr` saved only if
+    // this body needs to, since a `CALL` compiles to a plain `BL`;
+    // abiRealStrategy: the fixed-size dispatch-table prologue stub,
+    // unconditionally). No fixed spill-area reservation either way
+    // (window.ts's own header): every spill/fill is a real sp-adjusting
+    // PUSH/POP, so sp naturally tracks actual depth with nothing reserved
+    // up front.
+    strategy.emitPrologue(e)
 
     // §6 callee-side prologue: the last argument (if any) arrives in acc —
     // ACC_REG, by this prototype's own native ABI choice, matching the
@@ -122,10 +218,10 @@ export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] 
     {
         // Unwind whatever this body spilled — nothing downstream reads
         // r4-r7 again, so there's nothing to reload for (window.ts's
-        // `discardWindow`), only sp to rebalance before lr comes back.
+        // `discardWindow`), only sp to rebalance before the strategy's own
+        // return sequence runs.
         discardWindow(e, window)
-        if(savesLR) e.emit(arm.popWithPc([])) // pops the saved lr straight into pc — this *is* the return
-        else e.emit(arm.bx(LR))
+        strategy.emitReturn(e)
     }
 
     while(pc < body.length)
@@ -156,7 +252,8 @@ export function translateProc(proc: RtlProc, calleeArgCounts: readonly number[] 
                 spillForCall(e, window, stackArgs)
                 fillCalleeArgs(e, stackArgs)
 
-                callSites.push({ siteOffset: e.placeholderBL(), calleeIndex: instr.calleeIndex })
+                const site = strategy.emitCall(e, instr.calleeIndex)
+                if(site) callSites.push(site)
 
                 // The callee has freely clobbered r4-r7 for its own,
                 // unrelated window — reload the caller's own, now that

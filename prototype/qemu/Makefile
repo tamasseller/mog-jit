@@ -9,6 +9,8 @@ OUTPUT = run.elf
 SOURCES += ../../src/vectors.S
 SOURCES += semihosting.c
 SOURCES += program.c
+SOURCES += trampoline.S
+SOURCES += runtime_host.c
 
 INCLUDE_DIRS += ../../src
 
@@ -30,8 +32,18 @@ OBJECTS = $(addsuffix .o,$(notdir $(SOURCES)))
 %.S.o: ../../src/%.S
 	$(CC) $(ASMFLAGS) -c -o $@ $<
 
+%.S.o: %.S
+	$(CC) $(ASMFLAGS) -c -o $@ $<
+
 %.c.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# r8/r9/r10/r11 carry live JIT state across compileProc's own call boundary
+# (docs/jit-armv6m-dispatch-handoff.html §09) — reserved from the compiler's
+# allocator entirely, a stronger guarantee than relying on ordinary
+# callee-saved convention (see runtime_host.c's own header).
+runtime_host.c.o: runtime_host.c
+	$(CC) $(CFLAGS) -ffixed-r8 -ffixed-r9 -ffixed-r10 -ffixed-r11 -c -o $@ $<
 
 $(OUTPUT): $(OBJECTS)
 	$(LD) $(LDFLAGS) -o $@ $(OBJECTS)
