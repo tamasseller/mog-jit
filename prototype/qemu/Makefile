@@ -9,7 +9,7 @@ OUTPUT = run.elf
 SOURCES += ../../src/vectors.S
 SOURCES += semihosting.c
 SOURCES += program.c
-SOURCES += trampoline.S
+SOURCES += runtime.S
 SOURCES += runtime_host.c
 
 INCLUDE_DIRS += ../../src

@@ -34,6 +34,16 @@ export const ENTRY_OFFSET_REG = SCRATCH_REG // r2
 export const ENTRY_JUMP_REG = 3 // r3
 
 export const DISPATCH_BASE_REG = 8  // r8 — dispatch table base (info block at negative offsets, §09)
-export const CONTROL_SP_REG = 9     // r9 — control stack pointer
+
+/** r9 — runtime pointer, not a control-stack pointer: call/return records
+ *  push/pop on the ordinary operand stack now (sp), the same one window
+ *  spills already use (docs' own §06 "sp is the real C stack, not a
+ *  second one," followed all the way through), so there's no separate
+ *  control stack left to track. Unused by translateProc.ts's own emission
+ *  (nothing here ever touches r9 directly) — only qemu/runtime.S's
+ *  enter_dispatch/callHelper/returnHelper do, so this constant exists
+ *  purely as the register-role record docs/jit-armv6m.md §3 keeps. */
+export const RUNTIME_PTR_REG = 9
+
 export const HELPER_VEC_REG = 10    // r10 — static helper vector base
 export const LRU_TICK_REG = 11      // r11 — monotonic LRU tick counter
