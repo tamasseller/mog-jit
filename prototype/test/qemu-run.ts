@@ -16,8 +16,8 @@
  * The result travels back to this
  * process via a tagged semihosting `SYS_WRITE0` line, not the process exit
  * code — POSIX exit codes are truncated to 8 bits, nowhere near enough for
- * an arbitrary 32-bit `acc`. `qemu/Makefile` builds `program.c`
- * (regenerated here every call) against `semihosting.c` and the shared
+ * an arbitrary 32-bit `acc`. `qemu/Makefile` builds `program.cpp`
+ * (regenerated here every call) against `semihosting.cpp` and the shared
  * `jit-armv6m/src/vectors.S`/`linker.ld`.
  */
 
@@ -37,8 +37,10 @@ function generateProgramC(code: Uint16Array, arg: number): string
     return `
 #include <stdint.h>
 
-extern void semihosting_exit(int code);
-extern void write_hex_result(uint32_t v);
+extern "C" {
+void semihosting_exit(int code);
+void write_hex_result(uint32_t v);
+}
 
 __attribute__((section(".text.jitcode")))
 static const uint16_t code[] = { ${toCArray(code)} };
@@ -69,10 +71,10 @@ int main(void)
  */
 export function runOnQemu(code: Uint16Array, arg = 0): number
 {
-    // No `make clean` — program.c's refreshed mtime is enough for make's
-    // own incremental rebuild to relink; vectors.S.o/semihosting.c.o stay
+    // No `make clean` — program.cpp's refreshed mtime is enough for make's
+    // own incremental rebuild to relink; vectors.S.o/semihosting.cpp.o stay
     // cached across calls, which matters since this runs once per test case.
-    writeFileSync(path.join(QEMU_DIR, "program.c"), generateProgramC(code, arg))
+    writeFileSync(path.join(QEMU_DIR, "program.cpp"), generateProgramC(code, arg))
     execFileSync("make", ["-C", QEMU_DIR, "run.elf"], { stdio: "pipe" })
 
     // QEMU's `-nographic` console (and hence the guest's semihosting

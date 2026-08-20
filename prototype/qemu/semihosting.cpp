@@ -5,9 +5,14 @@
  * needs to report its 32-bit result back to the host, which a process
  * exit code can't carry (POSIX truncates it to 8 bits) — so the result is
  * printed as a tagged hex line instead, and exit-code-based `TRAP`
- * detection is only used for the halt-on-nothing-else fallback. Plain C
- * (not C++) on purpose — avoids vtables, RTTI, and operator-delete stubs
- * entirely. */
+ * detection is only used for the halt-on-nothing-else fallback.
+ *
+ * C++ now (qemu/Makefile's own -fno-exceptions -fno-rtti), not "plain C
+ * to dodge vtables/RTTI/operator-delete" the way an earlier draft of this
+ * comment put it: none of that cost was ever about the file extension —
+ * it's about which *features* get used, and nothing here declares a
+ * virtual function, throws, or calls new/delete regardless of which
+ * compiler front-end reads it. */
 
 #include <stdint.h>
 
@@ -19,12 +24,12 @@ static inline uint32_t semihosting_call(uint32_t op, void *arg)
     return r0;
 }
 
-void semihosting_write0(const char *s)
+extern "C" void semihosting_write0(const char *s)
 {
     semihosting_call(0x04 /* SYS_WRITE0 */, (void *)s);
 }
 
-void semihosting_exit(int code)
+extern "C" void semihosting_exit(int code)
 {
     static uint32_t block[2];
     block[0] = 0x20026; /* ADP_Stopped_ApplicationExit */
@@ -51,9 +56,9 @@ static void write_hex_tagged(const char *prefix, uint32_t v)
 
 /** Prints "RESULT:xxxxxxxx\n" — test/qemu-run.ts's own counterpart parses
  *  exactly this tag out of QEMU's captured stdout. */
-void write_hex_result(uint32_t v) { write_hex_tagged("RESULT:", v); }
+extern "C" void write_hex_result(uint32_t v) { write_hex_tagged("RESULT:", v); }
 
 /** Prints "TRAP:xxxxxxxx\n" — test/qemu-run-abi.ts's own counterpart (the
  *  real-ABI harness's landing convention, docs/jit-armv6m-dispatch-handoff.
  *  html §09) parses this tag out for the RESOURCE_ERROR/trap path. */
-void write_hex_trap(uint32_t v) { write_hex_tagged("TRAP:", v); }
+extern "C" void write_hex_trap(uint32_t v) { write_hex_tagged("TRAP:", v); }
