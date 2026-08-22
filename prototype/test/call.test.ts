@@ -1,7 +1,7 @@
 /**
  * @ppl/jit-armv6m-prototype/test — CALL, §6's own shuffle
  *
- * docs/jit-armv6m.md §16 item 1 flags §6's shuffle as this design's single
+ * docs/design.md §16 item 1 flags §6's shuffle as this design's single
  * least-proven piece; item 5 asks for a worked example that actually calls
  * another procedure and pushes past the 4-register window, since
  * leb128_len/the core-testsuite algorithms (this package's only corpus

@@ -1,5 +1,5 @@
 /**
- * @ppl/jit-armv6m-prototype — the register window (docs/jit-armv6m.md §5)
+ * @ppl/jit-armv6m-prototype — the register window (docs/design.md §5)
  *
  * Pure `tos`-and-`k` math, plus the spill/fill emission it drives. Doesn't
  * know about the acc fusion state machine (accstate.ts) or block structure
@@ -125,17 +125,10 @@ function spilledCount(tos: number): number
     return Math.max(0, tos - WINDOW_SIZE)
 }
 
-/** Byte offset from the *current* `sp` for slot `k`, valid only when `k` is
- *  genuinely spilled (`!inWindow(tos,k)`) — "most recently spilled closest
- *  to sp" (this file's header) means `k`'s distance from `sp`, in words, is
- *  exactly how many slots spilled *after* it are still resident on the
- *  stack. General — not `CALL`-specific: any local that falls out of the
- *  window (e.g. a procedure with more than `WINDOW_SIZE` concurrently-live
- *  locals, no `CALL` involved at all) needs this same addressing for its
- *  own `LOAD`/`STORE`, exactly as much as a callee whose `argCount` puts
- *  some of its own arguments below the window from the very first
- *  instruction (translateProc.ts's `LOAD`/`STORE` cases). */
-export function spillOffset(tos: number, k: number): number
+/** Pure `spillOffset` math, no `+4` adjustment — a `Window`'s own method
+ *  (below) is what every real caller uses; this stays a free function only
+ *  because the adjustment itself needs it as a building block. */
+function rawSpillOffset(tos: number, k: number): number
 {
     return 4 * (spilledCount(tos) - 1 - k)
 }
@@ -207,14 +200,46 @@ function popRuns(e: Emitter, bottom: number, count: number): void
 }
 
 /** Window state for one procedure's translation — just the `tos` counter
- *  (docs/jit-armv6m.md §5's "counters for stack state"). */
+ *  (docs/design.md §5's "counters for stack state"). */
 export class Window
 {
     tos: number
 
-    constructor(argCount: number)
+    /** How many of this procedure's own arguments never fit in the window
+     *  from the very first instruction (`argCount > WINDOW_SIZE`) — the
+     *  slots a *caller* placed on the stack before this procedure's own
+     *  prologue ran, as opposed to locals this procedure spills itself
+     *  later. `spillOffset` (below) only needs the `+4`-below adjustment
+     *  for the former: a caller/callee interface mismatch (whatever the
+     *  caller assumed about where it left `sp` vs. what this procedure's
+     *  own `savesLR` prologue does before its body's first read), not a
+     *  per-procedure accounting error — every later, self-spilled local is
+     *  already self-consistent regardless of `savesLR`. */
+    private readonly initialSpilledCount: number
+
+    constructor(argCount: number, private readonly savesLR: boolean = false)
     {
         this.tos = argCount
+        this.initialSpilledCount = Math.max(0, argCount - WINDOW_SIZE)
+    }
+
+    /** Byte offset from the *current* `sp` for slot `k`, valid only when
+     *  `k` is genuinely spilled (`!inWindow(tos,k)`) — see `rawSpillOffset`
+     *  above for the base math. `savesLR` procedures (translateProc.ts's
+     *  `abiRealStrategy`) push `{lr}` in their own prologue, before this
+     *  procedure's body ever reads anything — which lands strictly
+     *  *between* wherever the caller left `sp` and this procedure's own
+     *  first read of one of its own out-of-window arguments (`k <
+     *  initialSpilledCount`), shifting those specific slots one word
+     *  further from `sp` than the caller's own bookkeeping assumed. Locals
+     *  this procedure spills itself later (`k` outside that range) are
+     *  spilled strictly after that same `push{lr}`, so they need no
+     *  adjustment at all — this procedure's own view of `sp` is already
+     *  self-consistent for its own, later pushes. */
+    spillOffset(k: number): number
+    {
+        const raw = rawSpillOffset(this.tos, k)
+        return (this.savesLR && k < this.initialSpilledCount) ? raw + 4 : raw
     }
 
     /** The current top slot's physical register — the one thing every
@@ -242,7 +267,7 @@ export class Window
      * §10.1's "rotation eviction" hazard — a fused value living only in a
      * window register getting silently destroyed by the very rotation
      * this function performs — turns out not to need a rescue instruction
-     * here, once actually worked through (docs/jit-armv6m.md §16 item 6):
+     * here, once actually worked through (docs/design.md §16 item 6):
      * `physReg(evictedByPush) === physReg(this.tos)` always (both reduce to
      * the same `k mod WINDOW_SIZE`), so *if* `accState` currently depends
      * on exactly that register, the value about to be pushed and the value
@@ -274,6 +299,26 @@ export class Window
         if(this.popUncovers)
             e.emit(arm.pop([physReg(this.uncoveredByPop)]))
         this.tos -= 1
+    }
+
+    /**
+     * A terminator (`RETURN`/`TRAP`) needs `sp` rebalanced before its
+     * epilogue runs — but unlike `restoreWindow`, nothing downstream ever
+     * reads r4-r7 again, so there's nothing to reload for: a bare `sp`
+     * adjustment undoes every spill this procedure's own body made, in one
+     * instruction, regardless of how deep `tos` got. `savesLR` procedures
+     * only reclaim their own *self*-spilled locals here, though — not the
+     * `initialSpilledCount` slots a caller placed before this procedure's
+     * own prologue ran, which sit *below* (farther from `sp` than) this
+     * procedure's own `push{lr}`. Reclaiming those here too would walk
+     * straight past the saved `lr` word without ever reading it. The
+     * strategy's own `emitReturn` (translateProc.ts) is what reclaims that
+     * remainder, *after* retrieving the saved record, in whichever way its
+     * own return mechanism allows. */
+    discardWindow(e: Emitter): void
+    {
+        const spilled = spilledCount(this.tos) - (this.savesLR ? this.initialSpilledCount : 0)
+        if(spilled > 0) e.emit(arm.incrSp(4 * spilled))
     }
 }
 
@@ -320,22 +365,9 @@ export function restoreWindow(e: Emitter, window: Window, targetTos: number): vo
     window.tos = targetTos
 }
 
-/**
- * A terminator (`RETURN`/`TRAP`) needs `sp` rebalanced back to this
- * procedure's own entry depth before its epilogue runs — but unlike
- * `restoreWindow`, nothing downstream ever reads r4-r7 again, so there's
- * nothing to reload for: one bare `sp` adjustment undoes every spill this
- * procedure's own body ever made, in one instruction, regardless of how
- * deep `tos` got.
- */
-export function discardWindow(e: Emitter, window: Window): void
-{
-    const spilled = spilledCount(window.tos)
-    if(spilled > 0) e.emit(arm.incrSp(4 * spilled))
-}
 
 /**
- * `CALL`'s own shuffle (docs/jit-armv6m.md §6), first half. `stackArgs`
+ * `CALL`'s own shuffle (docs/design.md §6), first half. `stackArgs`
  * (`S`) splits the currently-resident window (`w = min(window.tos,
  * WINDOW_SIZE)` slots) into the caller's own non-argument locals, if any
  * (the bottom `w - S`), and the args themselves (the top `S`) — treated

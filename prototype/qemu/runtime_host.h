@@ -61,7 +61,7 @@ typedef struct
  * There's no separate control stack anymore: `callHelper`/`returnHelper`
  * push/pop each call's own return record on the ordinary operand stack
  * (`sp`) now, the same one window spills already use — matching
- * docs/jit-armv6m-dispatch-handoff.html §06's own "sp is the real C stack,
+ * docs/design.md §2's own "sp is the real C stack,
  * not a second one" all the way, rather than stopping short of it for
  * call/return bookkeeping specifically. r9 is freed up by this (no more
  * control-stack pointer to track) and repurposed to hold the runtime
@@ -74,7 +74,7 @@ ProgramResult enter_program(
     uint32_t procCount);
 
 /** One ARMv6-M exception frame (R0-R3,R12,LR,return-address,xPSR — 32
- *  bytes, docs/jit-armv6m-dispatch-handoff.html §09's own interrupt-
+ *  bytes, docs/design.md §2's own interrupt-
  *  isolation figure). A convenience value for `interruptReserve` below,
  *  not the only legal one — a caller with its own RTOS/ISR requirements
  *  beyond the bare architectural minimum should pass whatever its own
@@ -92,7 +92,7 @@ ProgramResult enter_program(
  * range (runtime_host.cpp's own doc comment on this function has the
  * full reasoning — it leaves room for a future real translator to
  * temporarily encroach into whatever part of the arena's own reservation
- * is still unused, docs/jit-armv6m-dispatch-handoff.html §09's "translator's
+ * is still unused, docs/design.md §2's "translator's
  * own exception").
  *
  * Safe only because it's checked first — `operandStackBytes` (the

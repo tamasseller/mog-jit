@@ -47,7 +47,7 @@ OBJECTS = $(addsuffix .o,$(notdir $(SOURCES)))
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # r8/r9/r10/r11 carry live JIT state across compileProc's own call boundary
-# (docs/jit-armv6m-dispatch-handoff.html §09) — reserved from the compiler's
+# (docs/design.md §2) — reserved from the compiler's
 # allocator entirely, a stronger guarantee than relying on ordinary
 # callee-saved convention (see compile_proc.cpp's own header).
 #

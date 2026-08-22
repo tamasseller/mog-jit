@@ -1,4 +1,4 @@
-/* enter_program's family (docs/jit-armv6m-dispatch-handoff.html §09) — a
+/* enter_program's family (docs/design.md §2) — a
  * real dispatch table and info block, call/return records living on the
  * ordinary operand stack rather than a separate control stack, and
  * eviction+compaction (compile_proc.cpp, through Runtime's own
@@ -28,8 +28,14 @@
  * enter_dispatch's prologue, translator_trampoline, or REALIGN_ENTER ever
  * change shape. */
 
-/* callHelper/returnHelper's own pushed/popped record (qemu/runtime.S) —
- * one word today, per CALL/RETURN pair live on the operand stack. */
+/* The call/return record travels in lr now, not on the operand stack
+ * (qemu/runtime.S's callHelper/returnHelperFromLr/returnHelperFromStack) —
+ * a leaf callee (no CALL of its own) never spends a stack word on it at
+ * all. Only a non-leaf callee's own prologue `push{lr}`s it, once per
+ * activation, so this constant is a per-call-depth *upper bound* now
+ * (every frame assumed non-leaf), not a tight count — still safe to add
+ * unconditionally below, just conservative for any leaf frame on the
+ * worst-case chain. */
 #define CALL_RECORD_BYTES 4
 
 /* enter_dispatch's own two prologue PUSHes (qemu/runtime.S): {r2,r4,r5,r6,
@@ -55,7 +61,7 @@
  * MOCK_ on purpose: this is only a fixed constant because compileProc
  * *is* the mock translator (test/qemu-run-abi.ts's own header) — a plain,
  * unconditionally-terminating memcpy from an already-compiled blob, no
- * recursion, no unbounded nesting. docs/jit-armv6m-dispatch-handoff.html
+ * recursion, no unbounded nesting. docs/design.md
  * §09's own "translator's own exception" section already establishes why
  * a *real* translator can't be reserved for this way: BR_TABLE/LOOP
  * nesting has no static, program-wide worst case the way the operand
@@ -69,8 +75,10 @@ static uint8_t g_arenaStorage[ARENA_CAPACITY];
 
 extern "C" {
 extern void translator_trampoline(void); /* qemu/runtime.S */
-extern const uint16_t callHelper[];       /* qemu/runtime.S */
-extern const uint16_t returnHelper[];     /* qemu/runtime.S */
+extern const uint16_t callHelper[];              /* qemu/runtime.S */
+extern const uint16_t returnHelperFromLr[];      /* qemu/runtime.S */
+extern const uint16_t returnHelperFromStack[];   /* qemu/runtime.S */
+extern const uint16_t returnHelperTail[];        /* qemu/runtime.S */
 extern uint64_t enter_dispatch(uint32_t argIn, Runtime *runtime); /* qemu/runtime.S */
 }
 
@@ -90,13 +98,18 @@ extern const uint32_t g_trampolineAddr = (uint32_t)(uintptr_t)translator_trampol
 /* r10 (helper vector base) — fixed for the whole program's lifetime, so
  * link-time const rather than something enter_program fills in on every
  * call. No `| 1u`/`+ 1u` needed: `.thumb_func` (qemu/runtime.S) already
- * bakes the Thumb bit into callHelper/returnHelper's own symbol value
+ * bakes the Thumb bit into each of these four symbols' own value
  * (confirmed via readelf — their st_value is already odd), and the plain
  * R_ARM_ABS32 relocation this cast produces resolves against that value
- * directly. */
-extern const uint32_t g_helperVec[2] = {
+ * directly. Index 3 (`returnHelperTail`) is reached directly only by the
+ * rare non-leaf-with-deep-args case (translateProc.ts's `abiRealStrategy.
+ * emitReturn`), which does its own record fetch/reclaim inline and skips
+ * both fetch variants. */
+extern const uint32_t g_helperVec[4] = {
     (uint32_t)(uintptr_t)callHelper,
-    (uint32_t)(uintptr_t)returnHelper,
+    (uint32_t)(uintptr_t)returnHelperFromLr,
+    (uint32_t)(uintptr_t)returnHelperFromStack,
+    (uint32_t)(uintptr_t)returnHelperTail,
 };
 
 /** Layout-agnostic core: every region (`runtime` itself, and the code
@@ -224,7 +237,7 @@ extern "C" ProgramResult enter_program(
  *  that, via its own `codeArena[codeArenaSize]` VLA) leaves no room for
  *  a future *real* translator to ever ask "how much of the arena's own
  *  reservation is actually still free right now?" and temporarily
- *  encroach into it the way docs/jit-armv6m-dispatch-handoff.html §09's
+ *  encroach into it the way docs/design.md §2's
  *  "translator's own exception" already describes — there'd be a whole
  *  `Runtime`-sized block in the way. With the arena anchored at
  *  `stackLimit`, that gap is exactly where the two regions actually

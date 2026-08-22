@@ -1,7 +1,7 @@
 /**
  * @ppl/jit-armv6m-prototype/test — §10.1's rotation-eviction hazard
  *
- * docs/jit-armv6m.md §16 item 6 flagged this as "reasoned, not implemented
+ * docs/design.md §16 item 6 flagged this as "reasoned, not implemented
  * or tested" — window.ts's `pushValue` used to *throw* rather than handle
  * it, and nothing in the existing corpus exercised that path at all. Once
  * actually built, the hazard turns out not to need a rescue instruction:

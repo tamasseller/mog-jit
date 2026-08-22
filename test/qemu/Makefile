@@ -14,7 +14,7 @@ SOURCES += cxx_stubs.cpp
 
 # 1test library — TraceOutput/PrintfOutput are deliberately NOT compiled in:
 # TraceOutput.cpp needs a Trace.h this project doesn't have (see
-# docs/jit-armv6m.md's plan), and PrintfOutput needs a hosted <iostream>.
+# docs/design.md's plan), and PrintfOutput needs a hosted <iostream>.
 # Passing SemihostingOutput::instance explicitly to runAllTests() (main.cpp)
 # means TestRunner.h's TraceOutput::instance default argument is never
 # referenced, so this is not a link error.
@@ -54,7 +54,7 @@ include ../../vendor/ultimate-makefile/Makefile.ultimate
 # coverage assumptions don't fit a bare-metal image) — a bare pass/fail
 # signal instead comes from qemu-system-arm's own exit code, which
 # semihosting_output.cpp's SYS_EXIT_EXTENDED call sets directly (§ "Automated
-# pass/fail from QEMU" in docs/jit-armv6m.md).
+# pass/fail from QEMU" in docs/design.md).
 qemu-test: $(OUTPUT)
 	qemu-system-arm -M lm3s811evb -m 8k -nographic \
 	    -semihosting-config enable=on,target=native -kernel $(OUTPUT)

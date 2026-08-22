@@ -1,5 +1,5 @@
 /**
- * @ppl/jit-armv6m-prototype — per-procedure translation (docs/jit-armv6m.md §10)
+ * @ppl/jit-armv6m-prototype — per-procedure translation (docs/design.md §10)
  *
  * The single instruction-at-a-time sink the whole prototype is organized
  * around: one forward `pc` walk over `proc.body`, dispatching each
@@ -31,10 +31,10 @@
  */
 
 import { Emitter } from "./emit"
-import { Window, physReg, inWindow, spillOffset, discardWindow, spillForCall, fillCalleeArgs, reloadAfterCall } from "./window"
+import { Window, physReg, inWindow, spillForCall, fillCalleeArgs, reloadAfterCall } from "./window"
 import { AccState, emitBinary } from "./accstate"
 import { Shape } from "./shape"
-import { ACC_REG, SCRATCH_REG, ENTRY_IDX_REG, ENTRY_OFFSET_REG, ENTRY_JUMP_REG, HELPER_VEC_REG } from "./registers"
+import { ACC_REG, SCRATCH_REG, ENTRY_IDX_REG, ENTRY_OFFSET_REG, ENTRY_JUMP_REG, HELPER_VEC_REG, WINDOW_SIZE } from "./registers"
 import { BlockStack, emitComparison, isComparisonOp, testAccNonzero, emitBrTableHelper } from "./blocks"
 import * as arm from "./armv6"
 import * as runtime from "./runtime"
@@ -66,6 +66,18 @@ export interface CallReturnStrategy
     emitReturn(e: Emitter): void
 }
 
+/** Whether a procedure's own body needs `LR` protected before anything can
+ *  clobber it — a nested `CALL` (either strategy below), or `blocks.ts`'s
+ *  own `emitBrTableHelper` (`BR_TABLE N > 2` only), which reads real
+ *  hardware `LR` directly, independently of whichever call/return
+ *  mechanism is in play. Shared by both strategies and by `translateProc`'s
+ *  own `Window` construction (below) — one predicate, not separate copies
+ *  that could drift. */
+function needsLRSave(proc: RtlProc): boolean
+{
+    return proc.body.some(i => i.op === "CALL" || (i.op === "BR_TABLE" && i.imm > 2))
+}
+
 /** Today's default: `CALL` compiles to a plain, whole-program-linked `BL`
  *  (program.ts patches it once every procedure's layout is known) and
  *  `RETURN` to `pop{..,pc}`/`bx lr` — a faithful simplification for a
@@ -73,23 +85,57 @@ export interface CallReturnStrategy
  */
 export function noEvictionStrategy(proc: RtlProc): CallReturnStrategy
 {
-    const savesLR = proc.body.some(i => i.op === "CALL" || (i.op === "BR_TABLE" && i.imm > 2))
+    const savesLR = needsLRSave(proc)
+    // Original arguments that never fit in the window (`Window`'s own
+    // `initialSpilledCount`) sit *below* this procedure's own `push{lr}` —
+    // `pop{pc}` alone only reclaims the `lr` word itself, so a genuinely
+    // deep-args non-leaf procedure needs the return address in a plain
+    // register first, the remainder reclaimed explicitly, then a real
+    // `bx` — the one shape `pop{pc}`'s single instruction can't cover.
+    const initialSpilledCount = Math.max(0, proc.argCount - WINDOW_SIZE)
     return {
         emitPrologue(e) { if(savesLR) e.emit(arm.pushWithLr([])) },
         emitCall(e, calleeIndex) { return { siteOffset: e.placeholderBL(), calleeIndex } },
-        emitReturn(e) { if(savesLR) e.emit(arm.popWithPc([])); else e.emit(arm.bx(LR)) },
+        emitReturn(e)
+        {
+            if(!savesLR) { e.emit(arm.bx(LR)); return }
+            if(initialSpilledCount === 0) { e.emit(arm.popWithPc([])); return }
+            e.emit(arm.pop([SCRATCH_REG]))
+            e.emit(arm.incrSp(4 * initialSpilledCount))
+            e.emit(arm.bx(SCRATCH_REG))
+        },
     }
 }
 
-/** The real runtime ABI (docs/jit-armv6m-dispatch-handoff.html §06):
+/** The real runtime ABI (docs/design.md §9):
  *  every compiled procedure starts with the fixed prologue stub
- *  (runtime.ts), `CALL` pushes `REC(procIdx, K+1)` and tail-jumps into
- *  `callHelper`, `RETURN` tail-jumps into `returnHelper` — no `lr`
- *  involved anywhere, so no `savesLR` concept either. `procIdx` is this
- *  procedure's own index (needed for the record it pushes on every `CALL`).
+ *  (runtime.ts), `CALL` pushes `REC(procIdx, K+1)` into `lr` and
+ *  tail-jumps into `callHelper`, `RETURN` tail-jumps into one of
+ *  `qemu/runtime.S`'s two `returnHelper` variants — `lr` is otherwise dead
+ *  in this ABI (this JIT never emits hardware `BL`/`BLX` in its own
+ *  compiled code), so the record travels there instead of on the stack,
+ *  the standard AAPCS leaf/non-leaf convention. `savesLR` procedures
+ *  (this one, or any of its callees, makes at least one nested `CALL` —
+ *  `needsLRSave` above) additionally `push{lr}` in their own prologue
+ *  before their first nested `CALL` can clobber it, and pick the
+ *  stack-fed `returnHelper` variant instead of the `lr`-fed one — the
+ *  *only* place this ABI's register shuffle is duplicated per procedure at
+ *  all; `callHelper`/`returnHelper` themselves carry it once, in flash
+ *  (`qemu/runtime.S`), not once per call/return site. `procIdx` is this
+ *  procedure's own index (needed for the record on every `CALL`).
  */
-export function abiRealStrategy(procIdx: number): CallReturnStrategy
+export function abiRealStrategy(procIdx: number, proc: RtlProc): CallReturnStrategy
 {
+    const savesLR = needsLRSave(proc)
+    // See noEvictionStrategy's own comment: original out-of-window
+    // arguments sit below this procedure's own push{lr}, so retrieving the
+    // record and reclaiming that remainder can't both happen inside one
+    // shared, parameterless returnHelper variant — emitReturn's third
+    // branch below does both inline, once per procedure that needs it
+    // (rare: non-leaf *and* argCount > WINDOW_SIZE), then tail-jumps into
+    // the bare shared tail instead.
+    const initialSpilledCount = Math.max(0, proc.argCount - WINDOW_SIZE)
+
     function buildCallSequence(calleeIndex: number, k: number): number[]
     {
         const record = runtime.packRecord(procIdx, k + 1)
@@ -99,13 +145,17 @@ export function abiRealStrategy(procIdx: number): CallReturnStrategy
                 ? [arm.movsImm8(ENTRY_OFFSET_REG, calleeIndex)]
                 : arm.synthesizeImm32(ENTRY_OFFSET_REG, calleeIndex)),
             arm.movHi(ENTRY_JUMP_REG, HELPER_VEC_REG),
-            arm.ldr5(ENTRY_JUMP_REG, ENTRY_JUMP_REG, 0), // callHelper, index 0
+            arm.ldr5(ENTRY_JUMP_REG, ENTRY_JUMP_REG, 0), // callHelper, index 0 — its own `mov lr,r1` picks up the record from r1
             arm.bx(ENTRY_JUMP_REG),
         ]
     }
 
     return {
-        emitPrologue(e) { runtime.emitPrologueStub().forEach(w => e.emit(w)) },
+        emitPrologue(e)
+        {
+            runtime.emitPrologueStub().forEach(w => e.emit(w))
+            if(savesLR) e.emit(arm.pushWithLr([]))
+        },
         emitCall(e, calleeIndex)
         {
             // K is a byte offset from the procedure's own body start (past
@@ -115,6 +165,10 @@ export function abiRealStrategy(procIdx: number): CallReturnStrategy
             // (`REC`'s packed immediate). Fixed-point, not two-pass: stable
             // in one or two iterations for any realistic procedure size
             // (validated against real QEMU before this was wired in).
+            // Unaffected by the prologue's own conditional `push{lr}`
+            // above: `e.pc` already reflects it, same as it would any other
+            // emitted instruction — STUB_SIZE only ever measures from right
+            // after the fixed stub, never from after the whole prologue.
             const preCallPc = e.pc
             const k = fixedPoint(guess =>
                 (preCallPc - runtime.STUB_SIZE) + buildCallSequence(calleeIndex, guess).length * 2, 0)
@@ -123,8 +177,30 @@ export function abiRealStrategy(procIdx: number): CallReturnStrategy
         },
         emitReturn(e)
         {
+            // The common cases (leaf, or non-leaf with argCount ≤
+            // WINDOW_SIZE) are the same 3-instruction dispatch tail either
+            // way — only the helper-vector slot differs: index 1
+            // (`returnHelperFromLr`) reads the record straight out of
+            // `lr`; index 2 (`returnHelperFromStack`) `pop`s it, undoing
+            // this procedure's own prologue `push{lr}`. Neither variant's
+            // own fetch step is emitted here — qemu/runtime.S carries it
+            // once, shared, not once per `RETURN`/`TRAP` site.
+            if(savesLR && initialSpilledCount > 0)
+            {
+                // The rare combination: retrieve the record *and* reclaim
+                // the original out-of-window arguments below it — neither
+                // shared variant can do this alone (see this function's own
+                // comment above) — then tail-jump into the bare shared tail
+                // (index 3), which only unpacks/dispatches r1.
+                e.emit(arm.pop([ENTRY_IDX_REG]))
+                e.emit(arm.incrSp(4 * initialSpilledCount))
+                e.emit(arm.movHi(ENTRY_JUMP_REG, HELPER_VEC_REG))
+                e.emit(arm.ldr5(ENTRY_JUMP_REG, ENTRY_JUMP_REG, 12)) // returnHelperTail, index 3
+                e.emit(arm.bx(ENTRY_JUMP_REG))
+                return
+            }
             e.emit(arm.movHi(ENTRY_JUMP_REG, HELPER_VEC_REG))
-            e.emit(arm.ldr5(ENTRY_JUMP_REG, ENTRY_JUMP_REG, 4)) // returnHelper, index 1
+            e.emit(arm.ldr5(ENTRY_JUMP_REG, ENTRY_JUMP_REG, savesLR ? 8 : 4))
             e.emit(arm.bx(ENTRY_JUMP_REG))
         },
     }
@@ -188,7 +264,7 @@ export function translateProc(
 ): TranslatedProc
 {
     const e = new Emitter()
-    const window = new Window(proc.argCount)
+    const window = new Window(proc.argCount, needsLRSave(proc))
     const accState = new AccState()
     const blocks = new BlockStack()
     const callSites: CallSite[] = []
@@ -218,9 +294,9 @@ export function translateProc(
     {
         // Unwind whatever this body spilled — nothing downstream reads
         // r4-r7 again, so there's nothing to reload for (window.ts's
-        // `discardWindow`), only sp to rebalance before the strategy's own
-        // return sequence runs.
-        discardWindow(e, window)
+        // `Window.discardWindow`), only sp to rebalance before the
+        // strategy's own return sequence runs.
+        window.discardWindow(e)
         strategy.emitReturn(e)
     }
 
@@ -361,7 +437,7 @@ export function translateProc(
                 // trade) — always one `LDR`, straight into `acc`.
                 if(!inWindow(window.tos, instr.target))
                 {
-                    e.emit(arm.ldrSp(ACC_REG, spillOffset(window.tos, instr.target)))
+                    e.emit(arm.ldrSp(ACC_REG, window.spillOffset(instr.target)))
                     accState.setClean(ACC_REG)
                     pc++
                     continue
@@ -381,7 +457,7 @@ export function translateProc(
                 if(!inWindow(window.tos, instr.target))
                 {
                     accState.flush(e, ACC_REG)
-                    e.emit(arm.strSp(ACC_REG, spillOffset(window.tos, instr.target)))
+                    e.emit(arm.strSp(ACC_REG, window.spillOffset(instr.target)))
                     pc++
                     continue
                 }
@@ -425,7 +501,7 @@ export function translateProc(
                     if(inWindow(window.tos, instr.target)) operand = { kind: "reg", reg: physReg(instr.target) }
                     else
                     {
-                        e.emit(arm.ldrSp(SCRATCH_REG, spillOffset(window.tos, instr.target)))
+                        e.emit(arm.ldrSp(SCRATCH_REG, window.spillOffset(instr.target)))
                         operand = { kind: "reg", reg: SCRATCH_REG }
                     }
                 }
@@ -453,7 +529,7 @@ export function translateProc(
                 if(instr.combo === "REG_REG")
                 {
                     if(inWindow(window.tos, instr.target)) dest = physReg(instr.target)
-                    else { dest = SCRATCH_REG; storeBackOffset = spillOffset(window.tos, instr.target) }
+                    else { dest = SCRATCH_REG; storeBackOffset = window.spillOffset(instr.target) }
                 }
                 else if(instr.combo === "PEEK_PEEK") dest = window.topReg
                 else

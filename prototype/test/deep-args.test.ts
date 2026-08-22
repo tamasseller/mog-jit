@@ -114,4 +114,55 @@ describe("locals/arguments beyond the 4-register window", () =>
         // 10+20+30+40+50+60+70 = 280
         assert.equal(runOnQemu(code, 0), 280)
     })
+
+    test("non-leaf callee with more stack-passed args than the window can hold, and a nested CALL", () =>
+    {
+        // Same shape as the previous test, but the callee (proc 1) also
+        // makes its own nested CALL, so its own prologue pushes {lr}
+        // before that call can clobber it — landing exactly between the
+        // caller's placed deep args and this procedure's own first read of
+        // one of them. `noEvictionStrategy.emitReturn`'s pop-into-scratch/
+        // incrSp/bx path (translateProc.ts) is what keeps arg0/arg1/arg2
+        // addressable correctly here, instead of `pop{pc}` alone.
+        const program: RtlProgram = {
+            procedures: [
+                {
+                    argCount: 0,
+                    body: [
+                        CONST(10), PUSH(), // arg0
+                        CONST(20), PUSH(), // arg1
+                        CONST(30), PUSH(), // arg2
+                        CONST(40), PUSH(), // arg3
+                        CONST(50), PUSH(), // arg4
+                        CONST(60), PUSH(), // arg5
+                        CONST(70),          // arg6 — last arg, via acc, never pushed
+                        call(1),
+                        bare("RETURN"),
+                    ],
+                },
+                {
+                    // Non-leaf: calls proc 2 first (its own result is
+                    // discarded), *then* reads its own deep args.
+                    argCount: 7,
+                    body: [
+                        CONST(1),
+                        call(2),
+                        LOAD(0),
+                        opReg("ADD", 1), opReg("ADD", 2), opReg("ADD", 3),
+                        opReg("ADD", 4), opReg("ADD", 5), opReg("ADD", 6),
+                        bare("RETURN"),
+                    ],
+                },
+                {
+                    // Leaf — just needs to exist so proc 1 is genuinely
+                    // non-leaf; its own return value is discarded.
+                    argCount: 1,
+                    body: [LOAD(0), bare("RETURN")],
+                },
+            ],
+        }
+        const code = checkedTranslate(program)
+        // 10+20+30+40+50+60+70 = 280 (proc 2's own result is discarded)
+        assert.equal(runOnQemu(code, 0), 280)
+    })
 })

@@ -1,0 +1,44 @@
+OUTPUT = jit-armv6m-compiler-host-tests
+
+# Test code
+SOURCES += test_window.cpp
+SOURCES += test_accstate.cpp
+SOURCES += test_binops.cpp
+SOURCES += test_imm_synth.cpp
+SOURCES += test_abi_strategy.cpp
+SOURCES += test_translate_proc.cpp
+
+# Test support
+SOURCES += main.cpp
+
+# The compiler itself
+SOURCES += ../../src/window.cpp
+SOURCES += ../../src/accstate.cpp
+SOURCES += ../../src/binops.cpp
+SOURCES += ../../src/imm_synth.cpp
+SOURCES += ../../src/shape.cpp
+SOURCES += ../../src/abi_strategy.cpp
+SOURCES += ../../src/translate_proc.cpp
+
+# 1test library
+SOURCES += ../../../vendor/1test/TestRunner.cpp
+SOURCES += ../../../vendor/1test/PrintfOutput.cpp
+
+INCLUDE_DIRS += ../../src
+INCLUDE_DIRS += ../../../src            # jit-armv6m/src/armv6.h
+INCLUDE_DIRS += ../../../vendor/1test
+
+CXXFLAGS += -std=c++17
+CXXFLAGS += -O0                        # avoid the optimizer scrambling coverage data
+CXXFLAGS += -g3
+CXXFLAGS += -fno-inline                # ditto
+CXXFLAGS += -fmax-errors=5
+CXXFLAGS += --coverage
+CXXFLAGS += -fno-exceptions
+CXXFLAGS += -fdelete-null-pointer-checks
+
+LIBS += gcov
+
+LD = $(CXX)
+
+include ../../../vendor/ultimate-makefile/Makefile.ultimate

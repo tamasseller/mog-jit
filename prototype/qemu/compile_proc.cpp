@@ -1,4 +1,4 @@
-/* The mock translator (docs/jit-armv6m-dispatch-handoff.html §09) —
+/* The mock translator (docs/design.md §2) —
  * "compiling" procedure `idx` is a memcpy from its already-ABI-compliant
  * flash blob (test/qemu-run-abi.ts), not real code generation. The space
  * accounting, eviction (global LRU minimum, nothing pinned — §04/§08),

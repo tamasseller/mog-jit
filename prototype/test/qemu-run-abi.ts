@@ -2,7 +2,7 @@
  * @ppl/jit-armv6m-prototype/test — real-ABI QEMU execution harness
  *
  * qemu-run.ts's counterpart for the real dispatch/eviction runtime
- * (docs/jit-armv6m-dispatch-handoff.html), built once in
+ * (docs/design.md), built once in
  * qemu/runtime_host.cpp + qemu/runtime.S rather than regenerated per test.
  * `callHelper`/`returnHelper`/the translator trampoline are all part of
  * that fixed runtime (qemu/runtime.S) — this harness's own generated

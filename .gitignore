@@ -2,3 +2,4 @@
 coverage/
 *.elf
 jit-armv6m-host-tests
+jit-armv6m-compiler-host-tests

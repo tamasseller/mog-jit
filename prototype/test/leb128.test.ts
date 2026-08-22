@@ -5,7 +5,7 @@
  * (@ppl/machine, real bytecode) → translateProc (this package's
  * translator) → real Thumb machine code → real QEMU execution, compared
  * against a plain-JS reference. Deliberately the same algorithm as
- * isa-core.md's own worked example (and docs/jit-armv6m.md's Appendix hand
+ * isa-core.md's own worked example (and docs/design.md's Appendix hand
  * translation of it) — but built through the real DSL/lowerer rather than
  * hand-copying that example's bytecode listing, since (as this session's
  * notes recorded) that listing's `STORE`-without-a-preceding-`PUSH` shape

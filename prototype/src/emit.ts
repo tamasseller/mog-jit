@@ -8,7 +8,7 @@
  * patch; this module just makes that a one-line call instead of hand
  * re-deriving §11's PC-relative-displacement arithmetic at every call site.
  *
- * docs/jit-armv6m.md §16 item 1 flagged whether translation genuinely needs
+ * docs/design.md §16 item 1 flagged whether translation genuinely needs
  * Pass 2 (a separate fixup pass over the whole procedure) as still open.
  * `patchBranch` being usable the instant a block closes — never needing to
  * look at instructions emitted after the site being patched — is the

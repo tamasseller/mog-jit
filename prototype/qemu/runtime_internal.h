@@ -34,7 +34,7 @@ extern const uint32_t g_trampolineAddr;
  * flexible array member — GCC accepts the plain C99 spelling in C++ too,
  * verified empirically rather than assumed — indexed in its own,
  * natural, 0-based terms: `[0]` is the sentinel
- * (docs/jit-armv6m-dispatch-handoff.html §09's info-block idea, made
+ * (docs/design.md §2's info-block idea, made
  * literal here), `[1..procCount]` are the real per-procedure slots. The
  * ABI's own dispatchBase (r8) is `&dispatchTable[1]` — one past the
  * sentinel — so the asm side's 0-based procedure index `i` is always
@@ -150,7 +150,7 @@ public:
     }
 
     /** How many bytes procedure `idx` currently occupies in the arena —
-     *  not a stored field (docs/jit-armv6m-dispatch-handoff.html §03): a
+     *  not a stored field (docs/design.md §9): a
      *  real translator wouldn't have one for an already-compiled *other*
      *  procedure, only for whatever it's generating right now. Found the
      *  same way compaction has to anyway: scan for whichever other

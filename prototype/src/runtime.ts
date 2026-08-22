@@ -1,6 +1,6 @@
 /**
  * @ppl/jit-armv6m-prototype — the per-procedure prologue stub
- * (docs/jit-armv6m-dispatch-handoff.html §06), TS-emitted via armv6.ts
+ * (docs/design.md §9), TS-emitted via armv6.ts
  * like everything else this prototype generates.
  *
  * The dividing line with qemu/runtime.S (`callHelper`/`returnHelper`/the

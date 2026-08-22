@@ -3,7 +3,7 @@
 // tables) rather than re-derived from the same formulas under test.
 //
 // The instruction sequence covered here is exactly the one hand-translated
-// in docs/jit-armv6m.md's Appendix (leb128_len) — a lo-lo register move has
+// in docs/design.md's Appendix (leb128_len) — a lo-lo register move has
 // no dedicated Thumb-1 opcode and is the "LSLS Rd, Rm, #0" idiom, which is
 // why lsls() rather than a nonexistent movs(reg,reg) appears below.
 

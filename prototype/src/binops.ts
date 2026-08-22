@@ -1,5 +1,5 @@
 /**
- * @ppl/jit-armv6m-prototype — per-opcode native codegen (docs/jit-armv6m.md §10.1)
+ * @ppl/jit-armv6m-prototype — per-opcode native codegen (docs/design.md §10.1)
  *
  * Pure instruction selection: given `acc`'s current `Shape`, the combo's
  * own right-hand operand, and a destination register, emit whichever
@@ -177,7 +177,7 @@ export function emitBinaryOp(
     if(kind === "twoOpInPlace")
     {
         if(operand === undefined)
-            throw new Error(`binops: PEEK_PEEK for ${op} (2-op-in-place) is not implemented — register-role assignment for a non-symmetric op genuinely differs from AND/OR/XOR/MUL's, and this corpus never exercises either shape (docs/jit-armv6m.md §10.1)`)
+            throw new Error(`binops: PEEK_PEEK for ${op} (2-op-in-place) is not implemented — register-role assignment for a non-symmetric op genuinely differs from AND/OR/XOR/MUL's, and this corpus never exercises either shape (docs/design.md §10.1)`)
         // §10.1's bottom row: never folds — materialize acc into ACC_REG
         // specifically, unconditionally, even when `accShape` is already
         // some *other* register. That other register can be a window

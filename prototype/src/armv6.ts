@@ -236,7 +236,7 @@ export const bkpt = (code: number) => 0b10111110_00000000 | imm(code, 8)
 export const nop = () => 0b1011_1111_0000_0000
 
 // ── BL — the one 32-bit (Thumb-2-derived) instruction ARMv6-M baseline
-//    keeps, purpose-built for exactly what CALL (docs/jit-armv6m.md §6)
+//    keeps, purpose-built for exactly what CALL (docs/design.md §6)
 //    needs: a PC-relative target plus an automatic `lr` = return-address
 //    save, in one instruction. §9's real design reaches a callee through a
 //    dispatch-table `BLX` instead, since a lazily-compiled/evictable

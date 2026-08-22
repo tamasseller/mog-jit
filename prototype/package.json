@@ -1,7 +1,7 @@
 {
   "name": "@ppl/jit-armv6m-prototype",
   "version": "1.0.0",
-  "description": "Whole-program TS prototype of the ARMv6-M JIT translation algorithm (docs/jit-armv6m.md) — same per-procedure translation logic as the envisioned on-demand JIT, run eagerly over an entire program instead of lazily per-CALL, so the translator itself can be iterated on and run/debugged on QEMU without the arena/eviction/compaction runtime.",
+  "description": "Whole-program TS prototype of the ARMv6-M JIT translation algorithm (docs/design.md) — same per-procedure translation logic as the envisioned on-demand JIT, run eagerly over an entire program instead of lazily per-CALL, so the translator itself can be iterated on and run/debugged on QEMU without the arena/eviction/compaction runtime.",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {

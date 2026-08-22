@@ -9,7 +9,7 @@
  * bytecode interpreter is that this is a genuine test of the generated
  * machine code, not a re-implementation of ARM semantics in JS.
  *
- * ABI (this prototype's own choice, matching docs/jit-armv6m.md §6/§7
+ * ABI (this prototype's own choice, matching docs/design.md §6/§7
  * exactly since nothing here disagrees with it): the argument (if any)
  * arrives in r0 (acc — §3) and the result leaves in r0 too, the same
  * register both ways, matching AAPCS's own argument/return convention.

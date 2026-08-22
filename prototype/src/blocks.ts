@@ -1,5 +1,5 @@
 /**
- * @ppl/jit-armv6m-prototype — block structure (docs/jit-armv6m.md §7.1/§7.2)
+ * @ppl/jit-armv6m-prototype — block structure (docs/design.md §7.1/§7.2)
  *
  * The "stack-like structure simply for parsing to keep track of block
  * structure" — an explicit array, not JS recursion (unlike validate.ts's
@@ -10,7 +10,7 @@
  * `BlockFrame` union in *shape* (case / loopCond / loopBody) — repurposed
  * here for backpatch bookkeeping instead of runtime dispatch.
  *
- * Confirms docs/jit-armv6m.md §16 item 1's open question, for the branch-
+ * Confirms docs/design.md §16 item 1's open question, for the branch-
  * target half of it: every branch this translator emits resolves its
  * target by the time its *own* enclosing `BLOCK_END`/back-edge is reached
  * — a `LOOP` back-edge target is already known the instant `LOOP` opens
@@ -25,7 +25,7 @@
  * against a preceding comparison, branch-fusion style (`openBrTable`). `N >
  * 2` (a genuine multi-way selector, no comparison to fuse against) instead
  * compiles to a shared per-procedure jump-table helper (`openBrTableJump`/
- * `emitBrTableHelper`) — a small validation of docs/jit-armv6m.md §11's own
+ * `emitBrTableHelper`) — a small validation of docs/design.md §11's own
  * "shared reserved routine, amortized over every call site" pattern
  * (there envisioned for `RETURN`'s `dispatch_return` and the `CLZ`/
  * `REVBITS` helpers), just reached by a local `BL` here since this

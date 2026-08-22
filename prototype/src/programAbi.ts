@@ -31,7 +31,7 @@ export function translateProgramAbi(program: RtlProgram): readonly AbiCompiledPr
     const calleeArgCounts = program.procedures.map(p => p.argCount)
     return program.procedures.map((proc, procIdx) =>
     {
-        const { code, callSites } = translateProc(proc, calleeArgCounts, abiRealStrategy(procIdx))
+        const { code, callSites } = translateProc(proc, calleeArgCounts, abiRealStrategy(procIdx, proc))
         if(callSites.length > 0)
             throw new Error(`translateProgramAbi: proc ${procIdx} left unlinked call sites — abiRealStrategy should never produce any`)
         return { code }

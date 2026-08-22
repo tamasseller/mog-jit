@@ -1,5 +1,5 @@
 /**
- * @ppl/jit-armv6m-prototype — the acc fusion state machine (docs/jit-armv6m.md §10.1)
+ * @ppl/jit-armv6m-prototype — the acc fusion state machine (docs/design.md §10.1)
  *
  * `acc`'s status at any point in the forward walk is exactly one of:
  *   - CLEAN(reg)   — already committed to a physical register (usually r0).
@@ -47,7 +47,7 @@ export class AccState
     peek(): Shape
     {
         if(this.state.kind === "poisoned")
-            throw new Error("accstate: read of acc after a write-back-in-place combo clobbered it (docs/jit-armv6m.md §10.1's acc-clobbering convention)")
+            throw new Error("accstate: read of acc after a write-back-in-place combo clobbered it (docs/design.md §10.1's acc-clobbering convention)")
         
         return this.state.kind === "pending" ? this.state.shape : { kind: "reg", reg: this.state.reg }
     }
