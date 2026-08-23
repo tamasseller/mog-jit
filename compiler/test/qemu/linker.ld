@@ -1,18 +1,42 @@
-/* Local copy of jit-armv6m/src/linker.ld with a larger rom region — a
- * real translator plus the real dispatch/eviction runtime, linked
- * together, no longer fits the shared script's 4KB (sized for the old
- * memcpy-only mock). 16KB is still a small fraction of the lm3s811evb's
- * real 64KB flash; ram is unchanged (this test only ever calls the plain
- * enter_program variant, never *_on_stack/_split, so the small-procCount
- * Runtime storage it needs is nowhere near the original 4KB budget).
- * Keep in sync with jit-armv6m/src/linker.ld's own .init_array/.data/.bss
- * handling if that one ever changes. */
+/* Local copy of jit-armv6m/src/linker.ld with larger rom *and* ram regions
+ * — a real translator plus the real dispatch/eviction runtime, linked
+ * together, no longer fits the shared script's 4KB rom (sized for the old
+ * memcpy-only mock), and grew further once this test's own fixture corpus
+ * did (LOOP/BR_TABLE/comparisons/unary ops/eviction/enter_program_on_stack
+ * /_split coverage — a much larger .rodata than the original 7
+ * straight-line-only fixtures). 32KB is still half of the lm3s811evb's
+ * real 64KB flash.
+ *
+ * ram was bumped for a real reason, not just symmetry with rom: the real
+ * translator's own recursive translateBody (one C call frame per open
+ * LOOP/BR_TABLE nesting level, decode_instr.h/binops.h/blocks.h's own
+ * call chains underneath it) needs noticeably more C stack than the old
+ * mock translator's shallow, non-recursive compileProc ever did, and a
+ * run covering all 18 fixtures genuinely walked the live stack pointer
+ * down far enough to collide with .bss (confirmed via `qemu-system-arm
+ * -d exec`: execution ended up jumping into RAM addresses inside
+ * fixtures.cpp's own g_scratch, then straight into the fault vector's
+ * own `hang` spin-loop). Root cause was two-fold: .bss growing with this
+ * test's own larger fixture corpus left less headroom below the stack
+ * to begin with, *and* — the part a bigger ram region alone doesn't fix
+ * — src/vectors.S's own initial sp is `_stack_top`, a linker symbol this
+ * script (like the shared one) now defines as ram's own ORIGIN+LENGTH;
+ * bumping ram here without that symbol tracking it would have left the
+ * stack anchored at the *old*, smaller ram's own top regardless, since
+ * vectors.S never re-derives it from LENGTH(ram) on its own. The
+ * lm3s811evb model actually has 8KB of SRAM — this test's own Makefile
+ * already passes `-m 8k` to QEMU for exactly that reason — so raising
+ * ram to match is the real target's own actual capacity, not a
+ * workaround. Keep in sync with jit-armv6m/src/linker.ld's own
+ * .init_array/.data/.bss/_stack_top handling if that one ever changes. */
 
 MEMORY
 {
-    rom : ORIGIN = 0x00000000, LENGTH = 0x4000
-    ram : ORIGIN = 0x20000000, LENGTH = 0x1000
+    rom : ORIGIN = 0x00000000, LENGTH = 0x8000
+    ram : ORIGIN = 0x20000000, LENGTH = 0x2000
 }
+
+_stack_top = ORIGIN(ram) + LENGTH(ram);
 
 SECTIONS
 {

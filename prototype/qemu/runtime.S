@@ -229,7 +229,10 @@ enter_dispatch:
                                    @ bailOut's own restore point)
     subs  r2, r2, #DISPATCH_SENTINEL_OFFSET @ r2 = &dispatchTable[-1].code_ptr (still dispatchBase
                                    @ from above)
-    ldr   r3, =.Lresume+1
+    ldr   r3, =.Lresume+1          @ the +1 is this file's own hand-written analog of
+                                   @ runtime_internal.h's setCodePtr (design.md §16 item 7) —
+                                   @ .Lresume is a bare local label, not .thumb_func-tagged, so
+                                   @ nothing else supplies the Thumb bit here
     str   r3, [r2, #0]             @ ...gets this function's own landing address
     ldr   r1, =0xffff              @ boot record: proc_idx=-1, tag=0 (LANDING_SUCCESS)
     movs  r2, #0                   @ Q_idx = entry procedure (index 0)

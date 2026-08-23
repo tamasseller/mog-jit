@@ -11,6 +11,14 @@ MEMORY
     ram : ORIGIN = 0x20000000, LENGTH = 0x1000
 }
 
+/* vectors.S's own initial sp — the top of ram, by definition (nothing
+ * else lives above the stack in this memory map). Kept as a linker
+ * symbol rather than a literal baked into vectors.S itself so a build
+ * with a differently-sized ram region (any linker script bumping
+ * LENGTH above) gets the matching stack top automatically, instead of
+ * a stale boundary that silently doesn't grow with it. */
+_stack_top = ORIGIN(ram) + LENGTH(ram);
+
 SECTIONS
 {
     .text : { *(.text*) } > rom

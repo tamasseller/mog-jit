@@ -23,7 +23,7 @@
 .thumb_func
 .global _start
 _start:
-stacktop: .word 0x20001000
+stacktop: .word _stack_top   // linker-script symbol (ram's own ORIGIN+LENGTH) — never a literal here, so a build with a larger/smaller ram region (compiler/test/qemu/linker.ld's own bumped ram, for the real translator's deeper recursive call chain) gets the matching stack top for free, instead of silently keeping the old 4KB-ram boundary regardless of how much ram the linker script actually declares.
 .word reset
 .word hang      // NMI
 .word hang      // HardFault

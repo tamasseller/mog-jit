@@ -356,6 +356,48 @@ struct ArmV6M
 
 	static inline uint16_t b(Ioff<1, 11> imm) { return 0b11100'00000000000 | imm.v; }
 
+	/** `off` is a signed byte offset from this instruction's own address
+	 *  plus 4 (ARMv6-M's own PC-relative convention, same as every other
+	 *  branch here), must be even. Returns the two halfwords in encoding
+	 *  order — S:I1:I2:imm10:imm11, a 24-bit signed word-pair count,
+	 *  ±16 MiB byte range. Adapted from
+	 *  jit-armv6m/prototype/src/armv6.ts's own `bl`/`isBL`/`getBLOffset`. */
+	static inline void bl(int32_t off, uint16_t &hw1, uint16_t &hw2)
+	{
+		assert((off & 1) == 0);						// GCOV_EXCL_LINE
+		int32_t raw = off >> 1;
+		constexpr int32_t lim = 1 << 23;
+		assert(raw >= -lim && raw < lim);				// GCOV_EXCL_LINE
+
+		uint16_t S   = (raw >> 23) & 1;
+		uint16_t I1  = (raw >> 22) & 1;
+		uint16_t I2  = (raw >> 21) & 1;
+		uint16_t imm10 = (raw >> 11) & 0x3ff;
+		uint16_t imm11 = raw & 0x7ff;
+		uint16_t J1 = (~(I1 ^ S)) & 1;
+		uint16_t J2 = (~(I2 ^ S)) & 1;
+
+		hw1 = 0b11110'0'0000000000 | (S << 10) | imm10;
+		hw2 = 0b11'0'1'0'00000000000 | (J1 << 13) | (J2 << 11) | imm11;
+	}
+
+	static inline bool isBL(uint16_t hw1) { return (hw1 >> 11) == 0b11110; }
+
+	static inline int32_t getBLOffset(uint16_t hw1, uint16_t hw2)
+	{
+		assert(isBL(hw1));								// GCOV_EXCL_LINE
+		uint16_t S = (hw1 >> 10) & 1;
+		uint16_t imm10 = hw1 & 0x3ff;
+		uint16_t J1 = (hw2 >> 13) & 1;
+		uint16_t J2 = (hw2 >> 11) & 1;
+		uint16_t imm11 = hw2 & 0x7ff;
+		uint16_t I1 = (~(J1 ^ S)) & 1;
+		uint16_t I2 = (~(J2 ^ S)) & 1;
+		int32_t raw = (S << 23) | (I1 << 22) | (I2 << 21) | (imm10 << 11) | imm11;
+		// Sign-extend the 24-bit field, then re-scale.
+		return ((raw << 8) >> 8) << 1;
+	}
+
 	static inline uint16_t bkpt(Imm<8> imm) { return 0b10111110'00000000 | imm.v; }
 
 	static inline uint16_t cpsie() { return fmtNoArg(NoArgOp::CPSIE); }
@@ -366,8 +408,27 @@ struct ArmV6M
 	static inline uint16_t wfi()   { return fmtNoArg(NoArgOp::WFI); }
 	static inline uint16_t sev()   { return fmtNoArg(NoArgOp::SEV); }
 
+	/** Sign-extend the low `bits` bits of `raw` to a full int32_t — the
+	 *  decode-side counterpart to `Ioff`'s own encode-side bit truncation,
+	 *  needed to recover a branch's real signed byte delta from its
+	 *  already-encoded field (`getCondBranchOffset`/`getBranchOffset`
+	 *  below hand back the *raw* field, unscaled and unsigned). */
+	static inline int32_t signExtend(uint16_t raw, unsigned bits) {
+		int32_t shift = 32 - (int32_t)bits;
+		return (int32_t)((uint32_t)raw << shift) >> shift;
+	}
+
 	static inline bool isCondBranch(uint16_t isn) {
-		return ((isn >> 12) == 0b1101) && (((isn >> 8) & 0b1111) < 0b1101);
+		// Condition::LE (0b1101) is this codebase's own largest valid
+		// condition (inverse()'s own assert has the same ceiling) — cond
+		// fields 0b1110/0b1111 are UDF/SVC, never a real branch condition,
+		// so the exclusion is *those two*, not LE itself. An off-by-one
+		// here (`< 0b1101`, excluding LE too) silently misidentified any
+		// LE-conditioned branch as "not a conditional branch" at all,
+		// routing patchBranch() into the *unconditional* patch path and
+		// asserting there instead — reachable via completely ordinary
+		// bytecode (isCondBranch's own header has the details).
+		return ((isn >> 12) == 0b1101) && (((isn >> 8) & 0b1111) <= 0b1101);
 	}
 
 	static inline bool getCondBranchOffset(uint16_t isn, uint16_t &off)

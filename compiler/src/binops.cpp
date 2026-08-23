@@ -19,7 +19,15 @@ BinOpKind classifyBinOp(Op op, Combo combo) {
 namespace {
 
 /** Rd = n +/- k, materializing k into scratch first when no native
- *  immediate form fits. */
+ *  immediate form fits.
+ *
+ *  n isn't always a register dest is free to leave alone: a caller can
+ *  pass rhs.reg straight through, and when that operand came from an
+ *  out-of-window stack slot (translate_proc.cpp's own ldrSp(SCRATCH_REG,
+ *  ...) reload), n == SCRATCH_REG. Materializing k into SCRATCH_REG right
+ *  after would silently clobber that just-reloaded value before the final
+ *  op ever reads it, computing `k op k` instead of `n op k` — copy n into
+ *  dest first so it survives k's own materialization. */
 void addOrSubWithImm(Emitter &e, bool sub, uint32_t dest, uint32_t n, int32_t k) {
     if(fitsImm3(k)) {
         e.emit(sub ? ArmV6M::subs(R((uint16_t)dest), R((uint16_t)n), ArmV6M::Imm<3>((uint16_t)k))
@@ -31,15 +39,18 @@ void addOrSubWithImm(Emitter &e, bool sub, uint32_t dest, uint32_t n, int32_t k)
                    : ArmV6M::adds(R((uint16_t)dest), ArmV6M::Imm<8>((uint16_t)k)));
         return;
     }
+    if(n == SCRATCH_REG) { materializeShape(e, Shape::ofReg(n), dest); n = dest; }
     materializeShape(e, Shape::ofImm(k), SCRATCH_REG);
     e.emit(sub ? ArmV6M::subs(R((uint16_t)dest), R((uint16_t)n), R((uint16_t)SCRATCH_REG))
                : ArmV6M::adds(R((uint16_t)dest), R((uint16_t)n), R((uint16_t)SCRATCH_REG)));
 }
 
 /** Rd = k - n — immediate minus register, which has no direct native
- *  form: k===0 degenerates to NEG; otherwise materialize k into scratch. */
+ *  form: k===0 degenerates to NEG; otherwise materialize k into scratch.
+ *  Same n == SCRATCH_REG hazard as addOrSubWithImm above, same fix. */
 void emitRsubImmAsLeft(Emitter &e, uint32_t dest, int32_t k, uint32_t n) {
     if(k == 0) { e.emit(ArmV6M::negs(R((uint16_t)dest), R((uint16_t)n))); return; }
+    if(n == SCRATCH_REG) { materializeShape(e, Shape::ofReg(n), dest); n = dest; }
     materializeShape(e, Shape::ofImm(k), SCRATCH_REG);
     e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)SCRATCH_REG), R((uint16_t)n)));
 }
@@ -57,7 +68,20 @@ void emitAddSubRsub(Emitter &e, Op op, uint32_t dest, const Shape &accShape, con
         } else if(!rhs.isImm) {
             addOrSubWithImm(e, false, dest, rhs.reg, accShape.imm);
         } else {
-            addOrSubWithImm(e, false, dest, shapeToReg(e, accShape, SCRATCH_REG), rhs.imm); // both imm — rare/degenerate
+            // both imm — rare/degenerate. Materialize accShape into `dest`
+            // itself, not SCRATCH_REG: addOrSubWithImm's own fallback below
+            // (when k doesn't fit imm3/imm8) materializes k into
+            // SCRATCH_REG too, and dest is guaranteed distinct from
+            // SCRATCH_REG at every call site that can reach this branch
+            // (registers.h's own invariant — SCRATCH_REG is never a
+            // window register, never acc's own home), so this can't alias
+            // the way `shapeToReg(e, accShape, SCRATCH_REG)` used to (that
+            // returned SCRATCH_REG as `n`, which the fallback's own
+            // materialize of `k` into the *same* SCRATCH_REG then silently
+            // clobbered, computing `k op k` instead of `accShape.imm op
+            // k`).
+            materializeShape(e, accShape, dest);
+            addOrSubWithImm(e, false, dest, dest, rhs.imm);
         }
         return;
     }
@@ -69,7 +93,8 @@ void emitAddSubRsub(Emitter &e, Op op, uint32_t dest, const Shape &accShape, con
         } else if(!rhs.isImm) {
             emitRsubImmAsLeft(e, dest, accShape.imm, rhs.reg);
         } else {
-            addOrSubWithImm(e, true, dest, shapeToReg(e, accShape, SCRATCH_REG), rhs.imm); // both imm
+            materializeShape(e, accShape, dest); // both imm — see ADD's own comment above
+            addOrSubWithImm(e, true, dest, dest, rhs.imm);
         }
         return;
     }
@@ -83,8 +108,8 @@ void emitAddSubRsub(Emitter &e, Op op, uint32_t dest, const Shape &accShape, con
     } else if(!accShape.isImm) {
         emitRsubImmAsLeft(e, dest, rhs.imm, accShape.reg);
     } else {
-        uint32_t n = shapeToReg(e, accShape, SCRATCH_REG);
-        emitRsubImmAsLeft(e, dest, rhs.imm, n); // both imm
+        materializeShape(e, accShape, dest); // both imm — see ADD's own comment above
+        emitRsubImmAsLeft(e, dest, rhs.imm, dest);
     }
 }
 
@@ -116,14 +141,19 @@ void emitBinaryOp(
     BinOpKind kind = classifyBinOp(op, combo);
 
     if(kind == BinOpKind::TwoOpInPlace) {
-        assert(operand != nullptr); // GCOV_EXCL_LINE — PEEK_PEEK here not implemented, binops.ts's own gap
+        // operand == nullptr means PEEK_PEEK — its own right-hand operand
+        // is dest itself (§16 item 11), the same idiom emitAddSubRsub
+        // already relies on above: dest is safe to read as Rm since the
+        // native 2-op-in-place form reads Rm before overwriting Rdn, and
+        // Rdn here is always ACC_REG, never dest.
+        Shape rhs = operand ? *operand : Shape::ofReg(dest);
         // Never folds — materialize acc into ACC_REG specifically,
         // unconditionally, even when accShape is already some other
         // register: the native 2-op-in-place form's Rdn slot is both read
         // and written, and that other register can be a live variable's
         // own home.
         materializeShape(e, accShape, ACC_REG);
-        uint32_t m = shapeToReg(e, *operand, SCRATCH_REG);
+        uint32_t m = shapeToReg(e, rhs, SCRATCH_REG);
         e.emit(twoOpInPlaceNative(op, ACC_REG, m));
         if(dest != ACC_REG) e.emit(ArmV6M::mov(ArmV6M::AnyReg((uint16_t)dest), ArmV6M::AnyReg((uint16_t)ACC_REG)));
         return;

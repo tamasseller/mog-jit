@@ -1,10 +1,11 @@
 /**
  * @ppl/jit-armv6m-prototype/test — §10.1's rotation-eviction hazard
  *
- * docs/design.md §16 item 6 flagged this as "reasoned, not implemented
- * or tested" — window.ts's `pushValue` used to *throw* rather than handle
- * it, and nothing in the existing corpus exercised that path at all. Once
- * actually built, the hazard turns out not to need a rescue instruction:
+ * Used to be flagged as "reasoned, not implemented or tested" —
+ * window.ts's `pushValue` used to *throw* rather than handle it, and
+ * nothing in the existing corpus exercised that path at all. This file
+ * (plus window.ts's own `pushValue`) is what closed it: the hazard turns
+ * out not to need a rescue instruction:
  * `accState` can only depend on `physReg(evictedByPush)` — the exact
  * register a `PUSH` is about to evict — by directly referencing that same
  * slot, which makes the value about to be pushed and the value about to be

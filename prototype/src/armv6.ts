@@ -321,7 +321,15 @@ export function fitsImm3(v: number): boolean { return Number.isInteger(v) && v >
 // ── Fixup introspection — read/patch an already-emitted instruction's
 //    displacement in place, for the backpatch scheme in emit.ts/blocks.ts ──
 
-export function isCondBranch(isn: number): boolean { return (isn >> 12) === 0b1101 && ((isn >> 8) & 0b1111) < 0b1101 }
+// Condition.LE (0b1101) is this codebase's own largest valid condition
+// (inverse()'s own assert has the same ceiling) — cond fields 0b1110/
+// 0b1111 are UDF/SVC, never a real branch condition, so the exclusion is
+// *those two*, not LE itself. An off-by-one here (`< 0b1101`, excluding
+// LE too) silently misidentified any LE-conditioned branch — reachable
+// via something as ordinary as `if (x <= 5) { ... }`, or any loop whose
+// exit condition is GT's own inverse — as "not a conditional branch" at
+// all, routing the backpatcher into the *unconditional* patch path.
+export function isCondBranch(isn: number): boolean { return (isn >> 12) === 0b1101 && ((isn >> 8) & 0b1111) <= 0b1101 }
 export function getCondBranchOffset(isn: number): number
 {
     assert.ok(isCondBranch(isn), `not a conditional branch: 0x${isn.toString(16)}`)

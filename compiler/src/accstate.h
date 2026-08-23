@@ -4,8 +4,6 @@
 // a translator-logic bug, never a legitimate runtime condition, so this is
 // a faithful port of intent even though the mechanism differs.
 //
-// flushLive (merge-safe flush, block-merge only) is NOT ported — no
-// blocks this slice.
 #ifndef JIT_ARMV6M_COMPILER_ACCSTATE_H_
 #define JIT_ARMV6M_COMPILER_ACCSTATE_H_
 
@@ -28,6 +26,13 @@ public:
 
     /** Force materialization into dstReg (the "flush" transition). */
     void flush(Emitter &e, uint32_t dstReg);
+
+    /** flush(), but safe at a control-flow *merge* point (blocks.h's
+     *  closeBlockEnd/closeCaseViaTerminator/closeLoopBodyViaTerminator) —
+     *  Poisoned isn't an error here, it's a no-op, since the acc-clobbering
+     *  convention already forbids anything downstream from reading it
+     *  regardless of which path arrived. */
+    void flushLive(Emitter &e, uint32_t dstReg) { if(kind_ != Kind::Poisoned) flush(e, dstReg); }
 
     void setClean(uint32_t reg) { kind_ = Kind::Clean; reg_ = reg; }
 

@@ -4,10 +4,11 @@
 // aggregate-initializable struct (not a tagged union) so a fixture literal
 // reads almost identically to its rtl.ts source.
 //
-// BLOCK_END/LOOP/BR_TABLE, NEG/NOT/CLZ/REVBITS, EXT, and every comparison
-// opcode are deliberately absent from Op — this slice's scope boundary is
-// a compile-time absence, not a runtime "not implemented" throw the way
-// translateProc.ts's own gaps are.
+// EXT is still absent from Op — a compile-time absence, not a runtime
+// "not implemented" throw the way translateProc.ts's own EXT gap is:
+// nothing in this JIT's own scope (isa-core.md §11) ever needs it, and
+// decode_instr.h throws on an extension opcode byte the same way
+// bytecodeReader.ts's own decodeInstr does.
 #ifndef JIT_ARMV6M_COMPILER_INSTR_H_
 #define JIT_ARMV6M_COMPILER_INSTR_H_
 
@@ -20,6 +21,14 @@ enum class Op : uint8_t {
     RETURN, TRAP,
     CALL,
     ADD, SUB, RSUB, MUL, AND, OR, XOR, SHL, SHR, ASR,
+    // Comparisons (isa-core.md §4.2) — same Combo dimension as arithmetic,
+    // minus REG_REG/PEEK_PEEK (isa-core.md §4.2's own table has no
+    // write-back-in-place form for a comparison).
+    EQ, NE, LT_S, LE_S, GT_S, GE_S, LT_U, LE_U, GT_U, GE_U,
+    // Unary (isa-core.md §4.3) — no Combo of their own, always Combo::NONE.
+    NEG, NOT, CLZ, REVBITS,
+    // Local flow control (isa-core.md §7.1/§7.2).
+    BLOCK_END, LOOP, BR_TABLE,
 };
 
 enum class Combo : uint8_t { NONE, REG_ACC, REG_REG, IMM_ACC, PEEK_PEEK, POP_ACC };
@@ -27,7 +36,7 @@ enum class Combo : uint8_t { NONE, REG_ACC, REG_REG, IMM_ACC, PEEK_PEEK, POP_ACC
 struct Instr {
     Op op;
     Combo combo = Combo::NONE;
-    int32_t imm = 0;         // CONST's value / IMM_ACC operand / TRAP's code
+    int32_t imm = 0;         // CONST's value / IMM_ACC operand / TRAP's code / BR_TABLE's N
     uint32_t target = 0;      // LOAD/STORE/REG_ACC/REG_REG's slot index k
     uint32_t calleeIndex = 0; // CALL only
 };
@@ -46,6 +55,13 @@ constexpr Instr opReg(Op op, uint32_t target) { return Instr{op, Combo::REG_ACC,
 constexpr Instr opRegWriteback(Op op, uint32_t target) { return Instr{op, Combo::REG_REG, 0, target, 0}; }
 constexpr Instr opImm(Op op, int32_t v) { return Instr{op, Combo::IMM_ACC, v, 0, 0}; }
 constexpr Instr opStack(Op op, Combo combo) { return Instr{op, combo, 0, 0, 0}; }
+constexpr Instr brTable(uint32_t n) { return Instr{Op::BR_TABLE, Combo::NONE, (int32_t)n, 0, 0}; }
+
+/** Whether op is one of the ten comparison opcodes — isComparisonOp's own
+ *  native twin (blocks.h needs this both to decide fusion-vs-materialize
+ *  and, here, to keep decode_instr.h/encode_instr.h's own op-index tables
+ *  honest about the EQ..GE_U range being contiguous). */
+constexpr bool isComparisonOp(Op op) { return op >= Op::EQ && op <= Op::GE_U; }
 
 } // namespace jitc
 

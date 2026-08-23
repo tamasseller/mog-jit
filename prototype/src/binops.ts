@@ -11,17 +11,14 @@
  * below), full stop — it doesn't know or care *why* a Shape arrived in
  * whichever state it's in, which is accstate.ts's entire job instead.
  *
- * Scope: only the opcodes/combos the current test corpus (leb128_len +
- * the four core-testsuite algorithms) actually needs — ADD (commutative3),
- * SUB/RSUB (order-sensitive, mirror-in-spirit), SHL/SHR/ASR with an
- * immediate shift count (shiftImm), and AND/OR/XOR/MUL plus any shift with
- * a *register* count (twoOpInPlace, §10.1's bottom row — Thumb-1's
- * 2-operand encoding always reads the destination as an input too, so a
- * pending value must be materialized before one of these without
- * exception). `PEEK_PEEK` for a twoOpInPlace op is not implemented — the
- * register-role assignment for a non-symmetric op (shift) genuinely
- * differs from a symmetric one (AND/OR/XOR/MUL) there, and this corpus
- * never exercises either shape.
+ * Covers ADD (commutative3), SUB/RSUB (order-sensitive, mirror-in-spirit),
+ * SHL/SHR/ASR with an immediate shift count (shiftImm), and AND/OR/XOR/MUL
+ * plus any shift with a *register* count (twoOpInPlace, §10.1's bottom
+ * row — Thumb-1's 2-operand encoding always reads the destination as an
+ * input too, so a pending value must be materialized before one of these
+ * without exception) — including `PEEK_PEEK` (docs/design.md §16 item 11:
+ * `dest` itself as the right-hand operand, same idiom `emitAddSubRsub`
+ * already uses).
  */
 
 import { Emitter } from "./emit"
@@ -45,11 +42,20 @@ function classify(op: BinaryOpcode, combo: ComboName): BinOpKind
  *  register form. Never fails to produce *something* correct — just not
  *  always the shortest encoding: §10.1's own "no match → flush" fallback,
  *  scoped to add/sub's operand-width limits rather than a whole missing
- *  native form. */
+ *  native form.
+ *
+ *  `n` isn't always a register `dest` is free to leave alone: a caller can
+ *  pass `rhs.reg` straight through, and when that operand came from an
+ *  out-of-window stack slot (translateProc.ts's own `ldrSp(SCRATCH_REG,
+ *  ...)` reload), `n === SCRATCH_REG`. Materializing `k` into SCRATCH_REG
+ *  right after would silently clobber that just-reloaded value before the
+ *  final op ever reads it, computing `k op k` instead of `n op k` — copy
+ *  `n` into `dest` first so it survives k's own materialization. */
 function addOrSubWithImm(e: Emitter, sub: boolean, dest: number, n: number, k: number): void
 {
     if(arm.fitsImm3(k)) { e.emit(sub ? arm.subsImm3(dest, n, k) : arm.addsImm3(dest, n, k)); return }
     if(arm.fitsImm8(k) && dest === n) { e.emit(sub ? arm.subsImm8(dest, k) : arm.addsImm8(dest, k)); return }
+    if(n === SCRATCH_REG) { materializeShape(e, { kind: "reg", reg: n }, dest); n = dest }
     materializeShape(e, { kind: "imm", value: k }, SCRATCH_REG)
     e.emit(sub ? arm.subsReg3(dest, n, SCRATCH_REG) : arm.addsReg3(dest, n, SCRATCH_REG))
 }
@@ -58,10 +64,12 @@ function addOrSubWithImm(e: Emitter, sub: boolean, dest: number, n: number, k: n
  *  form (§10.1's own note: "SUB ... has no matching form ... must flush
  *  unless k happens to be 0") — `k===0` degenerates to `NEG`; otherwise
  *  materialize `k` into scratch and use the plain register-minus-register
- *  form. */
+ *  form. Same `n === SCRATCH_REG` hazard as `addOrSubWithImm` above, same
+ *  fix. */
 function emitRsubImmAsLeft(e: Emitter, dest: number, k: number, n: number): void
 {
     if(k === 0) { e.emit(arm.negs(dest, n)); return }
+    if(n === SCRATCH_REG) { materializeShape(e, { kind: "reg", reg: n }, dest); n = dest }
     materializeShape(e, { kind: "imm", value: k }, SCRATCH_REG)
     e.emit(arm.subsReg3(dest, SCRATCH_REG, n))
 }
@@ -88,7 +96,20 @@ function emitAddSubRsub(e: Emitter, op: "ADD" | "SUB" | "RSUB", dest: number, ac
         }
         else
         {
-            addOrSubWithImm(e, false, dest, shapeToReg(e, accShape, SCRATCH_REG), rhs.value) // both imm — rare/degenerate
+            // both imm — rare/degenerate. Materialize accShape into `dest`
+            // itself, not SCRATCH_REG: addOrSubWithImm's own fallback below
+            // (when k doesn't fit imm3/imm8) materializes k into
+            // SCRATCH_REG too, and dest is guaranteed distinct from
+            // SCRATCH_REG at every call site that can reach this branch
+            // (registers.ts's own invariant — SCRATCH_REG is "never a
+            // window register, never acc's own home"), so this can't alias
+            // the way `shapeToReg(e, accShape, SCRATCH_REG)` used to (that
+            // returned SCRATCH_REG as `n`, which the fallback's own
+            // materialize of `k` into the *same* SCRATCH_REG then silently
+            // clobbered, computing `k op k` instead of `accShape.value op
+            // k`).
+            materializeShape(e, accShape, dest)
+            addOrSubWithImm(e, false, dest, dest, rhs.value)
         }
         return
     }
@@ -106,7 +127,8 @@ function emitAddSubRsub(e: Emitter, op: "ADD" | "SUB" | "RSUB", dest: number, ac
         }
         else
         {
-            addOrSubWithImm(e, true, dest, shapeToReg(e, accShape, SCRATCH_REG), rhs.value) // both imm
+            materializeShape(e, accShape, dest) // both imm — see ADD's own comment above
+            addOrSubWithImm(e, true, dest, dest, rhs.value)
         }
         return
     }
@@ -126,8 +148,8 @@ function emitAddSubRsub(e: Emitter, op: "ADD" | "SUB" | "RSUB", dest: number, ac
     }
     else
     {
-        const n = shapeToReg(e, accShape, SCRATCH_REG)
-        emitRsubImmAsLeft(e, dest, rhs.value, n) // both imm
+        materializeShape(e, accShape, dest) // both imm — see ADD's own comment above
+        emitRsubImmAsLeft(e, dest, rhs.value, dest)
     }
 }
 
@@ -176,8 +198,6 @@ export function emitBinaryOp(
 
     if(kind === "twoOpInPlace")
     {
-        if(operand === undefined)
-            throw new Error(`binops: PEEK_PEEK for ${op} (2-op-in-place) is not implemented — register-role assignment for a non-symmetric op genuinely differs from AND/OR/XOR/MUL's, and this corpus never exercises either shape (docs/design.md §10.1)`)
         // §10.1's bottom row: never folds — materialize acc into ACC_REG
         // specifically, unconditionally, even when `accShape` is already
         // some *other* register. That other register can be a window
@@ -189,8 +209,18 @@ export function emitBinaryOp(
         // variable for good the moment `dest` is anything else. `m`
         // (`Rm`, read-only in this form) has no such hazard, so it alone
         // is safe to leave wherever it already is.
+        //
+        // `operand === undefined` means PEEK_PEEK — its right-hand side
+        // is `dest` itself (`[tos-1] = acc ⟨op⟩ [tos-1]`), same idiom
+        // `emitAddSubRsub` already established: `dest` (always a window
+        // register here, never `ACC_REG`/`SCRATCH_REG`) is safe to read
+        // as `m` since native 2-op-in-place forms read `Rm` before
+        // overwriting `Rdn` — and `Rdn` is `ACC_REG`, not `dest`, so
+        // `dest` isn't clobbered until the explicit `movHi` below (docs/
+        // design.md §16 item 11).
+        const rhs: Shape = operand ?? { kind: "reg", reg: dest }
         materializeShape(e, accShape, ACC_REG)
-        const m = shapeToReg(e, operand, SCRATCH_REG)
+        const m = shapeToReg(e, rhs, SCRATCH_REG)
         e.emit(twoOpInPlaceNative(op, ACC_REG, m))
         if(dest !== ACC_REG) e.emit(arm.movHi(dest, ACC_REG))
         return

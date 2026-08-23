@@ -59,6 +59,6 @@ static void write_hex_tagged(const char *prefix, uint32_t v)
 extern "C" void write_hex_result(uint32_t v) { write_hex_tagged("RESULT:", v); }
 
 /** Prints "TRAP:xxxxxxxx\n" — test/qemu-run-abi.ts's own counterpart (the
- *  real-ABI harness's landing convention, docs/jit-armv6m-dispatch-handoff.
- *  html §09) parses this tag out for the RESOURCE_ERROR/trap path. */
+ *  real-ABI harness's landing convention, jit-armv6m/docs/design.md §12)
+ *  parses this tag out for the RESOURCE_ERROR/trap path. */
 extern "C" void write_hex_trap(uint32_t v) { write_hex_tagged("TRAP:", v); }

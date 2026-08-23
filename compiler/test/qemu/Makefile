@@ -22,9 +22,14 @@ SOURCES += ../../src/binops.cpp
 SOURCES += ../../src/imm_synth.cpp
 SOURCES += ../../src/shape.cpp
 SOURCES += ../../src/abi_strategy.cpp
+SOURCES += ../../src/decode_instr.cpp
+SOURCES += ../../src/blocks.cpp
+SOURCES += ../../src/unaryops.cpp
 SOURCES += ../../src/translate_proc.cpp
 
-# Test code
+# Test code (encode_instr.cpp is test-only here — the real compiler only
+# ever decodes, fixtures.cpp is what needs to produce wire bytes)
+SOURCES += ../../src/encode_instr.cpp
 SOURCES += fixtures.cpp
 SOURCES += main.cpp
 

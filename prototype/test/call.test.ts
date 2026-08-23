@@ -1,11 +1,12 @@
 /**
  * @ppl/jit-armv6m-prototype/test — CALL, §6's own shuffle
  *
- * docs/design.md §16 item 1 flags §6's shuffle as this design's single
- * least-proven piece; item 5 asks for a worked example that actually calls
- * another procedure and pushes past the 4-register window, since
- * leb128_len/the core-testsuite algorithms (this package's only corpus
- * before this file) never do. Hand-built via @ppl/machine's own rtl.ts
+ * §6's shuffle was this design's own least-proven piece before this file
+ * (and abi-dispatch.test.ts/eviction.test.ts after it) verified it end to
+ * end on real QEMU — a worked example that actually calls another
+ * procedure and pushes past the 4-register window, since leb128_len/the
+ * core-testsuite algorithms (this package's only corpus before this file)
+ * never do. Hand-built via @ppl/machine's own rtl.ts
  * constructors rather than the `ir` DSL — this needs *exact* control over
  * how many values are resident and at what phase when `CALL` fires, which
  * the DSL's own lowering choices would obscure.

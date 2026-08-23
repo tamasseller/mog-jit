@@ -7,9 +7,13 @@ SOURCES += test_binops.cpp
 SOURCES += test_imm_synth.cpp
 SOURCES += test_abi_strategy.cpp
 SOURCES += test_translate_proc.cpp
+SOURCES += test_decode_encode.cpp
+SOURCES += test_blocks.cpp
+SOURCES += test_unaryops.cpp
 
 # Test support
 SOURCES += main.cpp
+SOURCES += ../../src/encode_instr.cpp
 
 # The compiler itself
 SOURCES += ../../src/window.cpp
@@ -18,6 +22,9 @@ SOURCES += ../../src/binops.cpp
 SOURCES += ../../src/imm_synth.cpp
 SOURCES += ../../src/shape.cpp
 SOURCES += ../../src/abi_strategy.cpp
+SOURCES += ../../src/decode_instr.cpp
+SOURCES += ../../src/blocks.cpp
+SOURCES += ../../src/unaryops.cpp
 SOURCES += ../../src/translate_proc.cpp
 
 # 1test library

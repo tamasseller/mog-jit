@@ -20,10 +20,8 @@ BinOpKind classifyBinOp(Op op, Combo combo);
 
 /** Emit one arithmetic binary op. accShape is acc's current value;
  *  operand is combo's own right-hand side (nullptr means PEEK_PEEK,
- *  operand is dest itself); dest says where the result must end up.
- *  PEEK_PEEK for a TwoOpInPlace op (AND/OR/XOR/MUL, or any shift with a
- *  register count) is deliberately unimplemented (asserts) — binops.ts's
- *  own gap, this corpus never exercises either shape. */
+ *  operand is dest itself — §16 item 11); dest says where the result
+ *  must end up. */
 void emitBinaryOp(
     Emitter &e, Op op, Combo combo,
     const Shape &accShape, const Shape *operand, uint32_t dest);

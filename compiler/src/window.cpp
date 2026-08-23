@@ -125,6 +125,17 @@ void fillCalleeArgs(Emitter &e, uint32_t stackArgs) {
     popRuns(e, stackArgs - m, m);
 }
 
+void restoreWindow(Emitter &e, Window &window, uint32_t targetTos) {
+    uint32_t spilledNow = spilledCount(window.tos);
+    uint32_t spilledTarget = spilledCount(targetTos);
+    uint32_t reloadTop = std::min(spilledNow, targetTos);
+
+    if(spilledNow > reloadTop) e.emit(ArmV6M::incrSp(ArmV6M::Uoff<2, 7>((uint16_t)(4 * (spilledNow - reloadTop)))));
+    popRuns(e, spilledTarget, reloadTop - spilledTarget);
+
+    window.tos = targetTos;
+}
+
 void reloadAfterCall(Emitter &e, Window &window, uint32_t targetTos) {
     uint32_t w = std::min(window.tos, WINDOW_SIZE);
     uint32_t bottom = window.tos - w;

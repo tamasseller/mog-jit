@@ -62,6 +62,29 @@ public:
     uint32_t procCount;
     DispatchEntry dispatchTable[];
 
+private:
+    /** Every dispatch-table `code_ptr` *write* goes through one of these
+     *  two (design.md §16 item 7) — `BX`/`BLX` require bit 0 set to stay
+     *  in Thumb mode on ARMv6-M; a value computed from raw arena
+     *  arithmetic (`markCompiled`'s `dest`, `evict`'s slide) carries no
+     *  such bit on its own, unlike a `.thumb_func`-tagged link-time symbol
+     *  (`g_trampolineAddr`, already odd — runtime_host.cpp's own comment).
+     *  Unconditionally OR-ing it in here, rather than at each call site
+     *  reasoning case by case about which category a given value belongs
+     *  to, makes every write safe by construction: idempotent on an
+     *  already-tagged value, correct on a raw one, no third case to get
+     *  wrong — and no future write site can simply forget to ask the
+     *  question at all. */
+    static void setCodePtr(DispatchEntry &e, uint32_t addr) { e.code_ptr = addr | 1u; }
+    /** Slide an already-tagged `code_ptr` down by `delta` bytes
+     *  (compaction, `evict`'s own survivor loop) — `delta` is always an
+     *  even byte count, so the Thumb bit survives the subtraction
+     *  unchanged in practice, but re-asserting it here costs nothing and
+     *  means this call site isn't the one place trusting that invariant
+     *  by hand either. */
+    static void slideCodePtr(DispatchEntry &e, uint32_t delta) { e.code_ptr = (e.code_ptr - delta) | 1u; }
+
+public:
     /** Bytes of storage one `Runtime` needs for `procCount` procedures —
      *  the fixed header plus one dispatch entry per procedure, plus the
      *  sentinel (index 0). Every caller sizes its own buffer with this
@@ -86,7 +109,7 @@ public:
         procCount = procCount_;
         for(uint32_t i = 0; i < procCount; i++)
         {
-            dispatchTable[i + 1].code_ptr = g_trampolineAddr;
+            setCodePtr(dispatchTable[i + 1], g_trampolineAddr);
             dispatchTable[i + 1].last_used = 0;
         }
     }
@@ -123,7 +146,7 @@ public:
     void markCompiled(uint32_t idx, uint32_t dest)
     {
         DispatchEntry &e = slot(idx);
-        e.code_ptr = dest | 1u;
+        setCodePtr(e, dest);
         e.last_used = 0; /* the freshly-copied prologue stub bumps this on entry */
     }
 
@@ -186,14 +209,14 @@ public:
         arenaCursor -= victimSize;
 
         DispatchEntry &ve = slot(idx);
-        ve.code_ptr = g_trampolineAddr;
+        setCodePtr(ve, g_trampolineAddr);
         ve.last_used = 0;
 
         for(uint32_t i = 0; i < procCount; i++)
         {
             DispatchEntry &e = slot(i);
             if(e.code_ptr != g_trampolineAddr && (e.code_ptr & ~1u) >= gapEnd)
-                e.code_ptr -= victimSize;
+                slideCodePtr(e, victimSize);
         }
     }
 };

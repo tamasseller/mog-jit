@@ -56,6 +56,33 @@ TEST(UnconditionalBranchZeroOffset)
     CHECK(ArmV6M::b(ArmV6M::Ioff<1, 11>(0)) == 0xE000);
 }
 
+TEST(GetBranchOffsetRejectsANonBranchInstruction)
+{
+    // getBranchOffset's own bool return is a real, load-bearing contract
+    // (emitter.h's readBranchTarget branches on it) — every existing
+    // caller in this codebase happens to only ever feed it a halfword it
+    // already knows is a branch, so the false path had no test of its
+    // own until now.
+    uint16_t rawOff;
+    CHECK(!ArmV6M::getBranchOffset(ArmV6M::movs(R(3), ArmV6M::Imm<8>(1)), rawOff));
+}
+
+TEST(IsCondBranchAcceptsLeCondition)
+{
+    // Regression: isCondBranch checked `cond < 0b1101`, excluding
+    // Condition::LE (0b1101) itself — this codebase's own largest valid
+    // condition (inverse()'s own assert has the same ceiling). Every
+    // caller that treats a rejected halfword as "must be unconditional"
+    // (Emitter::patchBranch) then mis-patches an LE-conditioned branch
+    // and asserts — reachable via something as ordinary as `if (x <= 5)`
+    // or a `while (x > 0)` loop's own exit condition (GT's inverse is
+    // LE). Confirmed via a throwaway repro before the fix: both shapes
+    // crashed translateProc() outright; test_translate_proc.cpp's own
+    // ComparisonFusesIntoBrTableGuard-adjacent QEMU fixture (fixtures.cpp
+    // #21) exercises the full pipeline on real hardware.
+    CHECK(ArmV6M::isCondBranch(ArmV6M::condBranch(ArmV6M::Condition::LE, ArmV6M::Ioff<1, 8>(0))));
+}
+
 TEST(BranchExchangeR0)
 {
     // BX r0

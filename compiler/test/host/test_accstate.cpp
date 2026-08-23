@@ -46,6 +46,22 @@ TEST(FlushOfAlreadyCleanSameRegisterIsANoOp)
     CHECK(e.halfwordCount() == 0);
 }
 
+TEST(FlushLiveOnPoisonedAccIsANoOp)
+{
+    // The one legitimate use of a control-flow-merge point (blocks.h's
+    // closeBlockEnd/closeCaseViaTerminator) where acc is poisoned: a
+    // case/loop body whose last instruction clobbered acc (a REG_REG or
+    // PEEK_PEEK op) with nothing after to re-establish it before the
+    // block closes. Poisoned isn't an error for flushLive specifically —
+    // there's nothing downstream that could read it either way.
+    uint16_t buf[4];
+    Emitter e(buf, 4);
+    AccState acc;
+    acc.poison();
+    acc.flushLive(e, ACC_REG);
+    CHECK(e.halfwordCount() == 0);
+}
+
 TEST(SetCleanThenPoisonThenProducerSupersedes)
 {
     AccState acc;

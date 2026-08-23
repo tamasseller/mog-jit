@@ -14,9 +14,10 @@
  * unmodified, standing in for real compilation (see its own header).
  */
 
-import { validateProgram } from "@ppl/machine"
+import { validateProgram, encodeProgram } from "@ppl/machine"
 import type { RtlProgram } from "@ppl/machine"
 import { translateProc, abiRealStrategy } from "./translateProc"
+import { buildProcDirectory } from "./procDirectory"
 
 export interface AbiCompiledProc
 {
@@ -29,9 +30,12 @@ export function translateProgramAbi(program: RtlProgram): readonly AbiCompiledPr
 {
     validateProgram(program) // isa-core.md §8 — fail fast, same discipline as program.ts
     const calleeArgCounts = program.procedures.map(p => p.argCount)
+    // §16 item 15's wiring — program.ts's own comment has the full reasoning.
+    const directory = buildProcDirectory(encodeProgram(program))
     return program.procedures.map((proc, procIdx) =>
     {
-        const { code, callSites } = translateProc(proc, calleeArgCounts, abiRealStrategy(procIdx, proc))
+        const savesLR = directory[procIdx]!.savesLR
+        const { code, callSites } = translateProc(proc, calleeArgCounts, abiRealStrategy(procIdx, proc, savesLR), savesLR)
         if(callSites.length > 0)
             throw new Error(`translateProgramAbi: proc ${procIdx} left unlinked call sites — abiRealStrategy should never produce any`)
         return { code }

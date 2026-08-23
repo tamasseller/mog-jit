@@ -7,8 +7,7 @@
  * prologue stub's PC-relative resume arithmetic, the control-stack push/
  * pop, the `enter_program` bootstrap record, the shared landing
  * convention) from compaction's own failure modes, before eviction.test.ts
- * adds those on top. Reuses call.test.ts's own two programs (§6's shuffle,
- * still this design's least-proven piece per docs/design.md §16 item 1)
+ * adds those on top. Reuses call.test.ts's own two programs (§6's shuffle)
  * translated through the real ABI instead of the no-eviction default, plus
  * a 3-deep call chain neither existing suite exercises.
  */

@@ -267,7 +267,7 @@ export class Window
      * §10.1's "rotation eviction" hazard — a fused value living only in a
      * window register getting silently destroyed by the very rotation
      * this function performs — turns out not to need a rescue instruction
-     * here, once actually worked through (docs/design.md §16 item 6):
+     * here, once actually worked through (rotation.test.ts is what closed it):
      * `physReg(evictedByPush) === physReg(this.tos)` always (both reduce to
      * the same `k mod WINDOW_SIZE`), so *if* `accState` currently depends
      * on exactly that register, the value about to be pushed and the value

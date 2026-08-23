@@ -240,7 +240,7 @@ in terms of a procedure's own frame-relative `rN`/`tos` as the bytecode
 already expresses them, with nothing global layered on top.
 
 That is sound because of §6's canonical-phase invariant: every frame base
-is forced to phase 0 (`k=0 → r4`) regardless of the caller's own
+is forced to phase 0 (`k=0 → r7`) regardless of the caller's own
 frame-relative `tos` at the call site. A procedure's translation therefore
 only ever reasons about its own frame-relative depth, never the call chain's
 accumulated depth, which is what makes it context-free: nothing crosses a
@@ -307,7 +307,7 @@ isa-core.md §6: the callee's frame base is the caller's TOS at the call;
 args `0..K-1` on the stack, arg `N-1` (if any) in `acc`.
 
 **Canonical-phase invariant.** Every procedure's native code is translated
-assuming its own frame base lands at phase 0 (`k=0 → r4`), independent of
+assuming its own frame base lands at phase 0 (`k=0 → r7`), independent of
 the caller's absolute `tos` at the call site, which varies per site and per
 invocation. Two things depend on it: the same compiled procedure is called
 from differently-phased sites, and return must be re-enterable after the
@@ -326,13 +326,16 @@ locals still resident alongside them. Any of the `S` args below the window's
 bottom edge are already spilled at their correct address and never move.
 
 A single `PUSH {r4-r7}` cannot implement this. Hardware `PUSH`/`POP` store
-and load in fixed *ascending-register-number* order, which coincides with
-ascending-`k` order (what a `k`-keyed spill address needs) only when the
-window's bottom already sits at phase 0, precisely the case with nothing to
-shuffle. Concretely: with the window holding `k = 5,6,7,8` (wrapped once),
-`phys(k)` is `r5,r6,r7,r4`, so register-ascending order visits them as
-`k = 8,5,6,7`, and a batched push would write the wrong value to the wrong
-slot address.
+and load in fixed *ascending-register-number* order, which matches the
+order a `k`-keyed spill address needs — largest `k` closest to `sp`, the
+layout both the callee's canonical `phys(0)..` reload and §5's
+chronological spill sequence rely on — only while the pushed range doesn't
+wrap `phys`'s `r4`→`r7` boundary; within one run, `phys`'s descending
+direction already makes ascending register coincide with descending `k`
+for free. Concretely: with the window holding `k = 5,6,7,8` (wrapped
+once), `phys(k)` is `r6,r5,r4,r7`, so register-ascending order visits them
+as `k = 7,6,5,8`, and a batched push would write the wrong value to the
+wrong slot address.
 
 What works is two *different* orderings for two *different* consumers
 (`prototype/src/window.ts`'s `spillForCall`/`fillCalleeArgs`/
@@ -352,11 +355,14 @@ What works is two *different* orderings for two *different* consumers
 2. **The stack-passed args** (`m` of them) are a real remap: instead of
    returning to their own registers they are popped straight into the
    callee's canonical `phys(0)..phys(m-1)`. That consumer, one combined
-   ascending-register `POP`, wants `arg0` closest to `sp`, which a batched
-   `PUSH` delivers in at most two instructions when the arg range wraps:
-   push the post-wrap run first, the pre-wrap run (containing `arg0`)
-   second, so whichever executes second lands lower and is what the `POP`
-   reads first.
+   ascending-register `POP`, reads its *lowest* register from the address
+   closest to `sp` — under §5's descending map that lowest register is
+   `phys(m-1)`, the *highest* arg index — so it wants the largest `k`
+   closest to `sp`, which a batched `PUSH` delivers in at most two
+   instructions when the arg range wraps: push the pre-wrap run (the
+   smaller `k`s) first, the post-wrap run (the larger `k`s) second, so
+   whichever executes second lands lower and is what the `POP` reads
+   first.
 
 Net cost: `1 + ≤2` to spill, `1` to fill (`fillCalleeArgs`, if `S > 0`),
 and symmetrically `1 + ≤WINDOW_SIZE` to restore, the second term being
@@ -1079,7 +1085,7 @@ keeping the emitter compact.
 Hand-translation of isa-core.md's own worked example, `arg_count = 1`.
 Frame-relative `tos` starts at 1 (isa-core.md §2.5) and, since this
 bytecode contains no `PUSH`/`POP`, never moves, so per §5's formula
-`phys(0) = r4` (`v`) and `phys(1) = r5` (`n`) are fixed for the whole body:
+`phys(0) = r7` (`v`) and `phys(1) = r6` (`n`) are fixed for the whole body:
 no rotation, no spill, no fill. isa-core's abstract `r0 = v` is not the
 physical ARM `r0` the code below assigns to `acc` (§3's naming note).
 
@@ -1102,28 +1108,28 @@ axis):
 
 ```
                                     ; --- prologue (§6), not in the bytecode ---
-        MOVS  r4, r0                ; v's home (r4) = incoming last arg (acc)
+        MOVS  r7, r0                ; v's home (r7) = incoming last arg (acc)
 
                                     ; CONST #1 ; STORE 1
         MOVS  r0, #1                ; acc = 1
-        MOVS  r5, r0                ; n (r5) = acc
+        MOVS  r6, r0                ; n (r6) = acc
 
 L_cond:                             ; LOOP condition block
-        MOVS  r0, r4                ; LOAD 0: acc = v
+        MOVS  r0, r7                ; LOAD 0: acc = v
         CMP   r0, #0x80             ; GE_U #0x80, fused with the
         BLO   L_exit                ; BLOCK_END below: v<0x80 → exit
 
 L_body:                             ; LOOP body block, falls through
-        MOVS  r0, r4                ; LOAD 0: acc = v
+        MOVS  r0, r7                ; LOAD 0: acc = v
         LSRS  r0, r0, #7            ; SHR #7
-        MOVS  r4, r0                ; STORE 0: v = acc
+        MOVS  r7, r0                ; STORE 0: v = acc
         MOVS  r0, #1                ; CONST #1
-        ADDS  r0, r0, r5            ; ADD 1: acc = 1 + n
-        MOVS  r5, r0                ; STORE 1: n = acc
+        ADDS  r0, r0, r6            ; ADD 1: acc = 1 + n
+        MOVS  r6, r0                ; STORE 1: n = acc
         B     L_cond                ; BLOCK_END: back-edge
 
 L_exit:
-        MOVS  r0, r5                ; LOAD 1: acc = n (return value)
+        MOVS  r0, r6                ; LOAD 1: acc = n (return value)
         MOV   r3, r10               ; RETURN (§7): helper vector base
         LDR   r3, [r3, #4]          ; returnHelperFromLr
         BX    r3
@@ -1138,27 +1144,27 @@ saved on the comparison (7→2) recur on every loop iteration, which is why
 result redirected into a following `STORE` instead of a copy):
 
 ```
-        MOVS  r4, r0                ; prologue (§6)
+        MOVS  r7, r0                ; prologue (§6)
 
                                     ; CONST #1 ; STORE 1: fused
-        MOVS  r5, #1                ; n (r5) = 1 directly, no acc round-trip
+        MOVS  r6, #1                ; n (r6) = 1 directly, no acc round-trip
 
 L_cond:
-        MOVS  r0, r4                ; LOAD 0
+        MOVS  r0, r7                ; LOAD 0
         CMP   r0, #0x80             ; GE_U #0x80, branch-fused as before
         BLO   L_exit
 
 L_body:
-        MOVS  r0, r4                ; LOAD 0 stays unfused: its own consumer
+        MOVS  r0, r7                ; LOAD 0 stays unfused: its own consumer
                                     ; (SHR) isn't a STORE
-        LSRS  r4, r0, #7            ; SHR #7 ; STORE 0: fused
+        LSRS  r7, r0, #7            ; SHR #7 ; STORE 0: fused
 
         MOVS  r0, #1                ; CONST #1 stays unfused, same reason
-        ADDS  r5, r0, r5            ; ADD 1 ; STORE 1: fused
+        ADDS  r6, r0, r6            ; ADD 1 ; STORE 1: fused
         B     L_cond
 
 L_exit:
-        MOVS  r0, r5                ; LOAD 1 stays unfused: RETURN's ABI
+        MOVS  r0, r6                ; LOAD 1 stays unfused: RETURN's ABI
                                     ; needs the value in r0
         MOV   r3, r10               ; RETURN (§7), unchanged
         LDR   r3, [r3, #4]
@@ -1176,22 +1182,22 @@ destination-fold, so every `LOAD`'s `PENDING(Reg(...))` folds forward into
 whatever reads it instead of being flushed into `r0`):
 
 ```
-        MOVS  r4, r0                ; prologue (§6)
+        MOVS  r7, r0                ; prologue (§6)
 
                                     ; CONST #1 ; STORE 1: dest-fold
-        MOVS  r5, #1
+        MOVS  r6, #1
 
 L_cond:                             ; LOAD 0 ; GE_U #0x80 ; BLOCK_END, all
-                                    ; three fused: LOAD → PENDING(Reg(r4)),
+                                    ; three fused: LOAD → PENDING(Reg(r7)),
                                     ; folded as CMP's left operand, then
                                     ; branch-fused, v never touches r0
-        CMP   r4, #0x80
+        CMP   r7, #0x80
         BLO   L_exit
 
 L_body:                             ; LOAD 0 ; SHR #7 ; STORE 0, all three
-                                    ; fused: r4 folded in as SHR's source
+                                    ; fused: r7 folded in as SHR's source
                                     ; and as its destination
-        LSRS  r4, r4, #7
+        LSRS  r7, r7, #7
 
                                     ; CONST #1 ; ADD 1 ; STORE 1, all three
                                     ; fused: the pending #1 folds via
@@ -1199,13 +1205,13 @@ L_body:                             ; LOAD 0 ; SHR #7 ; STORE 0, all three
                                     ; commutative, so the immediate's
                                     ; original side doesn't matter), and the
                                     ; destination folds into n's register
-        ADDS  r5, r5, #1
+        ADDS  r6, r6, #1
         B     L_cond
 
-L_exit:                             ; LOAD 1 → PENDING(Reg(r5)), but
+L_exit:                             ; LOAD 1 → PENDING(Reg(r6)), but
                                     ; RETURN's ABI needs the value
                                     ; specifically in r0, so flush
-        MOVS  r0, r5
+        MOVS  r0, r6
         MOV   r3, r10               ; RETURN (§7), unchanged
         LDR   r3, [r3, #4]
         BX    r3
@@ -1234,61 +1240,154 @@ alongside the args (`call.test.ts`), `stackArgs ≥ WINDOW_SIZE`
 §9 dispatch ABI end to end (`abi-dispatch.test.ts`), eviction and compaction
 (`eviction.test.ts`), and both §2 entry variants
 (`enter-program-variants.test.ts`). `compiler/test/host` and
-`compiler/test/qemu` cover the native port's straight-line slice.
+`compiler/test/qemu` now cover the native port's full instruction set
+(`LOOP`/`BR_TABLE`/unary ops/comparisons included, `EXT` excluded on both
+sides by design), including eviction/compaction and both `RESOURCE_ERROR`
+sides against genuinely native-compiled code on real QEMU (items 17/18
+below).
+
+**Workflow note:** a new capability gets prototyped in TS (`prototype/`)
+first when that's feasible and not too much throwaway effort — cheap,
+fast iteration to work out unexpected inconsistencies before touching
+C++. But the prototype is throwaway; it's a blueprint. Build it the way
+it would need to look on the native, no-heap side (no arrays where
+native can't have one, self-delimiting reads over stored lengths), not
+however's most convenient in TypeScript.
 
 **Open:**
 
-1. **`validateProgram` exposes no max-call-depth figure.** isa-core.md §8.3
-   describes it as falling out of the same bottom-up DFS as `totalDepth`,
-   but `ProgramStats` carries only `totalDepth`. Until it is added,
-   `maxCallDepth` is a caller-supplied parameter to
-   `enter_program_on_stack`/`_split` (§1) rather than something derived
-   from real static data.
-2. **The acc-clobbering convention is declared, not enforced.** §10.1's
-   soundness argument rests on every op either overwriting `acc`, being a
-   pure capture (`STORE`/`PUSH`), or being a write-back-in-place combo
-   declared to clobber `acc`. That declaration exists and is load-bearing
-   (`rtl.ts`'s combo table, `raise.ts`'s `binary()`), but `validate.ts`'s
-   §8 checks have no acc-liveness pass and `vm.ts` doesn't poison `acc`
-   after a `REG_REG`/`PEEK_PEEK` write the way `raise.ts` does, so a
-   hand-crafted program violating the convention would compute a
-   bit-accurate-by-luck answer under `vm.ts` instead of being caught.
-   Closing it means a `validate.ts` acc-liveness check (structurally like
-   its existing per-procedure walk) plus matching `vm.ts` poisoning.
-3. **`LOOP`'s back-edge is a control-flow merge and hasn't been audited for
-   the hazard case boundaries had** (§10.1's case-boundary flush). Initial
-   fall-through and the body's back-edge reconverge on one shared,
-   already-emitted condition block. Every existing loop condition happens to
-   start with a fresh producer, which sidesteps it by construction, but that
-   is a property of the current corpus, not a guarantee.
+1. ~~`validateProgram` exposes no max-call-depth figure~~ — **done**:
+   `ProgramStats.maxCallDepth`, one memoized DFS alongside `totalDepth`
+   (`validate.ts`'s `depthsOf`). Still not wired into replacing the
+   caller-supplied parameter at `enter_program_on_stack`/`_split` (§1) call
+   sites — that's real static data available now, just not consumed yet.
+2. ~~The acc-clobbering convention is declared, not enforced~~ — **done**:
+   `validate.ts`'s `walk` now threads `accLive` alongside `tos` (`BR_TABLE`
+   siblings reconciled by AND; `LOOP`'s own back-edge is a documented,
+   accepted gap — see its doc comment), and `vm.ts`'s `runProc` now poisons
+   `acc` after `REG_REG`/`PEEK_PEEK`, matching `raise.ts`. TDD: red tests in
+   `validate.test.ts`/`vm.test.ts` first.
+3. ~~`LOOP`'s back-edge is a control-flow merge and hadn't been audited for
+   the case-boundary-flush hazard~~ — **done**: `openLoop`/`closeBlockEnd`'s
+   `loopBody` branch both now call `accState.flushLive` before the
+   condition sub-block's first instruction can run, on both the
+   fall-through and the back-edge. TDD: `loop-merge.test.ts`'s red test
+   (compiled-once condition ignoring what the body actually left pending)
+   failed with the predicted wrong value (5 instead of 1) before the fix.
 4. **§10.1's consumer-class table is reasoned per op by hand**, not derived
    mechanically from `armv6.h`'s encoder signatures. Worth cross-checking
    now that translators exist, since a transcription error there would
    silently misclassify one op's foldability rather than fail loudly.
-5. **Pass 2's branch-range fixup is unimplemented** (§10.2). A procedure
-   whose basic blocks span beyond Thumb's ±252-byte conditional-branch
-   range needs the invert-and-long-branch idiom.
-6. **The translator's block-nesting Frame stack isn't fixed-size yet**, which
-   §2's live-checked encroachment scheme assumes. `openBrTableJump`'s `case`
-   frame holds a `table.fixups: number[]` and an `endFixups: number[]`, both
-   sized by the switch's arity. The first is redundant (slot `i`'s offset is
-   `base + i*2`, arithmetically derivable). The second genuinely can't be
-   precomputed, since each case body differs in length, but needs no array
-   either: the standard backpatch-chain technique (thread pending sites
-   through their own placeholder branches' displacement fields, keeping one
-   `number | null` "last pending site") makes it O(1) like everything else.
-   Same fix applies to `BlockStack.brTableHelperSites`, since every site it
-   holds resolves to the identical target.
-7. **Thumb-bit hygiene** on every dispatch-table `code_ptr` (`BX`/`BLX`
-   requires bit 0 set). Easy to get wrong once pointers are computed rather
-   than link-time constants, and the failure mode is a silent hang (§10's
-   `BR_TABLE` note).
-8. **The native compiler covers a straight-line slice only.** `BLOCK_END`/
-   `LOOP`/`BR_TABLE`, the unary ops, `EXT` and every comparison opcode are
-   absent from `compiler/src/instr.h`'s `Op` by design, a compile-time
-   scope boundary rather than a runtime "not implemented". `restoreWindow`
-   (block-exit truncation) and `flushLive` (merge-safe flush) are
-   correspondingly unported. The prototype throws on unary ops and `EXT`
-   too.
-9. **`r9`'s callee-saved treatment is a build convention to pin down**
-   (§2), not something AAPCS guarantees the way it does for
+5. ~~Pass 2's branch-range fixup is unimplemented~~ (§10.2) — **done**, no
+   Pass 2 needed: `blocks.ts`'s `emitGuardedBranch` bounds the guarded span
+   *before* emitting (a cheap, deliberately loose per-opcode over-estimate,
+   `maxSpanBytes`), using a bare `condBranch` only when that's proven safe
+   and the invert-and-long-branch idiom otherwise. `branch-range.test.ts`
+   forces the long form at both call sites (`openBrTable`, the loop-exit)
+   on real QEMU.
+6. ~~Block-nesting `Frame` stack isn't fixed-size~~ — **done**: fixup
+   arrays became a cursor + backpatch chain, and `BlockStack`/`Frame[]`
+   itself was replaced by recursion (blocks.ts/translateProc.ts).
+7. ~~Thumb-bit hygiene on every dispatch-table `code_ptr`~~ — **done**:
+   `runtime_internal.h`'s `Runtime` now funnels every write through
+   `setCodePtr`/`slideCodePtr` (private static helpers, unconditionally
+   OR-ing in bit 0), so no call site has to reason case by case about
+   whether a given value already carries it; `runtime.S`'s one hand-written
+   assembly site (`.Lresume+1`, not `.thumb_func`-taggable) now cross-
+   references the same convention in its own comment. Verified against both
+   the prototype's own QEMU suite and the native compiler's (host + QEMU,
+   all 7 fixtures matching exactly).
+8. ~~The native compiler covers a straight-line slice only~~ — **done for
+   the prototype**: `unaryops.ts` implements `NEG`/`NOT` (single native
+   instructions) and `CLZ`/`REVBITS` (per-procedure software helpers,
+   reached by a local `BL`, `emitBrTableHelper`'s own precedent — ARMv6-M
+   has neither instruction natively); `blocks.ts`'s `materializeComparison`
+   makes a comparison usable as an ordinary value, not just a branch
+   condition, gated by a one-token lookahead so existing branch-fusion is
+   unaffected. `BLOCK_END`/`LOOP`/`BR_TABLE` stayed deliberately out of the
+   native compiler's scope at the time (items 17/18 tracked that
+   separately) — **since done**: native picked up the full instruction set
+   too (`compiler/src/blocks.cpp`/`unaryops.cpp`), see items 17/18.
+   `EXT` still throws, untouched, on both sides, by design.
+9. ~~`r9`'s callee-saved treatment is a build convention to pin down~~ (§2)
+   — **done**: AAPCS designates `r9` a platform-defined register (SB/TR)
+   only when the platform needs that role; `arm-none-eabi`'s bare-metal
+   environment assigns it none, so it's plain `v6` (an ordinary
+   callee-saved register) and the JIT's use of it needs no special
+   handling.
+10. ~~Item-number drift. Several code comments cite a "§16 item N" whose content has since moved~~ 
+    — **done**: swept `call.test.ts`/
+    `abi-dispatch.test.ts`/`emit.ts`/`blocks.ts`/`translateProc.ts`/
+    `rotation.test.ts`/`window.ts`. Most had drifted onto a concern that's
+    since been fully resolved (§6's shuffle proven end to end on QEMU, the
+    rotation-eviction hazard closed) rather than just mis-numbered, so
+    those got reworded past-tense instead of repointed; `emit.ts`/
+    `blocks.ts`'s Pass-2/branch-target citation genuinely mapped onto a
+    still-open item and now cites it correctly (item 5). Item 8's own
+    cross-reference (`jit-armv6m/README.md`) already lined up, untouched.
+11. ~~`binops.ts`/`compiler/binops.cpp` share a gap: `PEEK_PEEK` for a
+    two-op-in-place op is unimplemented on both sides~~ — **done for the
+    prototype**: `dest` itself as the right-hand operand, the same idiom
+    `emitAddSubRsub` already used for `PEEK_PEEK` ADD/SUB/RSUB — one line,
+    no new native form needed. `compiler/binops.cpp`'s own copy of the gap
+    is untouched (native wasn't in scope this round).
+12. ~~§10.1's immediate-side mirror-table optimization isn't implemented~~
+    — **done**: `blocks.ts`'s `emitComparison`, a `MIRRORED_CONDITION`
+    table alongside `DIRECT_CONDITION` (comparison-fusion.test.ts,
+    including a signed/unsigned-boundary case on real QEMU).
+13. ~~§6's "last argument as a fold" optimization~~ / ~~14's deferred
+    ISA-level version~~ (merged, one JIT-level fix) — **done**:
+    `translateProc.ts`'s callee prologue now stays a pending producer
+    instead of unconditionally flushing whenever a whole-body reference
+    count *proves* it's safe (zero references, or exactly one and it's
+    `body[0]`'s own `LOAD`) — 14's goal ("stops being paid regardless of
+    whether it's ever read") achieved at the JIT level per 13, no lowering
+    change needed. `last-arg-fold.test.ts` checks both correctness and a
+    real code-size reduction on real QEMU.
+15. ~~The procedure directory... but nothing consumes it yet~~ — **done**:
+    `program.ts`/`programAbi.ts` (the two real whole-program drivers) now
+    build the directory once (`encodeProgram` + `buildProcDirectory`) and
+    hand each procedure's `savesLR` to both `noEvictionStrategy`/
+    `abiRealStrategy` and `translateProc` itself, which use it in place of
+    their own `RtlInstr[]` scan whenever supplied (`needsLRSave`'s new
+    `override` parameter) — every direct unit-test call, with no directory
+    at hand, keeps falling back to the scan unchanged. `bytecodeReader.ts`
+    gained a `Unary` `InstrKind` (`imm = code - 90`) so the skip-pass can
+    tell `CLZ`/`REVBITS` (software helpers, `savesLR`-triggering) apart
+    from `NEG`/`NOT` (single instructions, not). Still true and unchanged:
+    the skip-pass throws on any extension opcode, and no native port
+    exists yet.
+16. ~~The bigger migration this sets up for is still ahead~~ — **done for
+    the prototype**: `bytecodeReader.ts` gained `decodeInstr` (`RtlInstr`'s
+    shape minus `EXT`'s generic payload — nothing here needs it, since
+    `EXT` already only ever throws), and `translateProc.ts`'s main loop
+    now decodes one instruction at a time from `encodeBody(proc.body)`'s
+    raw bytes — `pc` is a byte offset advanced by each instruction's own
+    decoded `.next`, never a fixed `+1`/`+2` array-index step. `blocks.ts`'s
+    `maxSpanBytes`/`openBrTable`/`closeBlockEnd` (item 5's span bounding)
+    moved to the same byte stream, since they walk the same body. No
+    caller-visible signature changed — `program.ts`/every test file still
+    hands `translateProc` an `RtlProc`, encoded internally, right where the
+    old code took a `body: RtlInstr[]` and stopped indexing it. All 147
+    existing tests (every one on real QEMU) passed unmodified after the
+    rewrite — the "surfaces an inconsistency cheaply" bet this section's
+    own workflow note made paid off with none found. Native port still
+    ahead, unstarted, as expected.
+17. ~~Eviction/compaction is untested against genuinely native-compiled
+    code on real QEMU~~ — **done**: `compiler/test/qemu/main.cpp` measures
+    each fixture procedure's real compiled size once (via a throwaway
+    `translateProc` call) purely to size an undersized arena, then drives
+    the exercise through the ordinary lazy `g_realProcs`/`compileProc`
+    path — `testEvictionThreeDeepCallChain`,
+    `testEvictionCallerAndCalleeNeverCoresident`, and
+    `testResourceErrorSingleProcedureLargerThanArena` (code-area side) sit
+    alongside `testOnStackRejectsBeforeTouchingAnything` (stack side), so
+    both `RESOURCE_ERROR` triggers are proven against real native-compiled
+    code, not the mock/TS-generated path.
+18. ~~Once `LOOP`/`BR_TABLE` reach the native compiler, redo the
+    block-nesting-as-recursion call there too~~ — **done**:
+    `compiler/src/translate_proc.cpp`'s `translateBody` recurses per
+    open `LOOP`/`BR_TABLE`, each with its own stack-local `Frame`
+    (`blocks.h`/`blocks.cpp`), the same recursion-not-array design item 6
+    settled on the prototype side — no heap, no fixed-depth array, just
+    the C call stack.

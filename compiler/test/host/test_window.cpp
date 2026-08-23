@@ -139,3 +139,22 @@ TEST(CallShuffleWithStackArgsExceedingWindowSize)
     CHECK(e3.halfwordCount() == 0); // nothing left over to restore
     CHECK(w.tos == 0);
 }
+
+TEST(CallShuffleWithLeftoverLocalsAboveTheStackArgs)
+{
+    // call.test.ts program 2's own shape ("3-argument call with a
+    // phase-misaligned shuffle and surviving leftover locals",
+    // test/qemu/fixtures.cpp's own fixture 2): tos=5 but only the
+    // *closest* 2 slots (k=3,4) are this call's own stack args — k=1,2
+    // are leftover locals the caller still needs after the call returns,
+    // so spillForCall's own leading plain-PUSH branch (base > bottom)
+    // fires to preserve them, distinct from pushLargestKClosest's own
+    // per-argument pushes just below.
+    uint16_t buf[8]; Emitter e(buf, 8);
+    Window w(5);
+    spillForCall(e, w, 2);
+    CHECK(e.halfwordCount() == 3);
+    CHECK(buf[0] == 0xB460); // PUSH {r5, r6}  (leftover locals k=1,2, one bulk push)
+    CHECK(buf[1] == 0xB410); // PUSH {r4}      (stack arg k=3)
+    CHECK(buf[2] == 0xB480); // PUSH {r7}      (stack arg k=4, closest to sp)
+}

@@ -1,6 +1,7 @@
 // jit-armv6m/compiler — the top-level per-procedure driver, ported from
-// jit-armv6m/prototype/src/translateProc.ts, restricted to this slice's Op
-// set (instr.h) via abi_strategy.h's real-ABI sequences only.
+// jit-armv6m/prototype/src/translateProc.ts, via abi_strategy.h's real-ABI
+// sequences only (noEvictionStrategy is TS-only scaffolding, never ported
+// — abi_strategy.h's own header has why).
 #ifndef JIT_ARMV6M_COMPILER_TRANSLATE_PROC_H_
 #define JIT_ARMV6M_COMPILER_TRANSLATE_PROC_H_
 
@@ -11,7 +12,14 @@ namespace jitc {
 
 struct TranslateResult {
     uint32_t halfwordCount;
-    bool overflowed; // outCapacityHalfwords was exceeded
+    /** outCapacityHalfwords was exceeded, *or* this procedure's own
+     *  LOOP/BR_TABLE nesting exceeded MAX_BLOCK_NESTING (translate_proc
+     *  .cpp) — the real-hardware counterpart of the recursion bound
+     *  JS's own call stack never needed enforcing on the prototype side:
+     *  compileProc's own caller (compile_proc_real.cpp) already treats
+     *  this bit as "bail out with RESOURCE_ERROR," which is exactly the
+     *  right response to either cause. */
+    bool overflowed;
 };
 
 /** translateProc.ts's forward pass. procIdx is this procedure's own

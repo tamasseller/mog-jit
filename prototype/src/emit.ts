@@ -8,18 +8,20 @@
  * patch; this module just makes that a one-line call instead of hand
  * re-deriving §11's PC-relative-displacement arithmetic at every call site.
  *
- * docs/design.md §16 item 1 flagged whether translation genuinely needs
- * Pass 2 (a separate fixup pass over the whole procedure) as still open.
+ * docs/design.md §16 item 5 asked whether translation genuinely needs
+ * Pass 2 (a separate fixup pass over the whole procedure) — no.
  * `patchBranch` being usable the instant a block closes — never needing to
  * look at instructions emitted after the site being patched — is the
- * concrete evidence for "no, not for branch targets": every branch this
- * translator ever emits closes over a target that's already known by the
- * time its enclosing block ends (isa-core.md §7.1/§7.2's own block-nesting
- * discipline guarantees that), so `blocks.ts` never holds a fixup open past
- * one `BLOCK_END`/loop-back-edge. What's *not* covered here, and still
- * plausibly needs its own pass: out-of-range branches needing the
- * invert-and-long-branch idiom, and `BR_TABLE N>2` jump tables — neither
- * implemented yet (translateProc.ts).
+ * concrete evidence: every branch this translator ever emits closes over a
+ * target that's already known by the time its enclosing block ends
+ * (isa-core.md §7.1/§7.2's own block-nesting discipline guarantees that),
+ * so `blocks.ts` never holds a fixup open past one `BLOCK_END`/loop-back-
+ * edge. Out-of-range conditional branches (item 5's other half — Thumb's
+ * conditional branch reaches only ±252 bytes) don't need one either:
+ * `blocks.ts`'s `emitGuardedBranch` decides short-vs-long *before* emitting,
+ * from a cheap upper-bound estimate of the guarded span, never after —
+ * `patchBranch`/`readBranchTarget` above already handle either shape
+ * transparently, since both dispatch on the site's own encoding.
  */
 
 import * as arm from "./armv6"
@@ -79,6 +81,19 @@ export class Emitter
         this.halfwords[idx] = arm.isCondBranch(isn)
             ? arm.setCondBranchOffset(isn, delta)
             : arm.setUncondBranchOffset(isn, delta)
+    }
+
+    /** Inverse of `patchBranch`: the target byte offset a previously-
+     *  emitted (conditional or unconditional) branch currently encodes.
+     *  blocks.ts threads a backpatch chain through a run of not-yet-
+     *  resolved branches by pointing each one at the previous pending
+     *  site instead of a real target — this recovers that link without
+     *  a side array to hold it. */
+    readBranchTarget(siteOffset: number): number
+    {
+        const isn = this.halfwords[siteOffset / 2]!
+        const delta = arm.isCondBranch(isn) ? arm.getCondBranchOffset(isn) : arm.getUncondBranchOffset(isn)
+        return siteOffset + 4 + delta
     }
 
     /** Overwrite a single already-emitted halfword with an arbitrary raw

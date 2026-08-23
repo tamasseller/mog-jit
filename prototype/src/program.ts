@@ -15,9 +15,10 @@
  * later) procedure's length is.
  */
 
-import { validateProgram } from "@ppl/machine"
+import { validateProgram, encodeProgram } from "@ppl/machine"
 import type { RtlProgram } from "@ppl/machine"
-import { translateProc } from "./translateProc"
+import { translateProc, noEvictionStrategy } from "./translateProc"
+import { buildProcDirectory } from "./procDirectory"
 import * as arm from "./armv6"
 
 export interface TranslatedProgram
@@ -35,7 +36,15 @@ export function translateProgram(program: RtlProgram): TranslatedProgram
 {
     validateProgram(program) // isa-core.md §8 — fail fast on a malformed program before translating any of it
     const calleeArgCounts = program.procedures.map(p => p.argCount)
-    const translated = program.procedures.map(proc => translateProc(proc, calleeArgCounts))
+
+    // §16 item 15's wiring: the procedure directory already derives
+    // `savesLR` from this same program's own wire bytes (procDirectory.ts)
+    // — handed to both `noEvictionStrategy` and `translateProc` itself so
+    // neither has to re-derive it from `proc.body` on its own. The encode
+    // pass costs the whole program once, here, not per procedure.
+    const directory = buildProcDirectory(encodeProgram(program))
+    const translated = program.procedures.map((proc, i) =>
+        translateProc(proc, calleeArgCounts, noEvictionStrategy(proc, directory[i]!.savesLR), directory[i]!.savesLR))
 
     const procOffsets: number[] = []
     let cursor = 0

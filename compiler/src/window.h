@@ -8,8 +8,6 @@
 // document as already found and fixed (e.g. fillCalleeArgs's WINDOW_SIZE-1
 // cap).
 //
-// restoreWindow (block-exit truncation) is NOT ported — no blocks this
-// slice (BR_TABLE/LOOP are out of scope).
 #ifndef JIT_ARMV6M_COMPILER_WINDOW_H_
 #define JIT_ARMV6M_COMPILER_WINDOW_H_
 
@@ -102,6 +100,18 @@ void fillCalleeArgs(Emitter &e, uint32_t stackArgs);
 /** CALL's shuffle, final step — once the callee returns, reload whatever
  *  spillForCall/fillCalleeArgs consumed. Mutates window.tos to targetTos. */
 void reloadAfterCall(Emitter &e, Window &window, uint32_t targetTos);
+
+/** blocks.h's own block-exit truncation (isa-core.md §8.1/§7.1/§7.2): any
+ *  TOS surplus above targetTos is implicitly dropped at a BLOCK_END/loop
+ *  back-edge — no bytecode-level pop sequence runs, so sp needs
+ *  rebalancing here regardless of whether any physical register still
+ *  holds something the target window's own mapping expects. What's
+ *  spilled *above* targetTos's own ceiling is abandoned outright (a bare
+ *  sp adjustment — nothing can still read it); what's spilled at or below
+ *  it is genuinely historical data, reloaded via popRuns in the same
+ *  larger-k-first order it was spilled in. Mutates window.tos to
+ *  targetTos directly. */
+void restoreWindow(Emitter &e, Window &window, uint32_t targetTos);
 
 } // namespace jitc
 
