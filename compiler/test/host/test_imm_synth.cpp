@@ -4,16 +4,20 @@
 
 using namespace jitc;
 
-namespace {
-uint32_t lengthOf(uint32_t value) {
+namespace
+{
+
+uint32_t lengthOf(uint32_t value)
+{
     uint16_t buf[8];
     Emitter e(buf, 8);
     emitSynthesizeImm32(e, 0, value);
     return e.halfwordCount();
 }
-}
 
-TEST(SynthesizeImm32Zero)
+} // namespace
+
+TEST(synthesizeImm32Zero)
 {
     uint16_t buf[8];
     Emitter e(buf, 8);
@@ -23,7 +27,7 @@ TEST(SynthesizeImm32Zero)
     CHECK(synthesizeImm32Length(0) == 1);
 }
 
-TEST(SynthesizeImm32SingleByte)
+TEST(synthesizeImm32SingleByte)
 {
     uint16_t buf[8];
     Emitter e(buf, 8);
@@ -33,11 +37,11 @@ TEST(SynthesizeImm32SingleByte)
     CHECK(synthesizeImm32Length(37) == 1);
 }
 
-TEST(SynthesizeImm32InternalZeroByteSkipsAdds)
+TEST(synthesizeImm32InternalZeroByteSkipsAdds)
 {
     // 0x01000001 — bytes[1] and bytes[2] are both zero: LSLS runs for both,
     // but the intermediate ADDS is skipped both times (decompose's "skip a
-    // zero byte" case), only the final nonzero byte gets an ADDS.
+    // zero byte" case); only the final nonzero byte gets an ADDS.
     uint16_t buf[8];
     Emitter e(buf, 8);
     uint32_t value = 0x01000001u;
@@ -51,7 +55,7 @@ TEST(SynthesizeImm32InternalZeroByteSkipsAdds)
     CHECK(synthesizeImm32Length(value) == e.halfwordCount());
 }
 
-TEST(SynthesizeImm32AllBytesNonzero)
+TEST(synthesizeImm32AllBytesNonzero)
 {
     uint16_t buf[8];
     Emitter e(buf, 8);
@@ -61,13 +65,16 @@ TEST(SynthesizeImm32AllBytesNonzero)
     CHECK(synthesizeImm32Length(value) == e.halfwordCount());
 }
 
-TEST(SynthesizeImm32LengthMatchesEmittedCountAcrossValues)
+TEST(synthesizeImm32LengthMatchesEmittedCountAcrossValues)
 {
     uint32_t values[] = {0, 1, 0xff, 0x100, 0x1234, 0x123456, 0x12345678, 0xffffffffu, 0x80000000u};
-    for(uint32_t v : values) CHECK(synthesizeImm32Length(v) == lengthOf(v));
+    for(uint32_t v : values)
+    {
+        CHECK(synthesizeImm32Length(v) == lengthOf(v));
+    }
 }
 
-TEST(FitsImm)
+TEST(fitsImm)
 {
     CHECK(fitsImm8(0) && fitsImm8(255) && !fitsImm8(256) && !fitsImm8(-1));
     CHECK(fitsImm3(0) && fitsImm3(7) && !fitsImm3(8) && !fitsImm3(-1));

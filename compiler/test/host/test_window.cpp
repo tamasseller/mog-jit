@@ -1,6 +1,5 @@
-// Expected halfwords below are cross-checked against arm-none-eabi-as (a
-// tool independent of both this port and its TS original), not re-derived
-// from the same formulas under test.
+// Expected halfwords are cross-checked against arm-none-eabi-as, not
+// re-derived from the same formulas under test.
 #include "Test.h"
 #include "emitter.h"
 #include "window.h"
@@ -11,13 +10,13 @@
 
 using namespace jitc;
 
-TEST(PhysRegIsDescendingAndWrapsAtWindowSize)
+TEST(physRegIsDescendingAndWrapsAtWindowSize)
 {
     CHECK(physReg(0) == 7 && physReg(1) == 6 && physReg(2) == 5 && physReg(3) == 4);
     CHECK(physReg(4) == 7 && physReg(5) == 6 && physReg(6) == 5 && physReg(7) == 4); // wraps
 }
 
-TEST(SpillOffsetIsClosestSpillClosestToSp)
+TEST(spillOffsetIsClosestSpillClosestToSp)
 {
     Window w6(6);
     CHECK(w6.spillOffset(0) == 4); // 2 spilled (k=0,1); k=0 spilled first, furthest from sp
@@ -26,7 +25,7 @@ TEST(SpillOffsetIsClosestSpillClosestToSp)
     CHECK(w5.spillOffset(0) == 0); // exactly 1 spilled
 }
 
-TEST(SpillOffsetGetsSavesLRAdjustmentOnlyForOriginalOutOfWindowArgs)
+TEST(spillOffsetGetsSavesLRAdjustmentOnlyForOriginalOutOfWindowArgs)
 {
     // argCount=5 > WINDOW_SIZE(4): k=0 is the one original out-of-window
     // argument (initialSpilledCount=1) — a caller placed it before this
@@ -56,14 +55,18 @@ TEST(SpillOffsetGetsSavesLRAdjustmentOnlyForOriginalOutOfWindowArgs)
     CHECK(nonLeaf.spillOffset(1) == 0);     // k=1 (self-spilled) — not adjusted
 }
 
-TEST(PushValueEvictsAtWindowBoundary)
+TEST(pushValueEvictsAtWindowBoundary)
 {
     uint16_t buf[16];
     Emitter e(buf, 16);
     Window w(0);
     AccState acc;
     int values[] = {10, 20, 30, 40, 50};
-    for(int v : values) { acc.producer(Shape::ofImm(v)); w.pushValue(e, acc); }
+    for(int v : values)
+    {
+        acc.producer(Shape::ofImm(v));
+        w.pushValue(e, acc);
+    }
 
     CHECK(e.halfwordCount() == 6);
     CHECK(buf[0] == 0x270A); // MOVS r7, #10  (k=0 -> physReg(0)=r7)
@@ -75,13 +78,17 @@ TEST(PushValueEvictsAtWindowBoundary)
     CHECK(w.tos == 5);
 }
 
-TEST(FinishPopReloadsWhatPushEvicted)
+TEST(finishPopReloadsWhatPushEvicted)
 {
     uint16_t buf[16];
     Emitter e(buf, 16);
     Window w(0);
     AccState acc;
-    for(int v : {10, 20, 30, 40, 50}) { acc.producer(Shape::ofImm(v)); w.pushValue(e, acc); }
+    for(int v : {10, 20, 30, 40, 50})
+    {
+        acc.producer(Shape::ofImm(v));
+        w.pushValue(e, acc);
+    }
     uint32_t before = e.halfwordCount();
 
     w.finishPop(e); // pops the top slot (tos=5 -> 4); must reload k=0's spilled r7
@@ -90,7 +97,7 @@ TEST(FinishPopReloadsWhatPushEvicted)
     CHECK(w.tos == 4);
 }
 
-TEST(DiscardWindowIsOneBareSpAdjustment)
+TEST(discardWindowIsOneBareSpAdjustment)
 {
     uint16_t buf[4];
     Emitter e(buf, 4);
@@ -100,7 +107,7 @@ TEST(DiscardWindowIsOneBareSpAdjustment)
     CHECK(buf[0] == 0xB002); // ADD sp, #8
 }
 
-TEST(DiscardWindowForSavesLRReclaimsOnlySelfSpilledLocals)
+TEST(discardWindowForSavesLRReclaimsOnlySelfSpilledLocals)
 {
     // argCount=5 (initialSpilledCount=1) — a non-leaf procedure's own
     // discardWindow must not reclaim that one original out-of-window
@@ -114,43 +121,44 @@ TEST(DiscardWindowForSavesLRReclaimsOnlySelfSpilledLocals)
     CHECK(e.halfwordCount() == 0); // nothing self-spilled — nothing to reclaim here
 }
 
-TEST(CallShuffleWithStackArgsExceedingWindowSize)
+TEST(callShuffleWithStackArgsExceedingWindowSize)
 {
-    // deep-args.test.ts's own shape: 6 stack-passed args (WINDOW_SIZE=4),
-    // caller's window fully occupied by them (tos=6, nothing else resident)
-    // — this is exactly the scenario fillCalleeArgs's WINDOW_SIZE-1 cap
-    // (not WINDOW_SIZE) was fixed for; a wrong cap here would silently
-    // reassign which value lands in which register.
-    uint16_t buf1[8]; Emitter e1(buf1, 8);
+    // 6 stack-passed args (WINDOW_SIZE=4), caller's window fully occupied by
+    // them (tos=6, nothing else resident) — exactly the scenario
+    // fillCalleeArgs's WINDOW_SIZE-1 cap (not WINDOW_SIZE) exists for; a
+    // wrong cap here would silently reassign which value lands in which
+    // register.
+    uint16_t buf1[8];
+    Emitter e1(buf1, 8);
     Window w(6);
     spillForCall(e1, w, 6);
     CHECK(e1.halfwordCount() == 2);
     CHECK(buf1[0] == 0xB430); // PUSH {r4, r5}  (pre-wrap run, k=2,3)
     CHECK(buf1[1] == 0xB4C0); // PUSH {r6, r7}  (post-wrap run, k=4,5)
 
-    uint16_t buf2[8]; Emitter e2(buf2, 8);
+    uint16_t buf2[8];
+    Emitter e2(buf2, 8);
     fillCalleeArgs(e2, 6);
     CHECK(e2.halfwordCount() == 2);
     CHECK(buf2[0] == 0xBCC0); // POP {r6, r7}  (larger-k run first)
     CHECK(buf2[1] == 0xBC10); // POP {r4}      (k=3's own lone run)
 
-    uint16_t buf3[8]; Emitter e3(buf3, 8);
+    uint16_t buf3[8];
+    Emitter e3(buf3, 8);
     reloadAfterCall(e3, w, 0); // targetTos = tos(6) - stackArgs(6) = 0
     CHECK(e3.halfwordCount() == 0); // nothing left over to restore
     CHECK(w.tos == 0);
 }
 
-TEST(CallShuffleWithLeftoverLocalsAboveTheStackArgs)
+TEST(callShuffleWithLeftoverLocalsAboveTheStackArgs)
 {
-    // call.test.ts program 2's own shape ("3-argument call with a
-    // phase-misaligned shuffle and surviving leftover locals",
-    // test/qemu/fixtures.cpp's own fixture 2): tos=5 but only the
-    // *closest* 2 slots (k=3,4) are this call's own stack args — k=1,2
-    // are leftover locals the caller still needs after the call returns,
-    // so spillForCall's own leading plain-PUSH branch (base > bottom)
-    // fires to preserve them, distinct from pushLargestKClosest's own
-    // per-argument pushes just below.
-    uint16_t buf[8]; Emitter e(buf, 8);
+    // tos=5 but only the *closest* 2 slots (k=3,4) are this call's own stack
+    // args — k=1,2 are leftover locals the caller still needs after the
+    // call returns, so spillForCall's own leading plain-PUSH branch (base >
+    // bottom) fires to preserve them, distinct from pushLargestKClosest's
+    // own per-argument pushes just below.
+    uint16_t buf[8];
+    Emitter e(buf, 8);
     Window w(5);
     spillForCall(e, w, 2);
     CHECK(e.halfwordCount() == 3);

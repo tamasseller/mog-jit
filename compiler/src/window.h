@@ -1,116 +1,153 @@
-// jit-armv6m/compiler — the register window, ported verbatim (formulas and
-// all) from jit-armv6m/prototype/src/window.ts. See that file's own header
-// comment for the full rationale (physReg's deliberately descending cyclic
-// direction, sp genuinely tracking spilled depth with no fixed per-
-// procedure reservation, the three PUSH/POP batching cases) — this port
-// preserves every formula exactly, on the assumption that re-deriving them
-// from scratch would risk reintroducing bugs window.ts's own comments
-// document as already found and fixed (e.g. fillCalleeArgs's WINDOW_SIZE-1
-// cap).
+// The register window (docs/design.md §5). Pure tos-and-k math, plus the
+// spill/fill emission it drives. Doesn't know about the acc fusion state
+// machine (accstate.h) or block structure (blocks.h) — just "where does
+// frame-relative slot k live right now, and what native code does moving
+// tos emit."
 //
+// tos is the *count* of live slots (starts at argCount, regs[tos++] = v on
+// push) — one past the top slot's own index.
+//
+// sp genuinely tracks the current spilled depth — there is no fixed
+// per-procedure reservation. The whole-program stack bound
+// (isa-core.md §8.3) is a maximum over call sites and local peaks, not a
+// sum, and is only achievable if the underlying storage is actually reused
+// as frames come and go. So every ordinary spill here is a real,
+// sp-decrementing single-register PUSH, and every fill a real
+// sp-incrementing single-register POP, always in ascending-k order — the
+// most recently spilled slot is always the one closest to sp. One
+// procedure's own spilled locals sit strictly below whatever its caller
+// had already spilled, which is what makes frames nest correctly with zero
+// cross-procedure bookkeeping.
+//
+// physReg's cyclic direction is reversed (descending in k), not arbitrary:
+// a batched PUSH{list}/POP{list} is equivalent to issuing that list as
+// separate single-register instructions in one specific order (descending
+// register number for PUSH, ascending for POP). Spills happen in ascending-k
+// order; mapping ascending k to descending register number makes that real,
+// already-emitted spill sequence exactly equivalent to one hypothetical
+// batched PUSH, so a batched POP can read it back later, register-for-
+// register, with no reordering trick needed.
+//
+// Three PUSH/POP consumers share one windowRuns building block:
+// 1. Mirrored (spillForCall/reloadAfterCall's leftover-locals mask): a
+//    single PUSH of an untouched register set followed later by a POP of
+//    that exact same set restores exactly what was pushed, by hardware's
+//    own inverse guarantee — no per-k reasoning needed.
+// 2. Fresh, remapped (pushLargestKClosest/fillCalleeArgs): CALL's args need
+//    to land in the callee's canonical physReg(0).., not wherever they
+//    lived in the caller's window. pushLargestKClosest splits the range
+//    with windowRuns and pushes the runs forward (pre-wrap, then
+//    post-wrap) so the largest k ends up closest to sp, exactly where
+//    fillCalleeArgs's ascending batched POP expects it.
+// 3. Historical, read back (popRuns): restoreWindow and reloadAfterCall's
+//    deeper tail reload data whose physical layout is already fixed by
+//    real chronological spills — which, per the identity above, already
+//    matches a hypothetical batched PUSH — so popRuns splits the range the
+//    same way and pops the runs in reverse (larger-k, closer-to-sp run
+//    first).
+//
+// restoreWindow also has a no-op case: nothing intervenes between a
+// truncation point and whatever reads the window next, so any currently-
+// resident, still-live-in-the-target register needs no push or pop at all
+// (physReg(k) doesn't depend on tos) — only ks below the currently-resident
+// window are genuinely historical and go through popRuns.
 #ifndef JIT_ARMV6M_COMPILER_WINDOW_H_
 #define JIT_ARMV6M_COMPILER_WINDOW_H_
 
 #include <cstdint>
 #include "registers.h"
 
-namespace jitc {
+namespace jitc
+{
 
 class Emitter;
 class AccState;
 
 bool inWindow(uint32_t tos, uint32_t k);
 
-/** Physical register holding frame-relative slot k, valid only when
- *  inWindow(tos, k). Deliberately descending in k — see this file's
- *  header. */
+// Physical register holding frame-relative slot k, valid only when
+// inWindow(tos, k). Deliberately descending in k — see this file's header.
 uint32_t physReg(uint32_t k);
 
-/** Window state for one procedure's translation — the tos counter, public
- *  exactly like window.ts's own Window class (whose callers read/write
- *  .tos directly at block/call boundaries), plus the savesLR fact needed
- *  by spillOffset()/discardWindow() (below) — ported from window.ts's own
- *  promotion of these from free functions to methods, once a second piece
- *  of per-procedure state needed to feed the same formulas. */
-class Window {
+// Window state for one procedure's translation: the tos counter, plus the
+// savesLR fact needed by spillOffset()/discardWindow() below.
+class Window
+{
 public:
     uint32_t tos;
 
     explicit Window(uint32_t argCount, bool savesLR = false)
-        : tos(argCount), savesLR_(savesLR),
-          initialSpilledCount_(argCount > WINDOW_SIZE ? argCount - WINDOW_SIZE : 0) {}
+        : tos(argCount), savesLR(savesLR),
+          initialSpilledCount(argCount > WINDOW_SIZE ? argCount - WINDOW_SIZE : 0)
+    {
+    }
 
-    /** The current top slot's physical register. */
-    uint32_t topReg() const { return physReg(tos - 1); }
+    // The current top slot's physical register.
+    uint32_t topReg() const
+    {
+        return physReg(tos - 1);
+    }
 
-    /** Push accState's current value onto the window: spill whatever it's
-     *  about to evict, materialize the value into its new home, bump tos. */
+    // Push accState's current value onto the window: spill whatever it's
+    // about to evict, materialize the value into its new home, bump tos.
     void pushValue(Emitter &e, AccState &accState);
 
-    /** Complete a pop whose value was already read out of topReg() — the
-     *  fill (if any) and the tos decrement, together. Must be called only
-     *  once every read of topReg() has already been emitted. */
+    // Complete a pop whose value was already read out of topReg() — the
+    // fill (if any) and the tos decrement, together. Must be called only
+    // once every read of topReg() has already been emitted.
     void finishPop(Emitter &e);
 
-    /** Byte offset from the current sp for slot k, valid only when k is
-     *  genuinely spilled (!inWindow(tos, k)). savesLR procedures (this
-     *  procedure makes its own nested CALL) push {lr} in their own
-     *  prologue, before this procedure's body ever reads anything — which
-     *  lands strictly between wherever the caller left sp and this
-     *  procedure's own first read of one of its own out-of-window
-     *  arguments (k < initialSpilledCount), shifting those specific slots
-     *  one word further from sp than the caller's own bookkeeping
-     *  assumed. Locals this procedure spills itself later (k outside that
-     *  range) need no adjustment — spilled strictly after that same
-     *  push{lr}, so this procedure's own view of sp is already
-     *  self-consistent for those. */
+    // Byte offset from the current sp for slot k, valid only when k is
+    // genuinely spilled (!inWindow(tos, k)). A savesLR procedure (one that
+    // makes its own nested CALL) pushes {lr} in its own prologue before its
+    // body ever reads anything, which lands strictly between wherever the
+    // caller left sp and this procedure's own first read of one of its own
+    // out-of-window arguments (k < initialSpilledCount) — shifting those
+    // specific slots one word further from sp than the caller's own
+    // bookkeeping assumed. Locals this procedure spills itself later need
+    // no such adjustment.
     uint32_t spillOffset(uint32_t k) const;
 
-    /** A terminator's (RETURN/TRAP) sp rebalancing — nothing downstream
-     *  ever reads r4-r7 again, so there's nothing to reload for, just a
-     *  bare sp adjustment undoing every spill this procedure's own body
-     *  made. savesLR procedures only reclaim their own self-spilled
-     *  locals here, not the initialSpilledCount slots a caller placed
-     *  before this procedure's own prologue ran (those sit below this
-     *  procedure's own push{lr} — reclaiming them here would walk past
-     *  the saved lr word without reading it). abi_strategy.cpp's
-     *  abiEmitReturn is what reclaims that remainder, after retrieving
-     *  the saved record. */
+    // A terminator's (RETURN/TRAP) sp rebalancing — nothing downstream ever
+    // reads r4-r7 again, so this is just a bare sp adjustment undoing every
+    // spill this procedure's own body made. A savesLR procedure only
+    // reclaims its own self-spilled locals here, not the
+    // initialSpilledCount slots its caller placed before this procedure's
+    // own prologue ran (those sit below this procedure's own push{lr}).
+    // abi_strategy.cpp's abiEmitReturn reclaims that remainder, after
+    // retrieving the saved record.
     void discardWindow(Emitter &e) const;
 
 private:
-    bool savesLR_;
-    uint32_t initialSpilledCount_;
+    bool savesLR;
+    uint32_t initialSpilledCount;
 };
 
-/** CALL's own shuffle, first half — spills the caller's currently-resident
- *  window into the leftover-locals mask (one plain PUSH) and the
- *  stack-passed args (pushLargestKClosest). Doesn't move window.tos. */
+// CALL's own shuffle, first half — spills the caller's currently-resident
+// window into the leftover-locals mask (one plain PUSH) and the
+// stack-passed args (pushLargestKClosest). Doesn't move window.tos.
 void spillForCall(Emitter &e, Window &window, uint32_t stackArgs);
 
-/** CALL's shuffle, second half — fills the callee's own canonical phase-0
- *  window from what spillForCall just pushed. Capped at WINDOW_SIZE - 1,
- *  not WINDOW_SIZE: the callee's own last argument (delivered via acc, not
- *  through this function) always lands at physReg(argCount-1), which is
- *  the same physical register as physReg(0) whenever stackArgs equals
- *  WINDOW_SIZE exactly — this is a real, previously-found off-by-one and
- *  must be preserved exactly. */
+// CALL's shuffle, second half — fills the callee's own canonical phase-0
+// window from what spillForCall just pushed. Capped at WINDOW_SIZE - 1, not
+// WINDOW_SIZE: the callee's own last argument (delivered via acc, not
+// through this function) always lands at physReg(argCount-1), which is the
+// same physical register as physReg(0) whenever stackArgs equals
+// WINDOW_SIZE exactly, so this cap must stay exact.
 void fillCalleeArgs(Emitter &e, uint32_t stackArgs);
 
-/** CALL's shuffle, final step — once the callee returns, reload whatever
- *  spillForCall/fillCalleeArgs consumed. Mutates window.tos to targetTos. */
+// CALL's shuffle, final step — once the callee returns, reload whatever
+// spillForCall/fillCalleeArgs consumed. Mutates window.tos to targetTos.
 void reloadAfterCall(Emitter &e, Window &window, uint32_t targetTos);
 
-/** blocks.h's own block-exit truncation (isa-core.md §8.1/§7.1/§7.2): any
- *  TOS surplus above targetTos is implicitly dropped at a BLOCK_END/loop
- *  back-edge — no bytecode-level pop sequence runs, so sp needs
- *  rebalancing here regardless of whether any physical register still
- *  holds something the target window's own mapping expects. What's
- *  spilled *above* targetTos's own ceiling is abandoned outright (a bare
- *  sp adjustment — nothing can still read it); what's spilled at or below
- *  it is genuinely historical data, reloaded via popRuns in the same
- *  larger-k-first order it was spilled in. Mutates window.tos to
- *  targetTos directly. */
+// blocks.h's own block-exit truncation: any TOS surplus above targetTos is
+// implicitly dropped at a BLOCK_END/loop back-edge — no bytecode-level pop
+// sequence runs, so sp needs rebalancing here regardless of whether any
+// physical register still holds something the target window's own mapping
+// expects. What's spilled above targetTos's own ceiling is abandoned
+// outright; what's spilled at or below it is genuinely historical data,
+// reloaded via popRuns in the same larger-k-first order it was spilled in.
+// Mutates window.tos to targetTos directly.
 void restoreWindow(Emitter &e, Window &window, uint32_t targetTos);
 
 } // namespace jitc

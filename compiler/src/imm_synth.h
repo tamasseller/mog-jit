@@ -1,14 +1,13 @@
-// jit-armv6m/compiler — 32-bit immediate synthesis, ported from
-// jit-armv6m/prototype/src/armv6.ts's synthesizeImm32 (that algorithm
-// lives in the TS *port*, not in the original jit-armv6m/src/armv6.h — the
-// C header has no equivalent to reuse, only the raw encoders this builds
-// on top of).
+// jit-armv6m/compiler — 32-bit immediate synthesis. jit-armv6m/src/armv6.h
+// (the shared C header) has no equivalent algorithm, only the raw encoders
+// this builds on top of.
 #ifndef JIT_ARMV6M_COMPILER_IMM_SYNTH_H_
 #define JIT_ARMV6M_COMPILER_IMM_SYNTH_H_
 
 #include <cstdint>
 
-namespace jitc {
+namespace jitc
+{
 
 class Emitter;
 
@@ -25,8 +24,15 @@ void emitSynthesizeImm32(Emitter &e, uint32_t dstReg, uint32_t value);
  *  own algorithm (cross-checked directly in test_imm_synth.cpp). */
 uint32_t synthesizeImm32Length(uint32_t value);
 
-constexpr bool fitsImm8(int32_t v) { return v >= 0 && v <= 0xff; }
-constexpr bool fitsImm3(int32_t v) { return v >= 0 && v <= 0x7; }
+constexpr bool fitsImm8(int32_t v)
+{
+    return v >= 0 && v <= 0xff;
+}
+
+constexpr bool fitsImm3(int32_t v)
+{
+    return v >= 0 && v <= 0x7;
+}
 
 } // namespace jitc
 

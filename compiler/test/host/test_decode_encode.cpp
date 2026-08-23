@@ -1,10 +1,8 @@
-// jit-armv6m/compiler/test — decode_instr.h/encode_instr.h round-trip,
-// ported from jit-armv6m/prototype/test/bytecodeReader-decode.test.ts.
+// jit-armv6m/compiler/test — decode_instr.h/encode_instr.h round-trip.
 // One instruction of every shape decode_instr.h claims to handle, encoded
 // via encode_instr.h and decoded back — cross-checks the two against each
-// other the same discipline test_translate_proc.cpp's own fixtures use
-// (hand-derived, not generated), since there is no @ppl/machine here to
-// cross-check against directly.
+// other using hand-derived cases, since there's no reference
+// implementation here to check against directly.
 #include "Test.h"
 #include "decode_instr.h"
 #include "encode_instr.h"
@@ -13,13 +11,27 @@
 
 using namespace jitc;
 
-namespace {
+namespace
+{
 
-bool sameInstr(const Instr &a, const Instr &b) {
-    if(a.op != b.op || a.combo != b.combo) return false;
-    if(a.op == Op::CALL) return a.calleeIndex == b.calleeIndex;
-    if(a.combo == Combo::REG_ACC || a.combo == Combo::REG_REG) return a.target == b.target;
-    if(a.combo == Combo::IMM_ACC || a.op == Op::CONST || a.op == Op::TRAP || a.op == Op::BR_TABLE) return a.imm == b.imm;
+bool sameInstr(const Instr &a, const Instr &b)
+{
+    if(a.op != b.op || a.combo != b.combo)
+    {
+        return false;
+    }
+    if(a.op == Op::CALL)
+    {
+        return a.calleeIndex == b.calleeIndex;
+    }
+    if(a.combo == Combo::REG_ACC || a.combo == Combo::REG_REG)
+    {
+        return a.target == b.target;
+    }
+    if(a.combo == Combo::IMM_ACC || a.op == Op::CONST || a.op == Op::TRAP || a.op == Op::BR_TABLE)
+    {
+        return a.imm == b.imm;
+    }
     return true;
 }
 
@@ -36,8 +48,10 @@ constexpr uint32_t kCaseCount = sizeof(kCases) / sizeof(kCases[0]);
 
 } // namespace
 
-TEST(DecodeInstrRoundTripsEveryShape) {
-    for(uint32_t i = 0; i < kCaseCount; i++) {
+TEST(DecodeInstrRoundTripsEveryShape)
+{
+    for(uint32_t i = 0; i < kCaseCount; i++)
+    {
         uint8_t bytes[8];
         uint32_t len = 0;
         encodeInstr(kCases[i], bytes, len, sizeof(bytes));
@@ -48,13 +62,15 @@ TEST(DecodeInstrRoundTripsEveryShape) {
     }
 }
 
-TEST(DecodeInstrAdvancesThroughARunOfInstructions) {
+TEST(DecodeInstrAdvancesThroughARunOfInstructions)
+{
     const Instr program[] = {opImm(Op::ADD, 5), LOAD(0), bare(Op::RETURN)};
     uint8_t bytes[32];
     uint32_t len = encodeBody(program, 3, bytes, sizeof(bytes));
 
     uint32_t pos = 0;
-    for(uint32_t i = 0; i < 3; i++) {
+    for(uint32_t i = 0; i < 3; i++)
+    {
         DecodedInstr d = decodeInstr(bytes, len, pos);
         CHECK(sameInstr(d.instr, program[i]));
         pos = d.next;
@@ -62,7 +78,8 @@ TEST(DecodeInstrAdvancesThroughARunOfInstructions) {
     CHECK(pos == len);
 }
 
-TEST(EncodeConstSmallImmFitsOneByte) {
+TEST(EncodeConstSmallImmFitsOneByte)
+{
     uint8_t bytes[8];
     uint32_t len = 0;
     encodeInstr(CONST(15), bytes, len, sizeof(bytes));
@@ -70,7 +87,8 @@ TEST(EncodeConstSmallImmFitsOneByte) {
     CHECK(bytes[0] == 108 + 15);
 }
 
-TEST(EncodeConstLargeImmUsesLeb128Form) {
+TEST(EncodeConstLargeImmUsesLeb128Form)
+{
     uint8_t bytes[8];
     uint32_t len = 0;
     encodeInstr(CONST(16), bytes, len, sizeof(bytes));
@@ -79,14 +97,16 @@ TEST(EncodeConstLargeImmUsesLeb128Form) {
     CHECK(bytes[1] == 16);
 }
 
-TEST(EncodeComparisonZeroImmCollapsesToOneByte) {
+TEST(EncodeComparisonZeroImmCollapsesToOneByte)
+{
     uint8_t bytes[8];
     uint32_t len = 0;
     encodeInstr(opImm(Op::EQ, 0), bytes, len, sizeof(bytes));
     CHECK(len == 1); // mode 2 ("IMM_ACC #0"), no operand byte
 }
 
-TEST(EncodeLeb128MultiByteRoundTrips) {
+TEST(EncodeLeb128MultiByteRoundTrips)
+{
     uint8_t bytes[8];
     uint32_t len = 0;
     encodeLeb128(300, bytes, len, sizeof(bytes)); // 300 = 0b1_0010_1100 -> 2 LEB128 bytes

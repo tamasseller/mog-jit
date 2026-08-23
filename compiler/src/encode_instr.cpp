@@ -2,108 +2,181 @@
 
 #include <cassert>
 
-namespace jitc {
+namespace jitc
+{
 
-namespace {
+namespace
+{
 
-bool isArithOp(Op op) { return op >= Op::ADD && op <= Op::ASR; }
+bool isArithOp(Op op)
+{
+    return op >= Op::ADD && op <= Op::ASR;
+}
 
-void putByte(uint8_t b, uint8_t *out, uint32_t &outLen, uint32_t outCapacity) {
+void putByte(uint8_t b, uint8_t *out, uint32_t &outLen, uint32_t outCapacity)
+{
     assert(outLen < outCapacity); // GCOV_EXCL_LINE — fixture-authoring bug, never a runtime condition
     out[outLen++] = b;
 }
 
 } // namespace
 
-void encodeLeb128(uint32_t n, uint8_t *out, uint32_t &outLen, uint32_t outCapacity) {
+void encodeLeb128(uint32_t n, uint8_t *out, uint32_t &outLen, uint32_t outCapacity)
+{
     uint32_t rest = n;
-    do {
+    do
+    {
         uint8_t byte = (uint8_t)(rest & 0x7f);
         rest >>= 7;
         putByte(rest != 0 ? (uint8_t)(byte | 0x80) : byte, out, outLen, outCapacity);
     } while(rest != 0);
 }
 
-void encodeInstr(const Instr &instr, uint8_t *out, uint32_t &outLen, uint32_t outCapacity) {
+void encodeInstr(const Instr &instr, uint8_t *out, uint32_t &outLen, uint32_t outCapacity)
+{
     Op op = instr.op;
 
-    if(isArithOp(op)) {
+    if(isArithOp(op))
+    {
         uint32_t arithIdx = (uint32_t)op - (uint32_t)Op::ADD;
-        switch(instr.combo) {
-            case Combo::REG_ACC:   putByte((uint8_t)(arithIdx * 5 + 0), out, outLen, outCapacity); encodeLeb128(instr.target, out, outLen, outCapacity); return;
-            case Combo::REG_REG:   putByte((uint8_t)(arithIdx * 5 + 1), out, outLen, outCapacity); encodeLeb128(instr.target, out, outLen, outCapacity); return;
-            case Combo::PEEK_PEEK: putByte((uint8_t)(arithIdx * 5 + 2), out, outLen, outCapacity); return;
-            case Combo::POP_ACC:   putByte((uint8_t)(arithIdx * 5 + 3), out, outLen, outCapacity); return;
-            case Combo::IMM_ACC:   putByte((uint8_t)(arithIdx * 5 + 4), out, outLen, outCapacity); encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity); return;
-            default: assert(false && "encode_instr: arithmetic op with no combo"); return; // GCOV_EXCL_LINE
+        switch(instr.combo)
+        {
+        case Combo::REG_ACC:
+            putByte((uint8_t)(arithIdx * 5 + 0), out, outLen, outCapacity);
+            encodeLeb128(instr.target, out, outLen, outCapacity);
+            return;
+        case Combo::REG_REG:
+            putByte((uint8_t)(arithIdx * 5 + 1), out, outLen, outCapacity);
+            encodeLeb128(instr.target, out, outLen, outCapacity);
+            return;
+        case Combo::PEEK_PEEK:
+            putByte((uint8_t)(arithIdx * 5 + 2), out, outLen, outCapacity);
+            return;
+        case Combo::POP_ACC:
+            putByte((uint8_t)(arithIdx * 5 + 3), out, outLen, outCapacity);
+            return;
+        case Combo::IMM_ACC:
+            putByte((uint8_t)(arithIdx * 5 + 4), out, outLen, outCapacity);
+            encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
+            return;
+        default:
+            assert(false && "encode_instr: arithmetic op with no combo"); // GCOV_EXCL_LINE
+            return; // GCOV_EXCL_LINE
         }
     }
 
-    if(isComparisonOp(op)) {
+    if(isComparisonOp(op))
+    {
         uint32_t cmpIdx = (uint32_t)op - (uint32_t)Op::EQ;
-        switch(instr.combo) {
-            case Combo::REG_ACC: putByte((uint8_t)(50 + cmpIdx * 4 + 0), out, outLen, outCapacity); encodeLeb128(instr.target, out, outLen, outCapacity); return;
-            case Combo::POP_ACC: putByte((uint8_t)(50 + cmpIdx * 4 + 1), out, outLen, outCapacity); return;
-            case Combo::IMM_ACC:
-                if(instr.imm == 0) { putByte((uint8_t)(50 + cmpIdx * 4 + 2), out, outLen, outCapacity); return; }
-                putByte((uint8_t)(50 + cmpIdx * 4 + 3), out, outLen, outCapacity);
-                encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
+        switch(instr.combo)
+        {
+        case Combo::REG_ACC:
+            putByte((uint8_t)(50 + cmpIdx * 4 + 0), out, outLen, outCapacity);
+            encodeLeb128(instr.target, out, outLen, outCapacity);
+            return;
+        case Combo::POP_ACC:
+            putByte((uint8_t)(50 + cmpIdx * 4 + 1), out, outLen, outCapacity);
+            return;
+        case Combo::IMM_ACC:
+            if(instr.imm == 0)
+            {
+                putByte((uint8_t)(50 + cmpIdx * 4 + 2), out, outLen, outCapacity);
                 return;
-            case Combo::REG_REG: case Combo::PEEK_PEEK: // GCOV_EXCL_LINE — isa-core.md §4.2: comparisons have no REG_REG/PEEK_PEEK combo, structurally unreachable
-                assert(false && "encode_instr: comparison has no REG_REG/PEEK_PEEK combo (isa-core.md §4.2)"); // GCOV_EXCL_LINE
-                return; // GCOV_EXCL_LINE
-            default: assert(false && "encode_instr: comparison op with no combo"); return; // GCOV_EXCL_LINE
+            }
+            putByte((uint8_t)(50 + cmpIdx * 4 + 3), out, outLen, outCapacity);
+            encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
+            return;
+        case Combo::REG_REG:
+        case Combo::PEEK_PEEK: // GCOV_EXCL_LINE — isa-core.md §4.2: comparisons have no REG_REG/PEEK_PEEK combo, structurally unreachable
+            assert(false && "encode_instr: comparison has no REG_REG/PEEK_PEEK combo (isa-core.md §4.2)"); // GCOV_EXCL_LINE
+            return; // GCOV_EXCL_LINE
+        default:
+            assert(false && "encode_instr: comparison op with no combo"); // GCOV_EXCL_LINE
+            return; // GCOV_EXCL_LINE
         }
     }
 
-    if(op >= Op::NEG && op <= Op::REVBITS) {
+    if(op >= Op::NEG && op <= Op::REVBITS)
+    {
         putByte((uint8_t)(90 + ((uint32_t)op - (uint32_t)Op::NEG)), out, outLen, outCapacity);
         return;
     }
 
-    switch(op) {
-        case Op::BLOCK_END: putByte(94, out, outLen, outCapacity); return;
-        case Op::LOOP:       putByte(95, out, outLen, outCapacity); return;
-        case Op::BR_TABLE:
-            if(instr.imm == 1) { putByte(96, out, outLen, outCapacity); return; }
-            if(instr.imm == 2) { putByte(97, out, outLen, outCapacity); return; }
-            putByte(98, out, outLen, outCapacity);
-            encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
+    switch(op)
+    {
+    case Op::BLOCK_END:
+        putByte(94, out, outLen, outCapacity);
+        return;
+    case Op::LOOP:
+        putByte(95, out, outLen, outCapacity);
+        return;
+    case Op::BR_TABLE:
+        if(instr.imm == 1)
+        {
+            putByte(96, out, outLen, outCapacity);
             return;
-        case Op::CALL:
-            putByte(99, out, outLen, outCapacity);
-            encodeLeb128(instr.calleeIndex, out, outLen, outCapacity);
+        }
+        if(instr.imm == 2)
+        {
+            putByte(97, out, outLen, outCapacity);
             return;
-        case Op::RETURN: putByte(100, out, outLen, outCapacity); return;
-        case Op::TRAP:
-            if(instr.imm == 0) { putByte(101, out, outLen, outCapacity); return; }
-            putByte(102, out, outLen, outCapacity);
-            encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
+        }
+        putByte(98, out, outLen, outCapacity);
+        encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
+        return;
+    case Op::CALL:
+        putByte(99, out, outLen, outCapacity);
+        encodeLeb128(instr.calleeIndex, out, outLen, outCapacity);
+        return;
+    case Op::RETURN:
+        putByte(100, out, outLen, outCapacity);
+        return;
+    case Op::TRAP:
+        if(instr.imm == 0)
+        {
+            putByte(101, out, outLen, outCapacity);
             return;
-        case Op::PUSH: putByte(103, out, outLen, outCapacity); return;
-        case Op::POP:  putByte(104, out, outLen, outCapacity); return;
-        case Op::LOAD:
-            putByte(105, out, outLen, outCapacity);
-            encodeLeb128(instr.target, out, outLen, outCapacity);
+        }
+        putByte(102, out, outLen, outCapacity);
+        encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
+        return;
+    case Op::PUSH:
+        putByte(103, out, outLen, outCapacity);
+        return;
+    case Op::POP:
+        putByte(104, out, outLen, outCapacity);
+        return;
+    case Op::LOAD:
+        putByte(105, out, outLen, outCapacity);
+        encodeLeb128(instr.target, out, outLen, outCapacity);
+        return;
+    case Op::STORE:
+        putByte(106, out, outLen, outCapacity);
+        encodeLeb128(instr.target, out, outLen, outCapacity);
+        return;
+    case Op::CONST:
+        if(instr.imm >= 0 && instr.imm <= 15)
+        {
+            putByte((uint8_t)(108 + instr.imm), out, outLen, outCapacity);
             return;
-        case Op::STORE:
-            putByte(106, out, outLen, outCapacity);
-            encodeLeb128(instr.target, out, outLen, outCapacity);
-            return;
-        case Op::CONST:
-            if(instr.imm >= 0 && instr.imm <= 15) { putByte((uint8_t)(108 + instr.imm), out, outLen, outCapacity); return; }
-            putByte(107, out, outLen, outCapacity);
-            encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
-            return;
-        default: break; // GCOV_EXCL_LINE — every Op not already handled by isArithOp/isComparisonOp/the unary range is one of the explicit cases above; Op's own fixed enum range makes this genuinely unreachable, not merely untested
+        }
+        putByte(107, out, outLen, outCapacity);
+        encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
+        return;
+    default:
+        break; // GCOV_EXCL_LINE — every Op not already handled by isArithOp/isComparisonOp/the unary range is one of the explicit cases above; Op's own fixed enum range makes this genuinely unreachable, not merely untested
     }
 
     assert(false && "encode_instr: unhandled instruction"); // GCOV_EXCL_LINE
 }
 
-uint32_t encodeBody(const Instr *body, uint32_t count, uint8_t *out, uint32_t outCapacity) {
+uint32_t encodeBody(const Instr *body, uint32_t count, uint8_t *out, uint32_t outCapacity)
+{
     uint32_t outLen = 0;
-    for(uint32_t i = 0; i < count; i++) encodeInstr(body[i], out, outLen, outCapacity);
+    for(uint32_t i = 0; i < count; i++)
+    {
+        encodeInstr(body[i], out, outLen, outCapacity);
+    }
     return outLen;
 }
 

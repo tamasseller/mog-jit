@@ -5,14 +5,14 @@
 
 using namespace jitc;
 
-TEST(StartsCleanInAccReg)
+TEST(startsCleanInAccReg)
 {
     AccState acc;
     Shape s = acc.peek();
     CHECK(!s.isImm && s.reg == ACC_REG);
 }
 
-TEST(ProducerThenPeekReturnsPendingShapeUnmaterialized)
+TEST(producerThenPeekReturnsPendingShapeUnmaterialized)
 {
     uint16_t buf[4];
     Emitter e(buf, 4);
@@ -24,7 +24,7 @@ TEST(ProducerThenPeekReturnsPendingShapeUnmaterialized)
     CHECK(e.halfwordCount() == 0); // peek doesn't discharge it either
 }
 
-TEST(FlushMaterializesPendingAndBecomesClean)
+TEST(flushMaterializesPendingAndBecomesClean)
 {
     uint16_t buf[4];
     Emitter e(buf, 4);
@@ -37,7 +37,7 @@ TEST(FlushMaterializesPendingAndBecomesClean)
     CHECK(!s.isImm && s.reg == 5);
 }
 
-TEST(FlushOfAlreadyCleanSameRegisterIsANoOp)
+TEST(flushOfAlreadyCleanSameRegisterIsANoOp)
 {
     uint16_t buf[4];
     Emitter e(buf, 4);
@@ -46,14 +46,13 @@ TEST(FlushOfAlreadyCleanSameRegisterIsANoOp)
     CHECK(e.halfwordCount() == 0);
 }
 
-TEST(FlushLiveOnPoisonedAccIsANoOp)
+TEST(flushLiveOnPoisonedAccIsANoOp)
 {
-    // The one legitimate use of a control-flow-merge point (blocks.h's
-    // closeBlockEnd/closeCaseViaTerminator) where acc is poisoned: a
-    // case/loop body whose last instruction clobbered acc (a REG_REG or
-    // PEEK_PEEK op) with nothing after to re-establish it before the
-    // block closes. Poisoned isn't an error for flushLive specifically —
-    // there's nothing downstream that could read it either way.
+    // The one legitimate case where acc is poisoned at a control-flow merge
+    // (blocks.h's closeBlockEnd/closeCaseViaTerminator): the last
+    // instruction in a case/loop body clobbered acc (REG_REG or PEEK_PEEK)
+    // with nothing after to re-establish it. flushLive treats this as a
+    // no-op, not an error — nothing downstream could read acc either way.
     uint16_t buf[4];
     Emitter e(buf, 4);
     AccState acc;
@@ -62,7 +61,7 @@ TEST(FlushLiveOnPoisonedAccIsANoOp)
     CHECK(e.halfwordCount() == 0);
 }
 
-TEST(SetCleanThenPoisonThenProducerSupersedes)
+TEST(setCleanThenPoisonThenProducerSupersedes)
 {
     AccState acc;
     acc.setClean(7);
@@ -70,16 +69,15 @@ TEST(SetCleanThenPoisonThenProducerSupersedes)
     CHECK(!s.isImm && s.reg == 7);
 
     acc.poison();
-    // peek()/flush() on a poisoned state would assert — not exercised
-    // here (see accstate.h's own header on why: a translator-logic bug,
-    // never legitimate input).
+    // peek()/flush() on a poisoned state would assert (a translator-logic
+    // bug, never legitimate input) — not exercised here.
 
     acc.producer(Shape::ofReg(2));
     Shape s2 = acc.peek(); // producer supersedes Poisoned without issue
     CHECK(!s2.isImm && s2.reg == 2);
 }
 
-TEST(EmitBinaryPoisonsOnClobberingComboAndCleansOtherwise)
+TEST(emitBinaryPoisonsOnClobberingComboAndCleansOtherwise)
 {
     uint16_t buf[8];
     Emitter e(buf, 8);
@@ -89,11 +87,9 @@ TEST(EmitBinaryPoisonsOnClobberingComboAndCleansOtherwise)
 
     // REG_REG clobbers acc — must end up Poisoned.
     emitBinary(e, acc, Op::ADD, Combo::REG_REG, &operand, 4, /*clobbersAcc=*/true);
-    acc.poison(); // emitBinary already poisoned; re-poisoning is harmless, just documents the expectation
-    // no direct accessor for "is poisoned" — verified indirectly via the
-    // fact that a subsequent producer() (below) is required before any
-    // read, matching translateProc.ts's own control flow (CALL flushes,
-    // never peeks, right after a clobbering combo).
+    acc.poison(); // emitBinary already poisoned this; redundant, just documents the expectation
+    // No direct accessor for "is poisoned"; verified indirectly by
+    // requiring producer() before the next read.
     acc.producer(Shape::ofReg(4));
 
     // IMM_ACC doesn't clobber acc — must end up Clean(dest).

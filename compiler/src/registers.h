@@ -1,14 +1,14 @@
-// jit-armv6m/compiler — register assignment, ported from
-// jit-armv6m/prototype/src/registers.ts. Only the roles the real-ABI,
-// straight-line-only translator actually touches this slice.
+// jit-armv6m/compiler — register assignment (docs/design.md §3). Only the
+// roles the real-ABI translator actually touches.
 #ifndef JIT_ARMV6M_COMPILER_REGISTERS_H_
 #define JIT_ARMV6M_COMPILER_REGISTERS_H_
 
 #include <cstdint>
 
-namespace jitc {
+namespace jitc
+{
 
-constexpr uint32_t ACC_REG = 0;    // r0 — acc
+constexpr uint32_t ACC_REG = 0;     // r0 — acc
 constexpr uint32_t SCRATCH_REG = 2; // r2
 
 constexpr uint32_t WINDOW_BASE = 4; // r4

@@ -4,5 +4,5 @@
 int main()
 {
     bool ok = test::TestRunner::runAllTests(&SemihostingOutput::instance);
-    semihosting_exit(ok ? 0 : 1);
+    semihostingExit(ok ? 0 : 1);
 }

@@ -1,12 +1,15 @@
 # MCU JIT: Generic Core → ARMv6-M
 
 > **Status:** design plus implementation state. Assumes
-> `packages/machine/docs/isa-core.md` throughout. Two implementations exist
-> side by side: `jit-armv6m/prototype` (the translation algorithm in
-> TypeScript, emitting real Thumb, run on `qemu-system-arm`) and
-> `jit-armv6m/compiler` (the native C++ port, targeting the real
-> dispatch/eviction runtime only). §16 tracks what is verified, what is
-> derived on paper, and what is still open.
+> `packages/machine/docs/isa-core.md` throughout. `jit-armv6m/compiler` (C++)
+> is the sole implementation, targeting the real dispatch/eviction runtime
+> (`jit-armv6m/runtime`) on real ARMv6-M hardware via `qemu-system-arm`. A TS
+> prototype (`jit-armv6m/prototype`) existed earlier as a faster-iteration
+> blueprint for working out the algorithm before committing it to C++; it was
+> retired once the native port reached full feature parity, and citations to
+> it below (mostly in §16) are historical — they record how a given mechanism
+> was originally worked out or a bug originally found, not a live path. §16
+> tracks what is verified, what is derived on paper, and what is still open.
 
 ---
 
@@ -14,7 +17,7 @@
 
 Native C/C++ entry points, callable from bare-metal firmware, that
 JIT-compile and execute one Generic Core program injected at runtime
-(`prototype/qemu/runtime_host.h`):
+(`jit-armv6m/runtime/runtime_host.h`):
 
 ```c
 typedef struct { uint32_t value; uint32_t trapped; } ProgramResult;
@@ -81,8 +84,8 @@ which is the geometry that makes sharing work:
 
 `enter_program` computes a hard ceiling for compiled code once, at entry:
 `codeLimit = SP(at entry) − requiredStackBytes`. Every term of
-`requiredStackBytes` (`prototype/qemu/runtime_host.cpp`) is a real parameter
-or a measured constant:
+`requiredStackBytes` (`jit-armv6m/runtime/runtime_host.cpp`) is a real
+parameter or a measured constant:
 
 | Term | Source |
 |---|---|
@@ -133,15 +136,19 @@ absolute arena address. Every offset is relative to the current procedure's
 own start, the same position-independence §11 requires of emitted code, so
 compaction sliding the code region never invalidates a still-open record.
 
-The prototype's mock translator (`prototype/qemu/compile_proc.cpp`) has no
-Frame stack at all: it is an unconditionally-terminating copy from a
-precompiled blob, so its worst case is one number, folded into
-`MOCK_TRANSLATOR_ENTRY_WORST_CASE_BYTES` (48 bytes of frame via
-`-fstack-usage`, plus 20 for whichever of `memcpy`/`memmove` it calls, plus
-the trampoline's fixed push-and-realign overhead). That constant is
-enforced rather than trusted: `compileProc` sits in its own translation unit
-so its Makefile can build it with
-`-Wstack-usage=48 -Werror=stack-usage=48`. The separate file is necessary
+The now-retired TS prototype's own mock translator (formerly
+`prototype/qemu/compile_proc.cpp`) had no Frame stack at all: it was an
+unconditionally-terminating copy from a precompiled blob, so its worst case
+was one number, folded into `MOCK_TRANSLATOR_ENTRY_WORST_CASE_BYTES` (48
+bytes of frame via `-fstack-usage`, plus 20 for whichever of
+`memcpy`/`memmove` it called, plus the trampoline's fixed push-and-realign
+overhead). That constant is still what `jit-armv6m/runtime/runtime_host.cpp`'s
+`requiredStackBytes` budgets for today, unconditionally — now wrong, since
+the mock translator it was calibrated for no longer exists anywhere in the
+tree and the real translator's actual frame is considerably larger (§16 item
+19, open). It was enforced rather than trusted in its original form:
+`compileProc` sat in its own translation unit so its Makefile could build it
+with `-Wstack-usage=48 -Werror=stack-usage=48`. The separate file was necessary
 because the same threshold applied to `enter_program_on_stack`/`_split`
 would flag their VLAs, which the compiler cannot bound at all. A real
 translator replaces this constant with the live accounting above, not a
@@ -263,7 +270,7 @@ phys(k)       =  r7 − (k mod 4)          when in_window(k)
 is what makes historical spill-stack reloads batchable at all, by making an
 already-emitted sequence of individual chronological spills exactly
 equivalent to one hypothetical batched `PUSH`, so a batched `POP` can read
-it back later (`prototype/src/window.ts`'s header has the full argument).
+it back later (`compiler/src/window.h`'s header has the full argument).
 Direction aside, the property that matters is that `phys(k)` is a pure
 function of `k` and the current `tos`, never of push/pop history along
 whichever control-flow path arrived here. Two `BR_TABLE` cases, or a `LOOP`
@@ -338,7 +345,7 @@ as `k = 7,6,5,8`, and a batched push would write the wrong value to the
 wrong slot address.
 
 What works is two *different* orderings for two *different* consumers
-(`prototype/src/window.ts`'s `spillForCall`/`fillCalleeArgs`/
+(`compiler/src/window.cpp`'s `spillForCall`/`fillCalleeArgs`/
 `reloadAfterCall`):
 
 1. **The caller's own non-argument locals** (`w − m` of them) need no
@@ -399,7 +406,9 @@ than just at the boundary. Once that existed,
 `spillForCall`/`reloadAfterCall` needed no logic change: the natural
 chronological ordering they rely on already produces the right memory
 layout for a callee's deep arguments. Three constraints only a concrete deep
-case exposes (`prototype/test/deep-args.test.ts`):
+case exposes (originally found via the now-retired TS prototype's own
+`deep-args.test.ts`; `compiler/test/host/test_window.cpp` and
+`test_abi_strategy.cpp` cover the equivalent native shapes):
 
 - `fillCalleeArgs` caps at `WINDOW_SIZE - 1`. `physReg` is periodic mod
   `WINDOW_SIZE`, so at `stackArgs === WINDOW_SIZE` exactly, `physReg(0)` and
@@ -461,7 +470,7 @@ LDR  r3, [r3, #4]           ; returnHelperFromLr (index 1)
 BX   r3
 ```
 
-Three shared entry points feed one tail (`prototype/qemu/runtime.S`), chosen
+Three shared entry points feed one tail (`jit-armv6m/runtime/runtime.S`), chosen
 per procedure by what that procedure's own prologue did:
 
 | Helper (vector index) | When | What it does |
@@ -518,7 +527,7 @@ path.
 one's gap, then updates only the dispatch table's `code_ptr` entries:
 O(procedure count), not O(code size). A procedure's code length comes from
 neighbors rather than a stored field (`occupiedSizeOf`,
-`prototype/qemu/runtime_internal.h`): compaction keeps every resident
+`jit-armv6m/runtime/runtime_internal.h`): compaction keeps every resident
 procedure packed back to back with no gaps, so a scan for whichever other
 resident entry has the next-closest `code_ptr` above this one's (or the
 arena's high-water mark if none) gives the boundary, and boundary minus
@@ -690,11 +699,12 @@ Per-opcode-class notes:
 - **`BR_TABLE`.** ARMv6-M has no `TBB`/`TBH` (Thumb-2 only). `N ≤ 2`, the
   overwhelming common case (`if`/`if-else`, isa-core.md §7.1), compiles to
   `CMP` plus a conditional branch, no table. `N > 2`
-  (`prototype/src/blocks.ts`'s `openBrTableJump`/`emitBrTableHelper`) needs
-  a literal-pool jump table plus a computed `BX`, but not one per site: a
-  single small dispatch routine shared by every `BR_TABLE N>2` site in the
-  procedure, reached by `BL` with the call site's own table addressed
-  relative to `lr`.
+  (`compiler/src/blocks.cpp`'s `openBrTableJump`) needs a literal-pool jump
+  table plus a computed `BX`, but not one dispatch routine per site: one
+  flash-resident copy for the whole program (§11's reserved slot 6,
+  `brTableJumpHelper`, `jit-armv6m/runtime/runtime.S` — §16 item 21, done),
+  reached by `BLX` through the helper vector, with the call site's own table
+  addressed relative to `lr` exactly as it would be after a local `BL`.
 
   Table entries are clamped to `N`, one slot *past* the last real case, not
   `N - 1`: isa-core.md's `acc ≥ N` behavior is "no case body runs, `acc`
@@ -702,7 +712,7 @@ Per-opcode-class notes:
   case". The register holding the clamped index is deliberately never `acc`,
   so it survives dispatch unmodified on both paths.
 
-  **A non-obvious ARMv6-M trap here.** `BL` always sets `lr` with bit 0
+  **A non-obvious ARMv6-M trap here.** `BL`/`BLX` always set `lr` with bit 0
   forced to 1, the Thumb-mode marker a later `BX`/`POP{PC}` needs. Harmless
   for a branch target, where hardware strips it, but reading `lr` into a
   general register for address arithmetic (this routine's whole mechanism)
@@ -734,7 +744,7 @@ one free destination, with no ternary form, so combining never chains more
 than one bytecode instruction deep in either direction. It resolves *at* the
 next instruction, never several ahead.
 
-**The state** (`prototype/src/accstate.ts`, `compiler/src/accstate.h`):
+**The state** (`compiler/src/accstate.h`):
 
 - **`CLEAN(reg)`**: already in a committed physical register, usually `r0`,
   sometimes an alias left by an earlier destination-fold.
@@ -787,16 +797,17 @@ hard ARMv6-M constraint:
 | Class | Examples | Folds a pending operand? | Folds a following `STORE`? |
 |---|---|---|---|
 | Commutative 3-op (reg-reg or reg-imm3) | `ADD` | yes, either shape, either side | yes |
-| Order-sensitive 3-op, mirror available | comparisons | `Reg` always; `Imm` via a swapped relational op (below) | no (branch-fused instead, or writes `acc`) |
-| Order-sensitive 3-op, no mirror | `SUB` | `Reg` always; `Imm` only if `k=0` (`RSB`) | yes |
+| Order-sensitive 3-op, mirror available | comparisons | `Reg` always; `Imm` via a swapped relational op, when it fits `imm8` and the other side is a register (below) | yes, when not branch-fused (`materializeComparison`) — branch-fusion consumes the destination outright instead |
+| Order-sensitive 3-op, no mirror | `SUB`/`RSUB` | `Reg` always; `Imm` unconditionally for `RSUB` (`SUBIMM`), only if `k=0` for `SUB` (`RSB`) — below | yes |
 | Shift by *immediate* (3-op) | `SHL`/`SHR`/`ASR` imm form | `Reg`, as the shifted value | yes |
-| Destination-only, no own-value read | `NEG`, `NOT`, `SXH`/`SXB`/`UXH`/`UXB`/`REV`/`REV16`/`REVSH` | `Reg` | yes |
-| 2-op in-place, no immediate form | `AND`, `EOR`/`XOR`, `ORR`, `MUL`, `BIC`, `ADC`, `SBC`, shift by *register* | never: Thumb-1's 2-operand encoding reads the destination field as an input too | never |
+| Destination-only, no own-value read | `NEG`, `NOT` | never — the encoder always reads `ACC_REG` specifically, never a caller-supplied source register, so a pending value is flushed first even though the *encoding itself* (`NEGS`/`MVNS Rd,Rm`, arbitrary distinct `Rd`/`Rm`) would allow the fold; a deliberate simplification, not a hardware constraint | yes |
+| Software-helper call, no native form at all | `CLZ`, `REVBITS` | never — the helper's own calling convention fixes its argument register, same practical effect as the row above for a different, harder reason | yes |
+| 2-op in-place, no immediate form | `AND`, `EOR`/`XOR`, `ORR`, `MUL`, shift by *register* | never: Thumb-1's 2-operand encoding reads the destination field as an input too | never in the sense of skipping the trailing `MOV` (that never happens), but the dispatcher still threads a fold target through, so the value lands in a following `STORE`'s own register at the same cost as not folding at all |
 
-The bottom row is a worse failure mode than the ordering question below:
-retargeting one of those computes the wrong result immediately rather than
-risking a stale value later. Pending state must always flush before one of
-these, without exception.
+The next-to-last row is a worse failure mode than the ordering question
+below: retargeting one of those computes the wrong result immediately
+rather than risking a stale value later. Pending state must always flush
+before one of these, without exception.
 
 **Operand order is the real correctness wrinkle.** `PENDING(Reg(r))` folds
 safely into anything regardless of the op, since it only skips a copy and
@@ -834,7 +845,7 @@ on.
 
 The resulting invariant: a run of zero or more consecutive `STORE`/`PUSH`
 instructions can validly read the same `acc` value, terminated by the next
-producer *or* a write-back-in-place op. Three consequences:
+producer *or* a write-back-in-place op. Four consequences:
 
 - A second consecutive `STORE`/`PUSH` reading the same value works
   unmodified, since `CLEAN`'s `reg` already points at it.
@@ -864,6 +875,31 @@ producer *or* a write-back-in-place op. Three consequences:
   `accstate.ts`'s `flushLive`, a no-op when already `CLEAN` and safe when
   `POISONED`, unlike a bare `flush`): cheap when nothing was pending, paid
   only in the case that needs it.
+- **A fused branch's *opening* is a merge point too, in the other
+  direction, and had no equivalent guard** (found via §16 item 4's own
+  cross-check, after this table's "no" cell above turned out wrong and
+  prompted a closer look at the fusion code around it). Branch-fusion
+  never materializes the comparison's 0/1 result anywhere — only CPU flags
+  carry it into the guard — so `accState` was left completely untouched
+  across the fusion, still describing whatever `acc` held *before* the
+  comparison ran. Per isa-core.md, a comparison is an ordinary producer and
+  neither `BR_TABLE` nor a loop condition's `BLOCK_END` clobbers `acc`
+  (`validate.ts`'s `accLive` stays true across both, and `vm.ts`'s own
+  `BR_TABLE` handling never touches it), so a case or loop body is
+  entitled to read `acc` immediately and get the comparison's own boolean
+  — but the translator would silently hand back the stale pre-comparison
+  operand instead, reachable by a bare `STORE` as a case/loop body's first
+  instruction with nothing in between to re-establish `acc`. Fixed by
+  seeding `accState` with the statically-known constant (`Imm(0)`
+  entering `case[0]`/`Imm(1)` entering `case[1]` or a loop body) exactly
+  when the branch is genuinely fused — never for `testAccNonzero`'s
+  unfused fallback, which never replaced `acc`'s real value in the first
+  place and needs no seeding (`blocks.ts`/`blocks.h`'s `Frame.fusedBoolean`
+  and `closeBlockEnd`'s `fusedLoopExit` parameter). Confirmed as a genuine
+  reference-interpreter/QEMU divergence (not just a theoretical gap) before
+  the fix, on both the prototype and the native port, with permanent
+  regression tests at every level (`acc-fusion-boundary.test.ts`,
+  `test_blocks.cpp`, `test/qemu/fixtures.cpp`#22/#23).
 
 This holds against any bytecode honoring the acc-clobbering convention, not
 just this project's own `lower.ts` output. Nothing statically enforces it
@@ -1232,27 +1268,38 @@ this cleanly.
 
 ## 16. State and open questions
 
-**Verified on real `qemu-system-arm`** (`prototype/test/`): the §6 shuffle
-including a phase-misaligned window with non-argument locals resident
-alongside the args (`call.test.ts`), `stackArgs ≥ WINDOW_SIZE`
-(`deep-args.test.ts`), §10.1's rotation-eviction corner (`rotation.test.ts`),
-`BR_TABLE N>2` including the `lr` Thumb-bit trap (`br-table.test.ts`), the
-§9 dispatch ABI end to end (`abi-dispatch.test.ts`), eviction and compaction
-(`eviction.test.ts`), and both §2 entry variants
-(`enter-program-variants.test.ts`). `compiler/test/host` and
-`compiler/test/qemu` now cover the native port's full instruction set
-(`LOOP`/`BR_TABLE`/unary ops/comparisons included, `EXT` excluded on both
-sides by design), including eviction/compaction and both `RESOURCE_ERROR`
-sides against genuinely native-compiled code on real QEMU (items 17/18
-below).
+**On the `prototype/` citations below.** `jit-armv6m/prototype` (the TS
+translation algorithm this section originally cross-checked against, and
+that most items below narrate finding/fixing bugs in first) has been
+retired — deleted once `jit-armv6m/compiler` reached full feature parity, per
+this doc's own top-of-file status line. Every `prototype/src/*.ts`,
+`prototype/test/*.test.ts`, `program.ts`/`programAbi.ts` (the whole-program
+drivers), and mock-translator (`compile_proc.cpp`) reference below is
+historical: it records how that item was originally found, fixed, or
+verified back when both implementations existed side by side, not a
+currently-navigable path. Left as-is rather than mechanically repointed,
+since in most items the file-pointer and the historical claim ("verified
+identically on both implementations," "TDD: red test failed with the
+predicted wrong value before the fix") are the same sentence — rewriting the
+pointer away would erase the record of what was actually verified. The five
+files that *did* survive, relocated rather than deleted, are
+`jit-armv6m/runtime/{runtime.S,runtime_host.{cpp,h},runtime_internal.h,
+semihosting.cpp}` — the real dispatch/eviction runtime, formerly at
+`prototype/qemu/`.
 
-**Workflow note:** a new capability gets prototyped in TS (`prototype/`)
-first when that's feasible and not too much throwaway effort — cheap,
-fast iteration to work out unexpected inconsistencies before touching
-C++. But the prototype is throwaway; it's a blueprint. Build it the way
-it would need to look on the native, no-heap side (no arrays where
-native can't have one, self-delimiting reads over stored lengths), not
-however's most convenient in TypeScript.
+**Verified on real `qemu-system-arm`** (`prototype/test/`, historical — see
+above): the §6 shuffle including a phase-misaligned window with
+non-argument locals resident alongside the args (`call.test.ts`),
+`stackArgs ≥ WINDOW_SIZE` (`deep-args.test.ts`), §10.1's rotation-eviction
+corner (`rotation.test.ts`), `BR_TABLE N>2` including the `lr` Thumb-bit trap
+(`br-table.test.ts`), the §9 dispatch ABI end to end (`abi-dispatch.test.ts`),
+eviction and compaction (`eviction.test.ts`), and both §2 entry variants
+(`enter-program-variants.test.ts`) — all since re-verified directly against
+`compiler/test/host`/`compiler/test/qemu`, which now cover the native port's
+full instruction set (`LOOP`/`BR_TABLE`/unary ops/comparisons included, `EXT`
+excluded on both sides by design), including eviction/compaction and both
+`RESOURCE_ERROR` sides against genuinely native-compiled code on real QEMU
+(items 17/18 below).
 
 **Open:**
 
@@ -1274,10 +1321,25 @@ however's most convenient in TypeScript.
    fall-through and the back-edge. TDD: `loop-merge.test.ts`'s red test
    (compiled-once condition ignoring what the body actually left pending)
    failed with the predicted wrong value (5 instead of 1) before the fix.
-4. **§10.1's consumer-class table is reasoned per op by hand**, not derived
-   mechanically from `armv6.h`'s encoder signatures. Worth cross-checking
-   now that translators exist, since a transcription error there would
-   silently misclassify one op's foldability rather than fail loudly.
+4. ~~§10.1's consumer-class table is reasoned per op by hand, not derived
+   mechanically~~ — **done**: cross-checked cell by cell against
+   `binops.cpp`/`.ts`, `unaryops.cpp`/`.ts`, `blocks.cpp`/`.ts` and their
+   `translate_proc`/`translateProc` call sites on both sides (native and
+   prototype agree exactly — no row was ported incompletely). Found two
+   genuine transcription errors, now fixed in the table above: comparisons
+   *do* fold into a following `STORE` when not branch-fused (the table
+   said "no"), and `NEG`/`NOT` never fold a pending register operand in
+   either implementation despite the ISA allowing it (the table said
+   `Reg`) — both dispatchers flush unconditionally, by deliberate,
+   identically-worded choice on both sides, not an oversight. Chasing the
+   cross-check down further surfaced a real, previously-undetected
+   correctness bug one layer over from the table itself — not a
+   misclassified cell, but a merge-point gap in the fusion mechanism the
+   table describes — fixed on both sides with regression tests at every
+   level; see this section's own new bullet above ("A fused branch's
+   *opening* is a merge point too...") for the mechanism and the fix.
+5. ~~Pass 2's branch-range fixup is unimplemented~~ (§10.2) — **done**, no
+   Pass 2 needed: `blocks.ts`'s `emitGuardedBranch` bounds the guarded span
 5. ~~Pass 2's branch-range fixup is unimplemented~~ (§10.2) — **done**, no
    Pass 2 needed: `blocks.ts`'s `emitGuardedBranch` bounds the guarded span
    *before* emitting (a cheap, deliberately loose per-opcode over-estimate,
@@ -1326,11 +1388,14 @@ however's most convenient in TypeScript.
     still-open item and now cites it correctly (item 5). Item 8's own
     cross-reference (`jit-armv6m/README.md`) already lined up, untouched.
 11. ~~`binops.ts`/`compiler/binops.cpp` share a gap: `PEEK_PEEK` for a
-    two-op-in-place op is unimplemented on both sides~~ — **done for the
-    prototype**: `dest` itself as the right-hand operand, the same idiom
-    `emitAddSubRsub` already used for `PEEK_PEEK` ADD/SUB/RSUB — one line,
-    no new native form needed. `compiler/binops.cpp`'s own copy of the gap
-    is untouched (native wasn't in scope this round).
+    two-op-in-place op is unimplemented on both sides~~ — **done**: `dest`
+    itself as the right-hand operand, the same idiom `emitAddSubRsub`
+    already used for `PEEK_PEEK` ADD/SUB/RSUB — one line, no new native
+    form needed. Landed prototype-first as recorded here originally;
+    `compiler/binops.cpp` has since picked up the identical one-liner
+    (`emitBinaryOp`'s `TwoOpInPlace` branch, citing this item in its own
+    comment) once the native port caught up to the full instruction set
+    (§16's own top summary/items 17-18).
 12. ~~§10.1's immediate-side mirror-table optimization isn't implemented~~
     — **done**: `blocks.ts`'s `emitComparison`, a `MIRRORED_CONDITION`
     table alongside `DIRECT_CONDITION` (comparison-fusion.test.ts,
@@ -1354,9 +1419,14 @@ however's most convenient in TypeScript.
     at hand, keeps falling back to the scan unchanged. `bytecodeReader.ts`
     gained a `Unary` `InstrKind` (`imm = code - 90`) so the skip-pass can
     tell `CLZ`/`REVBITS` (software helpers, `savesLR`-triggering) apart
-    from `NEG`/`NOT` (single instructions, not). Still true and unchanged:
-    the skip-pass throws on any extension opcode, and no native port
-    exists yet.
+    from `NEG`/`NOT` (single instructions, not). `EXT` still throws on both
+    sides, by design (item 8). The whole-program procedure-directory
+    concept itself has no native equivalent — `compiler/` currently gets its
+    per-procedure `argCount`s through a plain array parameter
+    (`compile_proc_real.cpp`'s `calleeArgCounts`, fixtures-supplied) rather
+    than a built-once directory; with the TS reference retired, a native
+    directory (if one turns out to be needed as the compiler grows a real
+    whole-program driver) would be designed fresh rather than ported.
 16. ~~The bigger migration this sets up for is still ahead~~ — **done for
     the prototype**: `bytecodeReader.ts` gained `decodeInstr` (`RtlInstr`'s
     shape minus `EXT`'s generic payload — nothing here needs it, since
@@ -1370,9 +1440,13 @@ however's most convenient in TypeScript.
     hands `translateProc` an `RtlProc`, encoded internally, right where the
     old code took a `body: RtlInstr[]` and stopped indexing it. All 147
     existing tests (every one on real QEMU) passed unmodified after the
-    rewrite — the "surfaces an inconsistency cheaply" bet this section's
-    own workflow note made paid off with none found. Native port still
-    ahead, unstarted, as expected.
+    rewrite — the prototype's own "surfaces an inconsistency cheaply" bet
+    (formerly this section's workflow note) paid off with none found.
+    **Since done on the native side too**: `compiler/src/translate_proc.cpp`
+    decodes from the same kind of raw byte stream throughout
+    (`decode_instr.h`'s `decodeInstr`), never a pre-decoded array — there
+    was no separate "native port" step needed for this one, since native
+    was written this way from the start rather than retrofitted.
 17. ~~Eviction/compaction is untested against genuinely native-compiled
     code on real QEMU~~ — **done**: `compiler/test/qemu/main.cpp` measures
     each fixture procedure's real compiled size once (via a throwaway
@@ -1391,3 +1465,78 @@ however's most convenient in TypeScript.
     (`blocks.h`/`blocks.cpp`), the same recursion-not-array design item 6
     settled on the prototype side — no heap, no fixed-depth array, just
     the C call stack.
+19. ~~`requiredStackBytes` still budgets for the retired mock translator~~
+    — **done**: `MOCK_TRANSLATOR_ENTRY_WORST_CASE_BYTES` (92 bytes,
+    unconditionally added regardless of which translator was linked in —
+    a real gap even before the prototype's own mock translator was
+    deleted, since native's `compile_proc_real.cpp` was already the only
+    translator this figure ever needed to cover) is replaced by
+    `TRANSLATOR_ENTRY_WORST_CASE_BYTES` (324 bytes: `translator_trampoline`
+    +`REALIGN_ENTER` (24) + `compileProc`'s own frame (104) +
+    `translateProc`'s own frame (176, `Ctx` included — item 21's site-list
+    arrays no longer part of it) + `memcpy` (20), each measured via
+    `-fstack-usage`/`objdump`, not guessed). Deliberately covers only the
+    *fixed*, one-time cost up to `translateBody`'s own first call, never
+    the recursion itself — that's item 20's own live check's job now, not
+    a bigger static sum. Build-time enforcement (a per-file `-Wstack-
+    usage=`/`-Werror=stack-usage=` pin, matching the now-retired mock
+    translator's own analogous rule) is a reasonable follow-up, not done
+    here — the fixed value itself is the correctness fix; automatically
+    catching future drift in it is a separate, lower-stakes concern.
+20. ~~`MAX_BLOCK_NESTING = 32` is a flat, arbitrary constant~~, carried
+    unchanged from the prototype, where nesting depth should instead be
+    policed *live* against however much stack margin actually remains
+    (§2's "The translator's own exception" — "a real translator replaces
+    this constant with the live accounting above, not a bigger constant")
+    — **done**: `translateBody` (`compiler/src/translate_proc.cpp`) reads
+    the real stack pointer on every recursive call and bails into
+    `TranslateResult::overflowed` the moment it (minus
+    `TRANSLATE_BODY_STACK_MARGIN`'s own conservative per-level allowance)
+    would reach or pass `stackFloor` — a new `translateProc` parameter,
+    threaded from `Runtime::liveStackFloor()` (`jit-armv6m/runtime/
+    runtime_internal.h`), read fresh by `compileProc` every call rather
+    than cached, since it tracks `arenaCursor` for `enter_program_on_
+    stack` specifically (`arenaOverlapsStack`, a new `Runtime` field —
+    that variant's own code arena genuinely shares address space with the
+    C stack the recursion also runs on, "anchored at `stackLimit` itself
+    and grows up from there," so its live floor is `max(stackLimit,
+    arenaCursor)`; the other two entry points have no such overlap, so
+    theirs is just `stackLimit` — a real, caller-supplied bound for
+    `enter_program_on_stack`/`_split`, or a new, deliberately generous
+    internal one (`GENEROUS_TRANSLATOR_STACK_MARGIN`, since it has no
+    caller-supplied figure to work from) for plain `enter_program`, which
+    had no stack protection at all before this. `depth` itself (the old
+    counter) is gone — nothing needs it once the check is genuinely live.
+    Host-level regression: `test_translate_proc.cpp`'s
+    `DeeplyNestedButWellFormedBlocksSucceedWithNoStackFloor` (50 levels,
+    deliberately past the old fixed cap, succeeds under the default "no
+    limit") and `BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable`
+    (a floor pinned at the current `sp`, failing immediately regardless of
+    depth — avoids calibrating an exact per-level byte count against this
+    host build's own `-O0`, which wouldn't transfer to the real target's
+    `-Os` anyway) replace the old test's "just nest 40 loops past the
+    fixed cap" mechanism, which stopped being meaningful once there's no
+    fixed cap to exceed.
+21. ~~`CLZ`/`REVBITS`/`BR_TABLE(N>2)`'s dispatch helper are emitted fresh
+    into every procedure's own arena code~~ — **done**: all three now live
+    once, flash-resident, in `jit-armv6m/runtime/runtime.S`
+    (`clzHelper`/`revbitsHelper`/`brTableJumpHelper`, §11's reserved slots
+    4-6 in `g_helperVec`), reached by the same `MOV r3,r10 / LDR r3,[r3,
+    #idx*4] / BLX r3` idiom `abi_strategy.cpp` already used for slots 0-3
+    — `BLX` even for `brTableJumpHelper`'s own tail-jump, since the call
+    site's own jump table sits immediately after that `BLX` and the
+    routine locates it through `lr`, exactly as it did through the old
+    local `BL`'s own `lr` side effect. `compiler/src/unaryops.{h,cpp}`'s
+    `UnaryHelperSites`/`kMaxUnaryHelperSites` and
+    `translate_proc.cpp`'s `brTableHelperSites`/`kMaxBrTableHelperSites`
+    (the fixed-size site-list caps this item's own investigation found
+    silently unenforced under `-DNDEBUG` on the real hardware build) are
+    deleted outright, along with `blocks.cpp`'s own now-redundant
+    `emitBrTableHelper` and `unaryops.cpp`'s `emitClzHelper`/
+    `emitRevbitsHelper` — nothing left to track or backpatch once every
+    call site reaches a fixed, permanently-known vector slot. Every
+    procedure's own emitted code shrank as a direct result (no more
+    trailing helper-routine copies per procedure that used one); confirmed
+    via `objdump` and the native QEMU suite's own `.text` size dropping
+    accordingly, with the same fixtures (CLZ/REVBITS/BR_TABLE N>2) still
+    producing identical values end to end.

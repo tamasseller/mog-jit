@@ -1,7 +1,7 @@
 # Builds and runs all 7 hand-transcribed fixtures (fixtures.cpp) against
 # the real translator (jit-armv6m/compiler/src) and the real, unmodified
-# dispatch/eviction runtime (jit-armv6m/prototype/qemu). No program.cpp
-# code-generation step, unlike jit-armv6m/prototype/qemu/'s own Makefile —
+# dispatch/eviction runtime (jit-armv6m/runtime). No program.cpp
+# code-generation step, unlike the now-retired TS prototype's own Makefile —
 # everything here is a checked-in, hand-written source file.
 
 OUTPUT = run.elf
@@ -10,9 +10,9 @@ OUTPUT = run.elf
 # address 0 (jit-armv6m/src/vectors.S).
 SOURCES += ../../../src/vectors.S
 
-SOURCES += ../../../prototype/qemu/semihosting.cpp
-SOURCES += ../../../prototype/qemu/runtime.S
-SOURCES += ../../../prototype/qemu/runtime_host.cpp
+SOURCES += ../../../runtime/semihosting.cpp
+SOURCES += ../../../runtime/runtime.S
+SOURCES += ../../../runtime/runtime_host.cpp
 SOURCES += ../../qemu/compile_proc_real.cpp
 
 # The compiler itself
@@ -34,7 +34,7 @@ SOURCES += fixtures.cpp
 SOURCES += main.cpp
 
 INCLUDE_DIRS += ../../../src            # armv6.h
-INCLUDE_DIRS += ../../../prototype/qemu  # runtime_host.h / runtime_internal.h
+INCLUDE_DIRS += ../../../runtime         # runtime_host.h / runtime_internal.h
 INCLUDE_DIRS += ../../src                 # jitc:: headers
 INCLUDE_DIRS += .                          # fixtures.h
 
@@ -76,9 +76,9 @@ LDFLAGS += -T linker.ld
 include ../../../vendor/ultimate-makefile/Makefile.ultimate
 
 # Not using Makefile.ultimate's own `check` (host-execution + gcovr
-# coverage assumptions don't fit a bare-metal image, same reasoning as
-# jit-armv6m/test/qemu/Makefile) — main.cpp's own semihosting_exit(0/1)
-# is the pass/fail signal, surfaced through qemu-system-arm's exit code.
+# coverage assumptions don't fit a bare-metal image) — main.cpp's own
+# semihostingExit(0/1) is the pass/fail signal, surfaced through
+# qemu-system-arm's exit code.
 qemu-test: $(OUTPUT)
 	qemu-system-arm -M lm3s811evb -m 8k -nographic -monitor none \
 	    -semihosting-config enable=on,target=native -kernel $(OUTPUT)

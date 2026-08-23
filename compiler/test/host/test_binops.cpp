@@ -1,6 +1,5 @@
-// Expected halfwords below are cross-checked against arm-none-eabi-as (a
-// tool independent of both this port and its TS original), not re-derived
-// from the same formulas under test.
+// Expected halfwords below are cross-checked against arm-none-eabi-as, a
+// tool independent of the encoding logic under test.
 #include "Test.h"
 #include "emitter.h"
 #include "binops.h"
@@ -34,9 +33,9 @@ TEST(AddRegPlusReg)
 
 TEST(SubRegMinusReg)
 {
-    // Both operands plain registers — SUB's own simplest case, never
-    // exercised by any of the other SUB tests here (they all have at
-    // least one side be a compile-time immediate).
+    // Both operands are plain registers — SUB's simplest case, never
+    // exercised by the other SUB tests here (they all have at least one
+    // side be a compile-time immediate).
     uint16_t buf[4];
     Emitter e(buf, 4);
     Shape acc = Shape::ofReg(1);
@@ -112,7 +111,7 @@ TEST(ShiftImm)
 TEST(ShiftImmMaterializesAPendingImmediateAccumulatorFirst)
 {
     // accShape can be a compile-time immediate here too (e.g. a CONST
-    // directly followed by an immediate-shift op) — shapeToReg's own
+    // directly followed by an immediate-shift op) — shapeToReg's
     // materialize-into-SCRATCH_REG branch, which the other ShiftImm test
     // above never reaches (it always uses a register accShape).
     uint16_t buf[4];
@@ -164,7 +163,7 @@ TEST(AddImmFallsBackToMaterializeWhenDestDiffersAndImmTooLarge)
 {
     // n(=1) != dest(=0), k=10 doesn't fit imm3 — the fitsImm8&&dest==n
     // fast path doesn't apply either since dest != n, so this must fall
-    // all the way through to addOrSubWithImm's own materialize-into-
+    // all the way through to addOrSubWithImm's materialize-into-
     // SCRATCH_REG tail.
     uint16_t buf[4];
     Emitter e(buf, 4);
@@ -197,10 +196,10 @@ TEST(AddRegAccWithOversizedImmediateOperandSkipsTheDestEqualsNCheck)
 
 TEST(AddPeekPeekUsesDestAsRhsForOrdinaryArithmeticToo)
 {
-    // §16 item 11's PEEK_PEEK idiom applies to every AddSubRsub op, not
-    // just the TwoOpInPlace ops (AND/OR/etc) test_binops.cpp's other
-    // PEEK_PEEK tests exercise — operand==nullptr reaching
-    // emitAddSubRsub itself, not just emitBinaryOp's TwoOpInPlace branch.
+    // The PEEK_PEEK idiom applies to every AddSubRsub op, not just the
+    // TwoOpInPlace ops (AND/OR/etc) the other PEEK_PEEK tests here
+    // exercise — operand==nullptr reaches emitAddSubRsub itself, not just
+    // emitBinaryOp's TwoOpInPlace branch.
     uint16_t buf[4];
     Emitter e(buf, 4);
     Shape acc = Shape::ofReg(1);
@@ -212,7 +211,7 @@ TEST(AddPeekPeekUsesDestAsRhsForOrdinaryArithmeticToo)
 TEST(AddAccImmRhsRegFoldsIntoOrdinaryRegPlusImm)
 {
     // acc pending-imm(5), rhs reg(2): dest = rhs.reg + acc.imm — the
-    // ADD/SUB row's own register-plus-immediate fold, operands swapped.
+    // ADD/SUB row's register-plus-immediate fold, operands swapped.
     uint16_t buf[4];
     Emitter e(buf, 4);
     Shape acc = Shape::ofImm(5);
@@ -224,17 +223,14 @@ TEST(AddAccImmRhsRegFoldsIntoOrdinaryRegPlusImm)
 
 TEST(AddBothImmMaterializesAccIntoDestNotScratchToAvoidAliasingWithK)
 {
-    // Regression for a real bug: accShape and operand both compile-time
-    // immediates (e.g. CONST(3) directly followed by an IMM_ACC ADD) —
-    // reachable through entirely ordinary bytecode whenever acc still
-    // holds a pending CONST value. The old code materialized accShape
-    // into SCRATCH_REG via shapeToReg, then let addOrSubWithImm's own
-    // fallback materialize k into that *same* SCRATCH_REG, clobbering
-    // accShape's value and computing `k op k` instead of `accShape op k`
-    // (confirmed silently wrong on real QEMU hardware before this fix:
-    // CONST(5)+ADD#1000 produced 2000, not 1005). Now accShape
-    // materializes into `dest` itself, which is never SCRATCH_REG for
-    // this call shape.
+    // Regression guard: accShape and operand both compile-time immediates
+    // (e.g. CONST(3) directly followed by an IMM_ACC ADD), reachable
+    // whenever acc still holds a pending CONST value. Materializing
+    // accShape into SCRATCH_REG and then letting addOrSubWithImm's
+    // fallback materialize k into that same register would clobber
+    // accShape and compute `k op k` instead of `accShape op k` — accShape
+    // must materialize into `dest` itself instead, which is never
+    // SCRATCH_REG for this call shape.
     uint16_t buf[4];
     Emitter e(buf, 4);
     Shape acc = Shape::ofImm(3);
@@ -247,9 +243,10 @@ TEST(AddBothImmMaterializesAccIntoDestNotScratchToAvoidAliasingWithK)
 
 TEST(SubRegAccWithOversizedImmediateOperandSkipsTheDestEqualsNCheck)
 {
-    // SUB's own mirror of AddRegAccWithOversizedImmediateOperand... above
-    // — accShape reg, operand imm too large for imm3/imm8, so
-    // addOrSubWithImm's fitsImm8(k) check short-circuits false on its own.
+    // SUB's mirror of AddRegAccWithOversizedImmediateOperand... above —
+    // accShape is a register, operand an immediate too large for
+    // imm3/imm8, so addOrSubWithImm's fitsImm8(k) check short-circuits
+    // false on its own.
     uint16_t buf[8];
     Emitter e(buf, 8);
     Shape acc = Shape::ofReg(1);
@@ -306,10 +303,10 @@ TEST(RsubAccImmRhsRegFoldsIntoOrdinaryRegMinusImm)
 TEST(RsubRhsImmAccRegUsesRsubImmAsLeftWithNonzeroK)
 {
     // rhs pending-imm(7), acc reg(5) — a plausible window register, never
-    // SCRATCH_REG itself (registers.h's own invariant: accShape's
-    // register, whenever "clean", is always ACC_REG or a window
-    // register — physReg() never returns SCRATCH_REG=2): dest = rhs.imm -
-    // acc.reg, k != 0.
+    // SCRATCH_REG itself (registers.h's invariant: accShape's register,
+    // whenever "clean", is always ACC_REG or a window register —
+    // physReg() never returns SCRATCH_REG=2): dest = rhs.imm - acc.reg,
+    // k != 0.
     uint16_t buf[4];
     Emitter e(buf, 4);
     Shape acc = Shape::ofReg(5);
@@ -337,16 +334,13 @@ TEST(RsubBothImmMaterializesAccIntoDestNotScratchToAvoidAliasingWithK)
 
 TEST(AddAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
 {
-    // A second, distinct instance of the same aliasing bug class as the
-    // BothImm tests above: here accShape is imm(100) but the *operand*
-    // register happens to be SCRATCH_REG itself — exactly what happens
-    // for real when an out-of-window local gets reloaded via
-    // ldrSp(SCRATCH_REG, ...) in translate_proc.cpp. Materializing k into
-    // SCRATCH_REG right after would clobber that just-reloaded value
-    // (confirmed silently wrong on real QEMU before this fix:
-    // CONST(100) then ADD against a 5-deep-pushed, now-spilled slot
-    // produced 200 instead of 101). addOrSubWithImm now copies n out to
-    // dest first whenever n === SCRATCH_REG.
+    // Same aliasing bug class as the BothImm tests above, but here
+    // accShape is imm(100) and the *operand* register happens to be
+    // SCRATCH_REG itself — exactly what happens when an out-of-window
+    // local gets reloaded via ldrSp(SCRATCH_REG, ...) in
+    // translate_proc.cpp. Materializing k into SCRATCH_REG right after
+    // would clobber that just-reloaded value, so addOrSubWithImm copies n
+    // out to dest first whenever n == SCRATCH_REG.
     uint16_t buf[8];
     Emitter e(buf, 8);
     Shape acc = Shape::ofImm(100);
@@ -389,11 +383,17 @@ TEST(TwoOpInPlaceNativeCoversEveryOpcode)
     // AND is exercised by the tests above; OR/XOR/MUL and the
     // register-count shift forms share the same TwoOpInPlace dispatch
     // but weren't exercised through the native-opcode switch yet.
-    struct { Op op; uint16_t expected; } cases[] = {
+    struct
+    {
+        Op op;
+        uint16_t expected;
+    }
+    cases[] = {
         {Op::OR,  0x4328}, {Op::XOR, 0x4068}, {Op::MUL, 0x4368},
         {Op::SHL, 0x40A8}, {Op::SHR, 0x40E8}, {Op::ASR, 0x4128},
     };
-    for(auto &c : cases) {
+    for(auto &c : cases)
+    {
         uint16_t buf[4];
         Emitter e(buf, 4);
         Shape acc = Shape::ofReg(0);
@@ -406,10 +406,10 @@ TEST(TwoOpInPlaceNativeCoversEveryOpcode)
 
 TEST(TwoOpInPlacePeekPeekUsesDestAsRhs)
 {
-    // §16 item 11: PEEK_PEEK's own right-hand operand is dest itself
-    // (operand == nullptr) — dest is a window register here (r5,
-    // mirroring window.topReg()), safe to read as Rm before it's
-    // overwritten as Rdn's own move-out target.
+    // PEEK_PEEK's right-hand operand is dest itself (operand == nullptr)
+    // — dest is a window register here (r5, mirroring window.topReg()),
+    // safe to read as Rm before it's overwritten as Rdn's move-out
+    // target.
     uint16_t buf[4];
     Emitter e(buf, 4);
     Shape acc = Shape::ofReg(1); // not ACC_REG — must be materialized first

@@ -22,16 +22,20 @@ hard memory ceiling.
 |---|---|
 | `src/armv6.h` | Thumb instruction encoder (adapted from tamasseller/sdvm) |
 | `src/vectors.S`, `src/linker.ld` | bare-metal startup for the QEMU test targets |
-| `prototype/` | the translation algorithm in TypeScript, emitting real Thumb, run on `qemu-system-arm`. Same per-procedure logic as the envisioned JIT, run eagerly over a whole program so the translator can be iterated on without the arena/eviction runtime |
-| `prototype/qemu/` | the real dispatch/eviction runtime in C++ and hand-written asm: `runtime.S` (call/return helpers, translator trampoline, `enter_dispatch`), `runtime_host.cpp` (the `enter_program` family), `compile_proc.cpp` (a mock translator that copies precompiled blobs, so dispatch and eviction are testable independently of compiler correctness) |
-| `compiler/` | the native C++ port of the translator, targeting the real dispatch/eviction runtime only. Covers a straight-line opcode slice so far (docs/design.md §16 item 8) |
+| `runtime/` | the real dispatch/eviction runtime in C++ and hand-written asm: `runtime.S` (call/return helpers, translator trampoline, `enter_dispatch`), `runtime_host.cpp`/`.h` (the `enter_program` family), `runtime_internal.h` (`Runtime`/`DispatchEntry`, arena/eviction/compaction), `semihosting.cpp` |
+| `compiler/` | the native C++ translator, targeting `runtime/`. Covers the full instruction set (`EXT` excluded on both sides by design) |
 | `test/host`, `test/qemu` | encoder unit tests, and a QEMU smoke test |
 | `compiler/test/host`, `compiler/test/qemu` | the native compiler's own unit and QEMU tests |
 | `vendor/` | submodules: `ultimate-makefile`, `1test` |
 
-`prototype` and `compiler` are two implementations of one algorithm, kept
-deliberately eyeball-diffable: `compiler/src/*.h` name the `prototype/src/*.ts`
-file each was ported from, and preserve its formulas verbatim.
+A TypeScript prototype (`prototype/`) existed earlier as a faster-iteration
+blueprint for working out the translation algorithm before committing it to
+C++ — `compiler/src/*.h`'s own header comments still note which prototype
+file a given piece was originally ported from, as a historical record. It
+was retired once `compiler/` reached full feature parity; `runtime/` (the
+actual dispatch/eviction runtime, genuinely shared infrastructure rather than
+prototype-specific) is what survived the move, relocated rather than
+deleted.
 
 ## Commands
 
@@ -41,10 +45,4 @@ make test-host              # test/host
 make test-qemu              # test/qemu (needs qemu-system-arm)
 make test-compiler-host     # compiler/test/host
 make test-compiler-qemu     # compiler/test/qemu
-```
-
-The TypeScript prototype builds and runs through the monorepo workspace:
-
-```sh
-npm test --workspace @ppl/jit-armv6m-prototype
 ```

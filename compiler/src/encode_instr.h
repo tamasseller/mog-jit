@@ -14,7 +14,8 @@
 #include <cstdint>
 #include "instr.h"
 
-namespace jitc {
+namespace jitc
+{
 
 /** Appends n's unsigned LEB128 encoding to out[outLen..), advancing
  *  outLen. Asserts if out is too small to hold it (outCapacity) — a

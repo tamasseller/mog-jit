@@ -4,17 +4,20 @@
 
 #include <cassert>
 
-namespace jitc {
+namespace jitc
+{
 
-Shape AccState::peek() const {
-    assert(kind_ != Kind::Poisoned); // GCOV_EXCL_LINE — a translator-logic bug, never legitimate input
-    return kind_ == Kind::Pending ? shape_ : Shape::ofReg(reg_);
+Shape AccState::peek() const
+{
+    assert(kind != Kind::Poisoned); // GCOV_EXCL_LINE — a translator-logic bug, never legitimate input
+    return kind == Kind::Pending ? shape : Shape::ofReg(reg);
 }
 
-void AccState::flush(Emitter &e, uint32_t dstReg) {
+void AccState::flush(Emitter &e, uint32_t dstReg)
+{
     materializeShape(e, peek(), dstReg);
-    kind_ = Kind::Clean;
-    reg_ = dstReg;
+    kind = Kind::Clean;
+    reg = dstReg;
 }
 
 void emitBinary(
@@ -22,8 +25,14 @@ void emitBinary(
     const Shape *operand, uint32_t dest, bool clobbersAcc)
 {
     emitBinaryOp(e, op, combo, accState.peek(), operand, dest);
-    if(clobbersAcc) accState.poison();
-    else accState.setClean(dest);
+    if(clobbersAcc)
+    {
+        accState.poison();
+    }
+    else
+    {
+        accState.setClean(dest);
+    }
 }
 
 } // namespace jitc

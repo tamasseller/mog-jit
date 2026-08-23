@@ -1,6 +1,5 @@
-// Expected halfwords below are cross-checked against arm-none-eabi-as (a
-// tool independent of both this port and its TS original), not re-derived
-// from the same formulas under test.
+// Expected halfwords are cross-checked against arm-none-eabi-as, not
+// re-derived from the same formulas under test.
 #include "Test.h"
 #include "emitter.h"
 #include "abi_strategy.h"
@@ -8,7 +7,7 @@
 
 using namespace jitc;
 
-TEST(StubSizeMatchesActualEmittedLength)
+TEST(stubSizeMatchesActualEmittedLength)
 {
     uint16_t buf[8];
     Emitter e(buf, 8);
@@ -16,7 +15,7 @@ TEST(StubSizeMatchesActualEmittedLength)
     CHECK(e.halfwordCount() * 2 == STUB_SIZE);
 }
 
-TEST(PrologueStubExactEncoding)
+TEST(prologueStubExactEncoding)
 {
     uint16_t buf[8];
     Emitter e(buf, 8);
@@ -30,21 +29,20 @@ TEST(PrologueStubExactEncoding)
     CHECK(buf[5] == 0x4710); // BX r2
 }
 
-TEST(PackRecord)
+TEST(packRecord)
 {
     CHECK(packRecord(0, 1) == 0x00010000u);
     CHECK(packRecord(5, 2) == 0x00020005u);
-    // proc_idx = -1 truncated to u16 -> the 0xffff sentinel returnHelper's
-    // SXTH fix resolves to "one slot behind the dispatch table base".
+    // procIdx=-1 truncates to u16 0xffff — the sentinel returnHelper's SXTH
+    // fix resolves to "one slot behind the dispatch table base".
     CHECK(packRecord(0xffffu, 1) == 0x0001ffffu);
 }
 
-TEST(AbiEmitCallFitsImm8CalleeIndex)
+TEST(abiEmitCallFitsImm8CalleeIndex)
 {
     // procIdx=0, calleeIndex=1, called right after the 6-halfword prologue
-    // (preCallPc = STUB_SIZE, i.e. this is the CALL site of a procedure
-    // whose entry instruction is a CALL) — independently program- and
-    // arm-none-eabi-as-verified before being pinned here.
+    // (preCallPc = STUB_SIZE) — i.e. the CALL site of a procedure whose own
+    // entry instruction is itself a CALL.
     uint16_t buf[16];
     Emitter e(buf, 16);
     emitPrologueStub(e); // advances e.pc() to STUB_SIZE, matching abiEmitCall's real call site
@@ -61,17 +59,15 @@ TEST(AbiEmitCallFitsImm8CalleeIndex)
     CHECK(buf[before + 6] == 0x4718); // BX r3
 }
 
-TEST(AbiEmitCallConvergesForCalleeIndexNotFittingImm8)
+TEST(abiEmitCallConvergesForCalleeIndexNotFittingImm8)
 {
-    // A calleeIndex needing synthesizeImm32 makes the whole sequence
-    // longer, which can shift the packed record's own encoded length —
-    // this is exactly what the fixed-point search exists for. The
-    // record's own synthesized length depends on the converged k (not
-    // predictable here without re-implementing the search itself, which
-    // would just be testing this code against a copy of itself) — so
-    // this checks the two structural invariants that must hold regardless
-    // of k: the search converges without overflowing the buffer, and the
-    // sequence still ends in the fixed movHi+ldr(callHelper)+bx tail.
+    // calleeIndex=300 needs synthesizeImm32, which can shift the packed
+    // record's own encoded length — exactly what the fixed-point search
+    // exists for. The converged k (and thus the exact bytes) isn't
+    // predictable without reimplementing the search, so this only checks
+    // what must hold regardless of k: the search converges without
+    // overflowing the buffer, and the sequence still ends in the fixed
+    // movHi+ldr(callHelper)+bx tail.
     uint16_t buf[32];
     Emitter e(buf, 32);
     emitPrologueStub(e);
@@ -85,7 +81,7 @@ TEST(AbiEmitCallConvergesForCalleeIndexNotFittingImm8)
     CHECK(buf[before + n - 1] == 0x4718); // BX r3
 }
 
-TEST(AbiEmitReturnLeafDispatchesToReturnHelperFromLr)
+TEST(abiEmitReturnLeafDispatchesToReturnHelperFromLr)
 {
     uint16_t buf[4];
     Emitter e(buf, 4);
@@ -96,7 +92,7 @@ TEST(AbiEmitReturnLeafDispatchesToReturnHelperFromLr)
     CHECK(buf[2] == 0x4718); // BX r3
 }
 
-TEST(AbiEmitReturnOrdinaryNonLeafDispatchesToReturnHelperFromStack)
+TEST(abiEmitReturnOrdinaryNonLeafDispatchesToReturnHelperFromStack)
 {
     // savesLR, but argCount <= WINDOW_SIZE (initialSpilledCount=0) — the
     // common non-leaf case, still a bare 3-instruction dispatch.
@@ -109,7 +105,7 @@ TEST(AbiEmitReturnOrdinaryNonLeafDispatchesToReturnHelperFromStack)
     CHECK(buf[2] == 0x4718); // BX r3
 }
 
-TEST(AbiEmitReturnDeepArgsNonLeafInlinesPopAndReclaim)
+TEST(abiEmitReturnDeepArgsNonLeafInlinesPopAndReclaim)
 {
     // The rare case: savesLR and initialSpilledCount > 0 — neither shared
     // returnHelper variant can both retrieve the record and reclaim the
@@ -126,7 +122,7 @@ TEST(AbiEmitReturnDeepArgsNonLeafInlinesPopAndReclaim)
     CHECK(buf[4] == 0x4718); // BX r3
 }
 
-TEST(AbiEmitPrologueAddsPushLrOnlyWhenSavesLR)
+TEST(abiEmitPrologueAddsPushLrOnlyWhenSavesLR)
 {
     uint16_t buf1[8];
     Emitter e1(buf1, 8);
