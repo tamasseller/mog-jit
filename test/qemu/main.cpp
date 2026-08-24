@@ -22,8 +22,6 @@
 
 using namespace jitc;
 
-static const FlashProc dummyProcs[8] = {}; /* enterProgram's own procs param — never dereferenced on this path */
-
 TEST(HandTranscribedFixturesMatchExpectedResults)
 {
     bool allOk = true;
@@ -31,10 +29,8 @@ TEST(HandTranscribedFixturesMatchExpectedResults)
     for(uint32_t f = 0; f < fixtureCount; f++)
     {
         const Fixture &fx = fixtures[f];
-        realProcs = fx.procs;
-        realProcCount = fx.procCount;
 
-        ProgramResult r = enterProgram(fx.argIn, fx.arenaSize, dummyProcs, fx.procCount);
+        ProgramResult r = enterProgram(fx.argIn, fx.program->bytes, fx.program->size, fx.arenaSize);
 
         bool ok = (r.trapped != 0) == fx.expectTrapped && r.value == fx.expectValue;
         allOk = allOk && ok;
@@ -64,11 +60,12 @@ TEST(HandTranscribedFixturesMatchExpectedResults)
 
 // enterProgramOnStack/enterProgramSplit — the layout-agnostic entry
 // points. Both reach compileProc through the exact same lazy dispatch path
-// the fixture loop above does (realProcs, unchanged) — only the work
-// area's own placement, and the up-front stack-usage check ahead of it,
-// differ. operandStackBytes/maxCallDepth below are hand-derived from each
-// small program's own known shape rather than computed here — this file
-// has no whole-program static analyzer of its own to call.
+// the fixture loop above does — only the work area's own placement, and
+// the up-front stack-usage check ahead of it, differ. maxCallDepth/
+// totalDepth below (encoded straight into each program's own envelope,
+// runtime_host.h's own doc comment) are hand-derived from each small
+// program's own known shape rather than computed here — this file has no
+// whole-program static analyzer of its own to call.
 extern "C" uint8_t __bss_end; /* vectors.S/linker.ld's own symbol — the one genuinely safe floor for anything placed on the C stack */
 
 namespace
@@ -95,6 +92,15 @@ uint32_t stackLimitAboveBss()
     return (uint32_t)(uintptr_t)&__bss_end + GENEROUS_SLACK;
 }
 
+uint32_t makeProgram(uint32_t maxCallDepth, uint32_t totalDepth, const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCap)
+{
+    return encodeJitProgram(maxCallDepth, totalDepth, procs, procCount, out, outCap);
+}
+
+// One procedure's own raw body bytes (no whole-program envelope) — what
+// the eviction scenarios below feed straight to translateProc for their
+// own pre-measurement pass, unrelated to what they later feed
+// enterProgram (makeProgram, above).
 Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8_t *bytesOut, uint32_t bytesCap)
 {
     uint32_t len = encodeBody(body, count, bytesOut, bytesCap);
@@ -109,17 +115,12 @@ TEST(OnStackGenerousSucceeds)
     // is 1 (argCount=1, no further pushes).
     const Instr proc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
     const Instr proc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
-    uint8_t bytes0[16], bytes1[16];
-    Proc procs[] = {
-        makeProc(0, proc0Body, 3, bytes0, sizeof(bytes0)),
-        makeProc(1, proc1Body, 3, bytes1, sizeof(bytes1)),
-    };
-    realProcs = procs;
-    realProcCount = 2;
+    ProcSource procs[] = {{0, proc0Body, 3}, {1, proc1Body, 3}};
+    uint8_t bytes[32];
+    uint32_t len = makeProgram(/*maxCallDepth=*/1, /*totalDepth=*/1, procs, 2, bytes, sizeof(bytes));
 
     uint32_t stackLimit = stackLimitAboveBss();
-    ProgramResult r = enterProgramOnStack(0, dummyProcs, 2, GENEROUS_ARENA,
-        /*operandStackBytes=*/1 * 4, /*maxCallDepth=*/1, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -136,20 +137,14 @@ TEST(SplitThreeDeepCallChainSucceeds)
     const Instr proc0Body[] = {CONST(5), call(1), bare(Op::RETURN)};
     const Instr proc1Body[] = {LOAD(0), call(2), opImm(Op::ADD, 1), bare(Op::RETURN)};
     const Instr proc2Body[] = {LOAD(0), opImm(Op::ADD, 100), bare(Op::RETURN)};
-    uint8_t bytes0[16], bytes1[16], bytes2[16];
-    Proc procs[] = {
-        makeProc(0, proc0Body, 3, bytes0, sizeof(bytes0)),
-        makeProc(1, proc1Body, 4, bytes1, sizeof(bytes1)),
-        makeProc(1, proc2Body, 3, bytes2, sizeof(bytes2)),
-    };
-    realProcs = procs;
-    realProcCount = 3;
+    ProcSource procs[] = {{0, proc0Body, 3}, {1, proc1Body, 4}, {1, proc2Body, 3}};
+    uint8_t bytes[48];
+    uint32_t len = makeProgram(/*maxCallDepth=*/2, /*totalDepth=*/2, procs, 3, bytes, sizeof(bytes));
 
     static uint8_t arena[GENEROUS_ARENA];
     uint32_t stackLimit = stackLimitAboveBss();
-    ProgramResult r = enterProgramSplit(0, dummyProcs, 3,
-        (uint32_t)(uintptr_t)arena, GENEROUS_ARENA,
-        /*operandStackBytes=*/2 * 4, /*maxCallDepth=*/2, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramSplit(0, bytes, len,
+        (uint32_t)(uintptr_t)arena, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -169,17 +164,12 @@ TEST(OnStackRejectsBeforeTouchingAnything)
     // stack-usage pre-check, not a translator/runtime problem.
     const Instr proc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
     const Instr proc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
-    uint8_t bytes0[16], bytes1[16];
-    Proc procs[] = {
-        makeProc(0, proc0Body, 3, bytes0, sizeof(bytes0)),
-        makeProc(1, proc1Body, 3, bytes1, sizeof(bytes1)),
-    };
-    realProcs = procs;
-    realProcCount = 2;
+    ProcSource procs[] = {{0, proc0Body, 3}, {1, proc1Body, 3}};
+    uint8_t bytes[32];
+    uint32_t len = makeProgram(/*maxCallDepth=*/1, /*totalDepth=*/1, procs, 2, bytes, sizeof(bytes));
 
     uint32_t stackLimit = currentSp(); // measured before this callee's own prologue — strictly higher than sp once inside it
-    ProgramResult r = enterProgramOnStack(0, dummyProcs, 2, GENEROUS_ARENA,
-        /*operandStackBytes=*/1 * 4, /*maxCallDepth=*/1, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -197,11 +187,13 @@ TEST(OnStackRejectsBeforeTouchingAnything)
 // by calling the real translateProc() once per procedure up front (a
 // throwaway measurement, discarded immediately) purely to size the arena
 // — the actual exercise then goes through the ordinary lazy
-// realProcs/compileProc path exactly like every other fixture, so
-// compile_proc_real.cpp genuinely retranslates from the same wire bytes
-// whenever a procedure gets evicted and later needed again (the same flash
-// blob must reproduce the same layout, or a saved resume offset would no
-// longer point at the right place).
+// enterProgram/compileProc path exactly like every fixture above, reading
+// each procedure's own body straight out of the real program bytes
+// (runtime_internal.h's ProcSlot), so compile_proc_real.cpp genuinely
+// retranslates from the same wire bytes whenever a procedure gets evicted
+// and later needed again (the same flash blob must reproduce the same
+// layout, or a saved resume offset would no longer point at the right
+// place).
 namespace
 {
 
@@ -246,9 +238,10 @@ TEST(EvictionThreeDeepCallChain)
     }
     uint32_t arenaSize = total - smallest + 4; // fits any single one, but not all three
 
-    realProcs = procs;
-    realProcCount = 3;
-    ProgramResult r = enterProgram(0, arenaSize, dummyProcs, 3);
+    ProcSource procSources[] = {{0, proc0Body, 3}, {1, proc1Body, 4}, {1, proc2Body, 3}};
+    uint8_t progBytes[64];
+    uint32_t progLen = makeProgram(0, 0, procSources, 3, progBytes, sizeof(progBytes));
+    ProgramResult r = enterProgram(0, progBytes, progLen, arenaSize);
 
     if(r.trapped)
     {
@@ -278,9 +271,10 @@ TEST(EvictionCallerAndCalleeNeverCoresident)
     uint32_t size1 = measuredHalfwords(procs[1], 1, argCounts, 2) * 2;
     uint32_t arenaSize = (size0 > size1 ? size0 : size1) + 4; // fits at most one of the two at a time
 
-    realProcs = procs;
-    realProcCount = 2;
-    ProgramResult r = enterProgram(0, arenaSize, dummyProcs, 2);
+    ProcSource procSources[] = {{0, proc0Body, 4}, {1, proc1Body, 3}};
+    uint8_t progBytes[48];
+    uint32_t progLen = makeProgram(0, 0, procSources, 2, progBytes, sizeof(progBytes));
+    ProgramResult r = enterProgram(0, progBytes, progLen, arenaSize);
 
     if(r.trapped)
     {
@@ -317,9 +311,10 @@ TEST(EvictionSlidesAProcedureHoldingAPooledLiteral)
     uint32_t size1 = measuredHalfwords(procs[1], 1, argCounts, 2) * 2;
     uint32_t arenaSize = (size0 > size1 ? size0 : size1) + 4; // fits at most one at a time
 
-    realProcs = procs;
-    realProcCount = 2;
-    ProgramResult r = enterProgram(0, arenaSize, dummyProcs, 2);
+    ProcSource procSources[] = {{0, proc0Body, 4}, {1, proc1Body, 3}};
+    uint8_t progBytes[48];
+    uint32_t progLen = makeProgram(0, 0, procSources, 2, progBytes, sizeof(progBytes));
+    ProgramResult r = enterProgram(0, progBytes, progLen, arenaSize);
 
     if(r.trapped)
     {
@@ -349,9 +344,10 @@ TEST(ResourceErrorSingleProcedureLargerThanArena)
     uint32_t size = measuredHalfwords(proc, 0, argCounts, 1) * 2;
     uint32_t arenaSize = size > 24 ? size - 24 : 4; // deliberately smaller than this one procedure's own size
 
-    realProcs = &proc;
-    realProcCount = 1;
-    ProgramResult r = enterProgram(0, arenaSize, dummyProcs, 1);
+    ProcSource procSources[] = {{0, body, 42}};
+    uint8_t progBytes[256];
+    uint32_t progLen = makeProgram(0, 0, procSources, 1, progBytes, sizeof(progBytes));
+    ProgramResult r = enterProgram(0, progBytes, progLen, arenaSize);
 
     if(r.trapped)
     {

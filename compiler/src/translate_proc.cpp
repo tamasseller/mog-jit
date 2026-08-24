@@ -20,6 +20,37 @@ namespace jitc
 using R = ArmV6M::LoReg;
 using Cond = ArmV6M::Condition;
 
+// Whether proc's own body needs lr protected before anything can clobber
+// it — a nested CALL, blocks.h's own openBrTableJump (BR_TABLE N > 2
+// only), or unaryops.h's CLZ/REVBITS, all reached via BLX through the
+// helper vector, which clobbers real hardware lr exactly like a local BL
+// would. Declared in translate_proc.h (external linkage): a directory
+// with no precomputed answer of its own (every host test, the QEMU
+// pre-measurement calls) still needs this.
+bool needsLRSave(const Proc &proc)
+{
+    uint32_t pc = 0;
+    while(pc < proc.bodyBytes)
+    {
+        DecodedInstr d = decodeInstr(proc.body, proc.bodyBytes, pc);
+        Op op = d.instr.op;
+        if(op == Op::CALL)
+        {
+            return true;
+        }
+        if(op == Op::BR_TABLE && d.instr.imm > 2)
+        {
+            return true;
+        }
+        if(op == Op::CLZ || op == Op::REVBITS)
+        {
+            return true;
+        }
+        pc = d.next;
+    }
+    return false;
+}
+
 namespace
 {
 
@@ -72,35 +103,6 @@ bool hasTargetField(const Instr &i)
     return i.op == Op::LOAD || i.op == Op::STORE || i.combo == Combo::REG_ACC || i.combo == Combo::REG_REG;
 }
 
-// Whether this procedure's own body needs lr protected before anything can
-// clobber it — a nested CALL, blocks.h's own openBrTableJump (BR_TABLE
-// N > 2 only), or unaryops.h's CLZ/REVBITS, all reached via BLX through
-// the helper vector, which clobbers real hardware lr exactly like a local
-// BL would.
-bool needsLRSave(const Proc &proc)
-{
-    uint32_t pc = 0;
-    while(pc < proc.bodyBytes)
-    {
-        DecodedInstr d = decodeInstr(proc.body, proc.bodyBytes, pc);
-        Op op = d.instr.op;
-        if(op == Op::CALL)
-        {
-            return true;
-        }
-        if(op == Op::BR_TABLE && d.instr.imm > 2)
-        {
-            return true;
-        }
-        if(op == Op::CLZ || op == Op::REVBITS)
-        {
-            return true;
-        }
-        pc = d.next;
-    }
-    return false;
-}
-
 // All the per-procedure state translateBody's own recursive calls (one per
 // open LOOP/BR_TABLE) share — passed by reference rather than captured,
 // since a plain recursive function needs no closure machinery to do that.
@@ -118,6 +120,7 @@ struct Ctx
     bool savesLR;
     uint32_t initialSpilledCount;
     uint32_t stackFloor;
+    ArenaRoom *room; // null: outBuf's capacity is fixed for the whole pass, as ever
 
     bool hasPendingComparisonCondition = false;
     Cond pendingComparisonCondition = Cond::EQ;
@@ -159,6 +162,19 @@ uint32_t literalPoolDebt(const Ctx &ctx)
     return ctx.literalChunkOpen ? 4 * ctx.pendingLiteralCount + 4 : 0;
 }
 
+// Wraps ctx.room's own null-check (arena_room.h) — every call site below
+// just calls this unconditionally rather than checking ctx.room itself.
+// neededBytes, not halfwords: every call site below already thinks in
+// bytes (blocks.h's instrMaxBytes, literalPoolDebt), so the rounding-up
+// lives here once instead of at each one.
+void ensureRoom(Ctx &ctx, uint32_t neededBytes)
+{
+    if(ctx.room != nullptr)
+    {
+        ctx.room->ensureRoom(ctx.e, (neededBytes + 1) / 2);
+    }
+}
+
 // The 32 bits a pooled site actually loads, recovered from the bytecode
 // rather than carried through the deferral window. Must stay in lockstep
 // with the pooling call sites in translateBody below — TRAP is the one op
@@ -189,6 +205,12 @@ void flushLiteralPool(Ctx &ctx, bool endOfProcedure)
     {
         return;
     }
+    // literalPoolDebt's own worst case (branch-around + pad + one pool
+    // word per site) — a flush can dwarf any single instrMaxBytes budget,
+    // so it needs its own room check rather than riding on whichever
+    // instruction happened to trigger it (materializeLargeImmediate,
+    // guardLiteralPoolReach) or the end-of-procedure call below.
+    ensureRoom(ctx, literalPoolDebt(ctx));
     ctx.literalChunkOpen = false;
     if(ctx.e.overflowed())
     {
@@ -337,6 +359,11 @@ void translateBody(Ctx &ctx, Frame *frame)
         DecodedInstr decoded = decodeInstr(ctx.bytes, ctx.bytesLen, ctx.pc);
         const Instr &instr = decoded.instr;
         uint32_t afterInstr = decoded.next;
+
+        // instrMaxBytes already accounts for BR_TABLE(N>2)'s own jump
+        // table, so this one check covers every ordinary instruction's
+        // emission — docs/design.md §11's mid-translation compaction.
+        ensureRoom(ctx, instrMaxBytes(instr));
 
         switch(instr.op)
         {
@@ -707,19 +734,24 @@ TranslateResult translateProc(
     uint32_t procIdx,
     const uint32_t *calleeArgCounts, uint32_t calleeCount,
     uint16_t *outBuf, uint32_t outCapacityHalfwords,
-    uint32_t stackFloor)
+    uint32_t stackFloor,
+    const bool *savesLROverride,
+    ArenaRoom *room)
 {
     Emitter e(outBuf, outCapacityHalfwords);
-    bool savesLR = needsLRSave(proc);
+    bool savesLR = savesLROverride ? *savesLROverride : needsLRSave(proc);
     uint32_t initialSpilledCount = proc.argCount > WINDOW_SIZE ? proc.argCount - WINDOW_SIZE : 0;
     Window window(proc.argCount, savesLR);
     AccState accState;
 
     Ctx ctx{e, window, accState, proc.body, proc.bodyBytes,
-        0, calleeArgCounts, calleeCount, procIdx, savesLR, initialSpilledCount, stackFloor};
+        0, calleeArgCounts, calleeCount, procIdx, savesLR, initialSpilledCount, stackFloor, room};
 
     // Prologue — the fixed dispatch-table prologue stub, plus push{lr} if
-    // this procedure's own body needs it protected.
+    // this procedure's own body needs it protected. Not covered by the
+    // main loop's own per-instruction ensureRoom below, since it runs
+    // before that loop ever starts.
+    ensureRoom(ctx, STUB_SIZE + 2); // +2: the optional push{lr}, one Thumb instruction
     abiEmitPrologue(e, savesLR);
 
     // Callee-side prologue: the last argument (if any) arrives in acc.

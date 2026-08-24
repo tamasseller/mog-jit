@@ -1,34 +1,42 @@
-// The hand-transcribed fixture programs and the currently-active-fixture
-// globals compile_proc_real.cpp reads from. main.cpp sets
-// realProcs/realProcCount before each enterProgram call — sequential,
-// single-threaded, never concurrent.
+// The hand-transcribed fixture programs main.cpp's own fixture loop drives
+// enterProgram() with. Each Fixture owns one whole, already-encoded
+// jit-armv6m program (the packages/machine/src/bytecode.ts envelope plus
+// an ordinary isa-core.md §5.5 body) — real wire bytes, the same shape a
+// genuine flashed image would have, built once at startup by
+// initFixtures() (fixtures.cpp).
 #ifndef JIT_ARMV6M_COMPILER_TEST_QEMU_FIXTURES_H_
 #define JIT_ARMV6M_COMPILER_TEST_QEMU_FIXTURES_H_
 
 #include <cstdint>
-#include "proc.h"
 
-// The currently active fixture's own procedure table — reassigned by
-// main.cpp before every enterProgram call.
-extern jitc::Proc *realProcs;
-extern uint32_t realProcCount;
+// One whole encoded program (bytes + length). A plain struct rather than
+// two separate Fixture fields: fixtures[] (below) is itself a static
+// array, initialized at static-init time — before initFixtures() ever
+// runs — so its own initializers can only safely capture each fixture's
+// own Program by *address* (fixed at link time, valid immediately) and
+// read through it later, never copy its bytes/size *by value* (which
+// would freeze in whatever those fields held before initFixtures() filled
+// them in — nullptr/0, silently).
+struct Program
+{
+    const uint8_t *bytes;
+    uint32_t size;
+};
 
 struct Fixture
 {
     const char *name;
-    jitc::Proc *procs;
-    uint32_t procCount;
+    const Program *program;
     bool expectTrapped;
     uint32_t expectValue;
     uint32_t argIn = 0;       // fed to enterProgram as its own argIn — only meaningful when procs[0].argCount >= 1
     uint32_t arenaSize = 400; // generous by default — a handful of eviction/resource-error fixtures override this deliberately small
 };
 
-// fixtures' own Proc::body pointers are filled in by initFixtures() — each
-// fixture's Instr[] source is encoded into its own byte scratch buffer
-// once, at startup, since Proc::body is raw wire bytes rather than a
-// compile-time-constructible Instr* (jitc::Proc's own header has why).
-// Must run before any enterProgram call — main.cpp calls it first thing.
+// Encodes every fixture program into its own scratch slot, since a real
+// wire blob (LEB128-encoded) isn't something an Instr[] literal can become
+// at compile time on its own. Must run before any enterProgram call —
+// main.cpp calls it first thing.
 void initFixtures();
 
 extern Fixture fixtures[];

@@ -2,12 +2,7 @@
 #include "instr.h"
 #include "encode_instr.h"
 
-#include <cassert>
-
 using namespace jitc;
-
-Proc *realProcs = nullptr;
-uint32_t realProcCount = 0;
 
 namespace
 {
@@ -15,7 +10,7 @@ namespace
 // ---- Fixture 1: single-argument call, entirely acc-passed. expect 42.
 const Instr f1Proc0[] = {CONST(37), call(1), bare(Op::RETURN)};
 const Instr f1Proc1[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
-Proc f1Procs[2];
+Program f1Prog;
 
 // ---- Fixture 2: 3-argument call with a phase-misaligned shuffle and
 // surviving leftover locals. expect 1629.
@@ -33,7 +28,7 @@ const Instr f2Proc0[] = {
     bare(Op::RETURN),
 };
 const Instr f2Proc1[] = {LOAD(0), opReg(Op::ADD, 1), opReg(Op::ADD, 2), bare(Op::RETURN)};
-Proc f2Procs[2];
+Program f2Prog;
 
 // ---- Fixture 3: out-of-window LOAD/STORE/REG_ACC/REG_REG, no CALL. expect 55.
 const Instr f3Proc0[] = {
@@ -52,7 +47,7 @@ const Instr f3Proc0[] = {
     opReg(Op::ADD, 1),                // acc = 30 + k1(25) = 55
     bare(Op::RETURN),
 };
-Proc f3Procs[1];
+Program f3Prog;
 
 // ---- Fixture 4: CALL with stackArgs(6) > WINDOW_SIZE(4). expect 280.
 const Instr f4Proc0[] = {
@@ -72,7 +67,7 @@ const Instr f4Proc1[] = {
     opReg(Op::ADD, 4), opReg(Op::ADD, 5), opReg(Op::ADD, 6),
     bare(Op::RETURN),
 };
-Proc f4Procs[2];
+Program f4Prog;
 
 // ---- Fixture 5: operand-fold. expect 10.
 const Instr f5Proc0[] = {
@@ -84,7 +79,7 @@ const Instr f5Proc0[] = {
     PUSH(),                // e = a -- k=4, evicts k=0's register
     bare(Op::RETURN),
 };
-Proc f5Procs[1];
+Program f5Prog;
 
 // ---- Fixture 6: destination-fold. expect 99.
 const Instr f6Proc0[] = {
@@ -96,13 +91,13 @@ const Instr f6Proc0[] = {
     PUSH(),                // e = a (now 99) -- k=4, evicts k=0's register
     bare(Op::RETURN),
 };
-Proc f6Procs[1];
+Program f6Prog;
 
 // ---- Fixture 7: a 3-deep call chain. expect 106.
 const Instr f7Proc0[] = {CONST(5), call(1), bare(Op::RETURN)};
 const Instr f7Proc1[] = {LOAD(0), call(2), opImm(Op::ADD, 1), bare(Op::RETURN)};
 const Instr f7Proc2[] = {LOAD(0), opImm(Op::ADD, 100), bare(Op::RETURN)};
-Proc f7Procs[3];
+Program f7Prog;
 
 // ---- Fixture 8: LOOP body closed by a bare terminator, not BLOCK_END.
 // arg 0 -> 999 (cond-false exit tail), arg != 0 -> 42 (body runs once,
@@ -112,7 +107,7 @@ const Instr f8Proc0[] = {
     CONST(42), bare(Op::RETURN),           // body — bare terminator closes it
     CONST(999), bare(Op::RETURN),          // reached only via the cond-false exit
 };
-Proc f8Procs[1];
+Program f8Prog;
 
 // ---- Fixture 9: a genuine (non-degenerate) LOOP with real accumulation
 // and a back-edge — sum(1..n). arg 4 -> 10, arg 0 -> 0, arg 1 -> 1.
@@ -127,7 +122,7 @@ const Instr f9Proc0[] = {
     bare(Op::BLOCK_END),                          // back-edge
     LOAD(2), bare(Op::RETURN),
 };
-Proc f9Procs[1];
+Program f9Prog;
 
 // ---- Fixture 10: BR_TABLE if/else fusion, non-last case closed via a
 // bare RETURN, last case closes normally. arg <= 10 -> 111, arg > 10 -> 222.
@@ -137,7 +132,7 @@ const Instr f10Proc0[] = {
         CONST(222), bare(Op::BLOCK_END), // case 1 (n > 10) — normal close
     bare(Op::RETURN),
 };
-Proc f10Procs[1];
+Program f10Prog;
 
 // ---- Fixture 11: BR_TABLE N>2, the shared jump-table helper.
 // arg 0/1/2/3 -> 100/200/300/400.
@@ -149,22 +144,22 @@ const Instr f11Proc0[] = {
         CONST(400), bare(Op::BLOCK_END),
     bare(Op::RETURN),
 };
-Proc f11Procs[1];
+Program f11Prog;
 
 // ---- Fixture 12: a comparison feeds further arithmetic — (n > 4) * 5.
 // arg 6 -> 5, arg 3 -> 0.
 const Instr f12Proc0[] = {LOAD(0), opImm(Op::GT_U, 4), opImm(Op::MUL, 5), bare(Op::RETURN)};
-Proc f12Procs[1];
+Program f12Prog;
 
 // ---- Fixtures 13-16: unary ops, one procedure per op.
 const Instr f13Neg[] = {LOAD(0), bare(Op::NEG), bare(Op::RETURN)};       // arg 5 -> 0xFFFFFFFB
-Proc f13Procs[1];
+Program f13Prog;
 const Instr f14Not[] = {LOAD(0), bare(Op::NOT), bare(Op::RETURN)};       // arg 5 -> 0xFFFFFFFA
-Proc f14Procs[1];
+Program f14Prog;
 const Instr f15Clz[] = {LOAD(0), bare(Op::CLZ), bare(Op::RETURN)};       // arg 1 -> 31, arg 0 -> 32
-Proc f15Procs[1];
+Program f15Prog;
 const Instr f16Revbits[] = {LOAD(0), bare(Op::REVBITS), bare(Op::RETURN)}; // arg 1 -> 0x80000000
-Proc f16Procs[1];
+Program f16Prog;
 
 // ---- Fixture 17: PEEK_PEEK two-op-in-place. 10 & 12 = 8.
 const Instr f17Proc0[] = {
@@ -173,7 +168,7 @@ const Instr f17Proc0[] = {
     opStack(Op::AND, Combo::PEEK_PEEK), // k0 := 10 & 12 = 8; acc poisoned
     POP(), bare(Op::RETURN),
 };
-Proc f17Procs[1];
+Program f17Prog;
 
 // ---- Fixture 18: branch-range guard forced into the long (invert-and-
 // branch) form — case 0's own body is padded past the 240-byte safe span,
@@ -189,7 +184,7 @@ const Instr f18Proc0[] = {
         CONST(2), bare(Op::BLOCK_END),   // case 1 (n > 100) — normal
     bare(Op::RETURN),
 };
-Proc f18Procs[1];
+Program f18Prog;
 
 // ---- Fixture 19: regression for emitAddSubRsub with accShape and the
 // IMM_ACC operand both compile-time immediates (CONST directly followed by
@@ -199,7 +194,7 @@ Proc f18Procs[1];
 // value, silently computing `k op k` instead of `accShape op k`.
 // expect 5 + 1000 = 1005.
 const Instr f19Proc0[] = {CONST(5), opImm(Op::ADD, 1000), bare(Op::RETURN)};
-Proc f19Procs[1];
+Program f19Prog;
 
 // ---- Fixture 20: the same aliasing bug class, but the operand register
 // itself happens to be SCRATCH_REG, which happens for real whenever an
@@ -218,7 +213,7 @@ const Instr f20Proc0[] = {
     opReg(Op::ADD, 0),
     bare(Op::RETURN),
 };
-Proc f20Procs[1];
+Program f20Prog;
 
 // ---- Fixture 21: regression for armv6.h's isCondBranch, which excluded
 // Condition::LE (0b1101) — this codebase's own largest valid condition —
@@ -244,7 +239,7 @@ const Instr f21Proc0[] = {
     LOAD(1), opReg(Op::ADD, 2),                     // branch result + counter(now 0)
     bare(Op::RETURN),
 };
-Proc f21Procs[1];
+Program f21Prog;
 
 // ---- Fixture 22: regression for the accState-merge-boundary bug —
 // emitComparison never materializes its 0/1 result into any register
@@ -264,7 +259,7 @@ const Instr f22Proc0[] = {
     LOAD(1),
     bare(Op::RETURN),
 };
-Proc f22Procs[1];
+Program f22Prog;
 
 // ---- Fixture 23: the same bug's LOOP-body half — the fused condition
 // closing LOOP's own condition sub-block has the identical gap. x = 7 (not
@@ -281,7 +276,7 @@ const Instr f23Proc0[] = {
     LOAD(1),
     bare(Op::RETURN),
 };
-Proc f23Procs[1];
+Program f23Prog;
 
 // ---- Fixture 24: literal pooling, both routes at once. CONST's own
 // hard-to-synthesize value pools, and so does the ADD's immediate operand
@@ -289,7 +284,7 @@ Proc f23Procs[1];
 // this executes two PC-relative loads at different alignment parities.
 // expect 0x12345678 + 0x11111111.
 const Instr f24Proc0[] = {CONST(0x12345678), opImm(Op::ADD, 0x11111111), bare(Op::RETURN)};
-Proc f24Procs[1];
+Program f24Prog;
 
 // ---- Fixture 25: a pooled load whose pool is flushed mid-procedure,
 // with the flush's branch-around actually executed. BR_TABLE N>2 forces
@@ -307,7 +302,7 @@ const Instr f25Proc0[] = {
     LOAD(0),
     bare(Op::RETURN),
 };
-Proc f25Procs[1];
+Program f25Prog;
 
 // ---- Fixture 26: a pooled load in a procedure that does *not* start at
 // the arena base. proc0 compiles to an odd number of halfwords (38 bytes,
@@ -319,132 +314,214 @@ Proc f25Procs[1];
 // 5 ^ 0x0F0F0F0F = 0x0F0F0F0A, + 1 = 0x0F0F0F0B.
 const Instr f26Proc0[] = {CONST(5), call(1), opImm(Op::ADD, 1), bare(Op::RETURN)};
 const Instr f26Proc1[] = {LOAD(0), opImm(Op::XOR, 0x0F0F0F0F), bare(Op::RETURN)};
-Proc f26Procs[2];
+Program f26Prog;
 
 // Every original fixture's own compiled output measures well under 110
 // bytes — fixture 18 is a deliberate exception (it pads its own source
-// body specifically to force the long-branch form). 64 bytes of source
-// bytecode per procedure is generous headroom for any single procedure's
-// own encoded wire body — a scratch region filled once at startup
-// (encodeInto(), below), since Proc::body is raw wire bytes rather than
-// something an Instr[] literal can become at compile time on its own.
-constexpr uint32_t BYTES_PER_PROC = 64;
-constexpr uint32_t TOTAL_PROCS = 32; // 2+2+1+2+1+1+3 (fixtures 1-7) + 18 (fixtures 8-25, one proc each) + 2 (fixture 26)
-uint8_t scratch[TOTAL_PROCS][BYTES_PER_PROC];
+// body specifically to force the long-branch form). This is a bump
+// allocator, not a fixed per-program slot size, since a whole program's
+// own encoded size varies far more than a single procedure's body did
+// (fixture 18's ~350 bytes against most others' well under 30): sizing
+// every slot for the worst case would waste RAM this target's own 8KB
+// budget (test/qemu/linker.ld) can't spare. 3KB is generous over the real
+// total (26 small envelopes + every fixture body combined measures well
+// under 2.5KB) — an overrun here is a fixture-authoring bug, never a
+// runtime condition, exactly like encodeInstr's own assert-and-move-on
+// (putByte, compiler/src/encode_instr.cpp), which is what would actually
+// catch it on a host build; the QEMU build's own -DNDEBUG strips that, so
+// keep this margin real rather than tight.
+constexpr uint32_t SCRATCH_CAPACITY = 3072;
+uint8_t scratch[SCRATCH_CAPACITY];
+uint32_t scratchUsed = 0;
 
-uint32_t nextScratchSlot = 0;
-
-void encodeInto(uint32_t argCount, const Instr *body, uint32_t count, Proc &out)
+// max_call_depth/total_depth are both 0 for every fixture here: none of
+// them ever reach enterProgram through a path that actually checks them
+// (that's what enterProgramOnStack/enterProgramSplit's own dedicated
+// scenarios in main.cpp are for, with their own hand-derived, real
+// values) — plain enterProgram never consults its envelope's stats at
+// all, only parses past them to find proc_count.
+Program finishProgram(const ProcSource *procs, uint32_t count)
 {
-    assert(nextScratchSlot < TOTAL_PROCS); // GCOV_EXCL_LINE — fixture-authoring bug, never a runtime condition
-    uint8_t *slot = scratch[nextScratchSlot++];
-    uint32_t len = encodeBody(body, count, slot, BYTES_PER_PROC);
-    out = Proc{argCount, slot, len};
+    uint8_t *slot = scratch + scratchUsed;
+    uint32_t len = encodeJitProgram(0, 0, procs, count, slot, SCRATCH_CAPACITY - scratchUsed);
+    scratchUsed += len;
+    return Program{slot, len};
 }
+
+// Instr[]'s own element count, paired with its own argCount — one
+// ProcSource per procedure, exactly what fixtures.cpp already had to
+// write out at every encodeInto() call site before this, just no longer
+// naming a destination slot (finishProgram, above, owns that now).
+#define PROC(argCount, body) ProcSource{argCount, body, sizeof(body) / sizeof(body[0])}
 
 } // namespace
 
 void initFixtures()
 {
-    encodeInto(0, f1Proc0, sizeof(f1Proc0) / sizeof(f1Proc0[0]), f1Procs[0]);
-    encodeInto(1, f1Proc1, sizeof(f1Proc1) / sizeof(f1Proc1[0]), f1Procs[1]);
-
-    encodeInto(0, f2Proc0, sizeof(f2Proc0) / sizeof(f2Proc0[0]), f2Procs[0]);
-    encodeInto(3, f2Proc1, sizeof(f2Proc1) / sizeof(f2Proc1[0]), f2Procs[1]);
-
-    encodeInto(0, f3Proc0, sizeof(f3Proc0) / sizeof(f3Proc0[0]), f3Procs[0]);
-
-    encodeInto(0, f4Proc0, sizeof(f4Proc0) / sizeof(f4Proc0[0]), f4Procs[0]);
-    encodeInto(7, f4Proc1, sizeof(f4Proc1) / sizeof(f4Proc1[0]), f4Procs[1]);
-
-    encodeInto(0, f5Proc0, sizeof(f5Proc0) / sizeof(f5Proc0[0]), f5Procs[0]);
-
-    encodeInto(0, f6Proc0, sizeof(f6Proc0) / sizeof(f6Proc0[0]), f6Procs[0]);
-
-    encodeInto(0, f7Proc0, sizeof(f7Proc0) / sizeof(f7Proc0[0]), f7Procs[0]);
-    encodeInto(1, f7Proc1, sizeof(f7Proc1) / sizeof(f7Proc1[0]), f7Procs[1]);
-    encodeInto(1, f7Proc2, sizeof(f7Proc2) / sizeof(f7Proc2[0]), f7Procs[2]);
-
-    encodeInto(1, f8Proc0, sizeof(f8Proc0) / sizeof(f8Proc0[0]), f8Procs[0]);
-    encodeInto(1, f9Proc0, sizeof(f9Proc0) / sizeof(f9Proc0[0]), f9Procs[0]);
-    encodeInto(1, f10Proc0, sizeof(f10Proc0) / sizeof(f10Proc0[0]), f10Procs[0]);
-    encodeInto(1, f11Proc0, sizeof(f11Proc0) / sizeof(f11Proc0[0]), f11Procs[0]);
-    encodeInto(1, f12Proc0, sizeof(f12Proc0) / sizeof(f12Proc0[0]), f12Procs[0]);
-    encodeInto(1, f13Neg, sizeof(f13Neg) / sizeof(f13Neg[0]), f13Procs[0]);
-    encodeInto(1, f14Not, sizeof(f14Not) / sizeof(f14Not[0]), f14Procs[0]);
-    encodeInto(1, f15Clz, sizeof(f15Clz) / sizeof(f15Clz[0]), f15Procs[0]);
-    encodeInto(1, f16Revbits, sizeof(f16Revbits) / sizeof(f16Revbits[0]), f16Procs[0]);
-    encodeInto(0, f17Proc0, sizeof(f17Proc0) / sizeof(f17Proc0[0]), f17Procs[0]);
-    encodeInto(1, f18Proc0, sizeof(f18Proc0) / sizeof(f18Proc0[0]), f18Procs[0]);
-    encodeInto(0, f19Proc0, sizeof(f19Proc0) / sizeof(f19Proc0[0]), f19Procs[0]);
-    encodeInto(1, f20Proc0, sizeof(f20Proc0) / sizeof(f20Proc0[0]), f20Procs[0]);
-    encodeInto(1, f21Proc0, sizeof(f21Proc0) / sizeof(f21Proc0[0]), f21Procs[0]);
-    encodeInto(1, f22Proc0, sizeof(f22Proc0) / sizeof(f22Proc0[0]), f22Procs[0]);
-    encodeInto(0, f23Proc0, sizeof(f23Proc0) / sizeof(f23Proc0[0]), f23Procs[0]);
-    encodeInto(0, f24Proc0, sizeof(f24Proc0) / sizeof(f24Proc0[0]), f24Procs[0]);
-    encodeInto(0, f25Proc0, sizeof(f25Proc0) / sizeof(f25Proc0[0]), f25Procs[0]);
-    encodeInto(0, f26Proc0, sizeof(f26Proc0) / sizeof(f26Proc0[0]), f26Procs[0]);
-    encodeInto(1, f26Proc1, sizeof(f26Proc1) / sizeof(f26Proc1[0]), f26Procs[1]);
+    {
+        ProcSource procs[] = {PROC(0, f1Proc0), PROC(1, f1Proc1)};
+        f1Prog = finishProgram(procs, 2);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f2Proc0), PROC(3, f2Proc1)};
+        f2Prog = finishProgram(procs, 2);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f3Proc0)};
+        f3Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f4Proc0), PROC(7, f4Proc1)};
+        f4Prog = finishProgram(procs, 2);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f5Proc0)};
+        f5Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f6Proc0)};
+        f6Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f7Proc0), PROC(1, f7Proc1), PROC(1, f7Proc2)};
+        f7Prog = finishProgram(procs, 3);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f8Proc0)};
+        f8Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f9Proc0)};
+        f9Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f10Proc0)};
+        f10Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f11Proc0)};
+        f11Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f12Proc0)};
+        f12Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f13Neg)};
+        f13Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f14Not)};
+        f14Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f15Clz)};
+        f15Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f16Revbits)};
+        f16Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f17Proc0)};
+        f17Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f18Proc0)};
+        f18Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f19Proc0)};
+        f19Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f20Proc0)};
+        f20Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f21Proc0)};
+        f21Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f22Proc0)};
+        f22Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f23Proc0)};
+        f23Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f24Proc0)};
+        f24Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f25Proc0)};
+        f25Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f26Proc0), PROC(1, f26Proc1)};
+        f26Prog = finishProgram(procs, 2);
+    }
 }
 
 Fixture fixtures[] = {
-    {"single-arg call", f1Procs, 2, false, 42},
-    {"phase-misaligned shuffle", f2Procs, 2, false, 1629},
-    {"out-of-window LOAD/STORE/REG_REG", f3Procs, 1, false, 55},
-    {"stackArgs > WINDOW_SIZE", f4Procs, 2, false, 280},
-    {"rotation operand-fold", f5Procs, 1, false, 10},
-    {"rotation destination-fold", f6Procs, 1, false, 99},
-    {"3-deep call chain", f7Procs, 3, false, 106},
+    {"single-arg call", &f1Prog, false, 42},
+    {"phase-misaligned shuffle", &f2Prog, false, 1629},
+    {"out-of-window LOAD/STORE/REG_REG", &f3Prog, false, 55},
+    {"stackArgs > WINDOW_SIZE", &f4Prog, false, 280},
+    {"rotation operand-fold", &f5Prog, false, 10},
+    {"rotation destination-fold", &f6Prog, false, 99},
+    {"3-deep call chain", &f7Prog, false, 106},
 
-    {"LOOP body closed by RETURN, cond-false exit", f8Procs, 1, false, 999, 0},
-    {"LOOP body closed by RETURN, body runs once", f8Procs, 1, false, 42, 1},
-    {"LOOP body closed by RETURN, body runs once (n=7)", f8Procs, 1, false, 42, 7},
+    {"LOOP body closed by RETURN, cond-false exit", &f8Prog, false, 999, 0},
+    {"LOOP body closed by RETURN, body runs once", &f8Prog, false, 42, 1},
+    {"LOOP body closed by RETURN, body runs once (n=7)", &f8Prog, false, 42, 7},
 
-    {"LOOP sum(1..n), n=4", f9Procs, 1, false, 10, 4},
-    {"LOOP sum(1..n), n=0", f9Procs, 1, false, 0, 0},
-    {"LOOP sum(1..n), n=1", f9Procs, 1, false, 1, 1},
+    {"LOOP sum(1..n), n=4", &f9Prog, false, 10, 4},
+    {"LOOP sum(1..n), n=0", &f9Prog, false, 0, 0},
+    {"LOOP sum(1..n), n=1", &f9Prog, false, 1, 1},
 
-    {"BR_TABLE if/else, non-last case via RETURN, n<=10", f10Procs, 1, false, 111, 0},
-    {"BR_TABLE if/else, non-last case via RETURN, n=10", f10Procs, 1, false, 111, 10},
-    {"BR_TABLE if/else, non-last case via RETURN, n>10", f10Procs, 1, false, 222, 11},
+    {"BR_TABLE if/else, non-last case via RETURN, n<=10", &f10Prog, false, 111, 0},
+    {"BR_TABLE if/else, non-last case via RETURN, n=10", &f10Prog, false, 111, 10},
+    {"BR_TABLE if/else, non-last case via RETURN, n>10", &f10Prog, false, 222, 11},
 
-    {"BR_TABLE N>2 jump table, selector 0", f11Procs, 1, false, 100, 0},
-    {"BR_TABLE N>2 jump table, selector 1", f11Procs, 1, false, 200, 1},
-    {"BR_TABLE N>2 jump table, selector 2", f11Procs, 1, false, 300, 2},
-    {"BR_TABLE N>2 jump table, selector 3", f11Procs, 1, false, 400, 3},
+    {"BR_TABLE N>2 jump table, selector 0", &f11Prog, false, 100, 0},
+    {"BR_TABLE N>2 jump table, selector 1", &f11Prog, false, 200, 1},
+    {"BR_TABLE N>2 jump table, selector 2", &f11Prog, false, 300, 2},
+    {"BR_TABLE N>2 jump table, selector 3", &f11Prog, false, 400, 3},
 
-    {"comparison feeds arithmetic (n>4)*5, n=6", f12Procs, 1, false, 5, 6},
-    {"comparison feeds arithmetic (n>4)*5, n=3", f12Procs, 1, false, 0, 3},
+    {"comparison feeds arithmetic (n>4)*5, n=6", &f12Prog, false, 5, 6},
+    {"comparison feeds arithmetic (n>4)*5, n=3", &f12Prog, false, 0, 3},
 
-    {"NEG(5)", f13Procs, 1, false, 0xFFFFFFFBu, 5},
-    {"NOT(5)", f14Procs, 1, false, 0xFFFFFFFAu, 5},
-    {"CLZ(1)", f15Procs, 1, false, 31, 1},
-    {"CLZ(0)", f15Procs, 1, false, 32, 0},
-    {"REVBITS(1)", f16Procs, 1, false, 0x80000000u, 1},
+    {"NEG(5)", &f13Prog, false, 0xFFFFFFFBu, 5},
+    {"NOT(5)", &f14Prog, false, 0xFFFFFFFAu, 5},
+    {"CLZ(1)", &f15Prog, false, 31, 1},
+    {"CLZ(0)", &f15Prog, false, 32, 0},
+    {"REVBITS(1)", &f16Prog, false, 0x80000000u, 1},
 
-    {"PEEK_PEEK two-op-in-place AND", f17Procs, 1, false, 8},
+    {"PEEK_PEEK two-op-in-place AND", &f17Prog, false, 8},
 
-    {"branch-range forced long form, n<=100", f18Procs, 1, false, 1, 0},
-    {"branch-range forced long form, n>100", f18Procs, 1, false, 2, 200},
+    {"branch-range forced long form, n<=100", &f18Prog, false, 1, 0},
+    {"branch-range forced long form, n>100", &f18Prog, false, 2, 200},
 
-    {"binops both-imm aliasing regression: CONST(5)+ADD#1000", f19Procs, 1, false, 1005},
-    {"binops SCRATCH_REG-operand aliasing regression, argIn=1", f20Procs, 1, false, 101, 1},
-    {"binops SCRATCH_REG-operand aliasing regression, argIn=42", f20Procs, 1, false, 142, 42},
+    {"binops both-imm aliasing regression: CONST(5)+ADD#1000", &f19Prog, false, 1005},
+    {"binops SCRATCH_REG-operand aliasing regression, argIn=1", &f20Prog, false, 101, 1},
+    {"binops SCRATCH_REG-operand aliasing regression, argIn=42", &f20Prog, false, 142, 42},
 
     // isCondBranch's own Condition::LE off-by-one (see fixture 21's own
     // body comment) — BR_TABLE's own guard skips case 0 when the fused
     // condition is true, so case 1 (200) fires for arg<=5 and case 0 (100)
     // for arg>5.
-    {"isCondBranch LE regression: arg<=5 (true branch) + countdown", f21Procs, 1, false, 200, 3},
-    {"isCondBranch LE regression: arg==5 (boundary, true branch) + countdown", f21Procs, 1, false, 200, 5},
-    {"isCondBranch LE regression: arg>5 (false branch) + countdown", f21Procs, 1, false, 100, 9},
+    {"isCondBranch LE regression: arg<=5 (true branch) + countdown", &f21Prog, false, 200, 3},
+    {"isCondBranch LE regression: arg==5 (boundary, true branch) + countdown", &f21Prog, false, 200, 5},
+    {"isCondBranch LE regression: arg>5 (false branch) + countdown", &f21Prog, false, 100, 9},
 
-    {"accState fusion-merge regression: case[0] (false) probe", f22Procs, 1, false, 0, 5},
-    {"accState fusion-merge regression: case[1] (true) probe", f22Procs, 1, false, 1, 200},
-    {"accState fusion-merge regression: LOOP body probe", f23Procs, 1, false, 1},
+    {"accState fusion-merge regression: case[0] (false) probe", &f22Prog, false, 0, 5},
+    {"accState fusion-merge regression: case[1] (true) probe", &f22Prog, false, 1, 200},
+    {"accState fusion-merge regression: LOOP body probe", &f23Prog, false, 1},
 
-    {"pooled literal: CONST and IMM_ACC operand", f24Procs, 1, false, 0x23456789u},
-    {"pooled literal: mid-code flush with executed jump-around", f25Procs, 1, false, 0xDEADBEEFu},
-    {"pooled literal in a procedure past an odd-sized one", f26Procs, 2, false, 0x0F0F0F0Bu},
+    {"pooled literal: CONST and IMM_ACC operand", &f24Prog, false, 0x23456789u},
+    {"pooled literal: mid-code flush with executed jump-around", &f25Prog, false, 0xDEADBEEFu},
+    {"pooled literal in a procedure past an odd-sized one", &f26Prog, false, 0x0F0F0F0Bu},
 };
 const uint32_t fixtureCount = sizeof(fixtures) / sizeof(fixtures[0]);

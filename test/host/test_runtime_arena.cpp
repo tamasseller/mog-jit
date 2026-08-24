@@ -1,6 +1,6 @@
 // Runtime's arena bookkeeping, exercised on the host rather than only
-// through the real QEMU image (compiler/qemu/compile_proc_real.cpp is its
-// only other caller). What's worth testing cheaply here is the 4-byte
+// through the real QEMU image (runtime/compile_proc_real.cpp is its only
+// other caller). What's worth testing cheaply here is the 4-byte
 // alignment invariant every procedure's PC-relative literal loads depend
 // on: an off-by-one in that padding would otherwise only surface as a
 // wrong value loaded on real hardware, after a compaction slide.
@@ -13,6 +13,11 @@
 // only ever touches the dispatch table, which does live in real memory.
 #include "Test.h"
 #include "runtime_internal.h"
+#include "encode_instr.h"
+
+#include <cassert>
+
+using namespace jitc;
 
 // Normally runtime_host.cpp's own address of translatorTrampoline; any
 // distinct non-zero value serves as the not-resident marker here.
@@ -29,7 +34,16 @@ const uint32_t ARENA_SIZE = 512;
 template<uint32_t procCount>
 class RuntimeStorage
 {
-    alignas(8) uint8_t bytes[sizeof(Runtime) + (procCount + 1) * sizeof(DispatchEntry)] = {};
+    alignas(8) uint8_t bytes[sizeof(Runtime) + (procCount + 1) * sizeof(ProcSlot)] = {};
+
+    // init() now walks real wire bytes to build every slot's own static
+    // half (ProcSlot) — nothing this file's own tests care about, but a
+    // real, valid program has to sit somewhere for it to walk. procCount
+    // trivial (argCount 0, bare RETURN) procedures, encoded once, kept
+    // alive as long as the Runtime itself: ProcSlot.bodyPtr points
+    // straight into this buffer.
+    const Instr trivialBody[1] = {bare(Op::RETURN)};
+    uint8_t programBytes[procCount * 4 + 8] = {};
 
 public:
     Runtime *operator->()
@@ -39,7 +53,16 @@ public:
 
     RuntimeStorage(uint32_t base = ARENA_BASE, uint32_t size = ARENA_SIZE)
     {
-        (*this)->init(base, size, nullptr, procCount, 0, 0);
+        ProcSource procs[procCount];
+        for(uint32_t i = 0; i < procCount; i++)
+        {
+            procs[i] = ProcSource{0, trivialBody, 1};
+        }
+        uint32_t len = encodeProgram(procs, procCount, programBytes, sizeof(programBytes));
+        uint32_t bodyOffset;
+        decodeLeb128(programBytes, 0, bodyOffset); // past proc_count's own LEB128
+        bool ok = (*this)->init(programBytes, len, bodyOffset, procCount, base, size, 0, 0);
+        assert(ok); // GCOV_EXCL_LINE — this file's own encoding setup, not the thing under test
     }
 };
 }
@@ -118,4 +141,27 @@ TEST(RoomCheckAccountsForThePaddingAllocateWillConsume)
         CHECK(allocations <= ARENA_SIZE / 8); // GCOV_EXCL_LINE — a non-advancing cursor would spin here
     }
     CHECK(allocations > 0);
+}
+
+TEST(InitFailsWithoutTouchingDispatchStateWhenAProcedureCantBeScanned)
+{
+    // A stack floor pinned at the current sp makes scanProcBody's own live
+    // check fail immediately (test_proc_scan.cpp's own
+    // ScanProcBodyStackFloorReachedReportsNotOk) — init() must propagate
+    // that as a plain false, the same way it would a packed-field
+    // overflow, rather than asserting or leaving the caller to find out
+    // only once enterDispatch is already running.
+    const Instr body[] = {bare(Op::RETURN)};
+    ProcSource procs[] = {ProcSource{0, body, 1}};
+    uint8_t programBytes[16];
+    uint32_t len = encodeProgram(procs, 1, programBytes, sizeof(programBytes));
+    uint32_t bodyOffset;
+    decodeLeb128(programBytes, 0, bodyOffset);
+
+    alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
+    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
+
+    register uint32_t sp asm("sp");
+    bool ok = runtime->init(programBytes, len, bodyOffset, 1, ARENA_BASE, ARENA_SIZE, sp, 0);
+    CHECK(!ok);
 }

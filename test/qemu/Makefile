@@ -16,7 +16,7 @@ SOURCES += vectors.S
 
 SOURCES += ../../runtime/runtime.S
 SOURCES += ../../runtime/runtime_host.cpp
-SOURCES += compile_proc_real.cpp
+SOURCES += ../../runtime/compile_proc_real.cpp
 
 # The compiler itself
 SOURCES += ../../compiler/src/window.cpp
@@ -28,6 +28,7 @@ SOURCES += ../../compiler/src/abi_strategy.cpp
 SOURCES += ../../compiler/src/decode_instr.cpp
 SOURCES += ../../compiler/src/blocks.cpp
 SOURCES += ../../compiler/src/unaryops.cpp
+SOURCES += ../../compiler/src/proc_scan.cpp
 SOURCES += ../../compiler/src/translate_proc.cpp
 
 # Test code (encode_instr.cpp is test-only here — the real compiler only

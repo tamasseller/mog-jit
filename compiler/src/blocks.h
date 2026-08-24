@@ -83,6 +83,20 @@ struct Frame
     int32_t exitFixup; // -1 = not yet set; meaningful only once kind == LoopBody
 };
 
+// Sized for CALL's own real-ABI sequence (this translator's single most
+// expensive ordinary instruction) without pricing that cost into every
+// cheaper ALU/LOAD/STORE/comparison instruction too.
+constexpr uint32_t ORDINARY_MAX_BYTES = 16;
+constexpr uint32_t CALL_MAX_BYTES = 64;
+constexpr uint32_t BR_TABLE_JUMP_OVERHEAD_BYTES = 32;
+
+/** The most bytes instr could possibly emit — maxSpanBytes's own per-
+ *  opcode budget (below), also reused by translate_proc.cpp's arena-room
+ *  guard (arena_room.h) to decide how much headroom to ensure before
+ *  translating each instruction. Already accounts for BR_TABLE(N>2)'s own
+ *  jump table, not just the dispatch sequence proper. */
+uint32_t instrMaxBytes(const Instr &instr);
+
 /** Bound the branch span guarded by a fused comparison *before* emitting
  *  it (a cheap, deliberately loose over-estimate), so the translator can
  *  choose a bare short-form conditional branch when that's provably safe

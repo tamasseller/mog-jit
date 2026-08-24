@@ -118,6 +118,83 @@ TEST(EncodeLeb128MultiByteRoundTrips)
     CHECK(next == 2);
 }
 
+// ── encodeProgram/encodeJitProgram (isa-core.md §5.5) ───────────────────
+
+TEST(EncodeProgramNoHeaderTableEachArgCountSitsDirectlyBeforeItsOwnBody)
+{
+    // Mirrors bytecode.test.ts's own "no header table" test byte for
+    // byte: proc_count(2), then each procedure's own arg_count
+    // immediately followed by its own body — no separate header block,
+    // no stored body length.
+    const Instr body0[] = {bare(Op::RETURN)};                 // 1-byte body
+    const Instr body1[] = {CONST(1), bare(Op::RETURN)};         // 2-byte body
+    ProcSource procs[] = {
+        {0, body0, 1},
+        {0, body1, 2},
+    };
+    uint8_t bytes[16];
+    uint32_t len = encodeProgram(procs, 2, bytes, sizeof(bytes));
+
+    const uint8_t expected[] = {2, 0, 100, 0, 108 + 1, 100};
+    CHECK(len == sizeof(expected));
+    CHECK(memcmp(bytes, expected, sizeof(expected)) == 0);
+}
+
+TEST(EncodeProgramBodyDecodesBackToTheSameInstructions)
+{
+    const Instr body0[] = {CONST(5), call(1), bare(Op::RETURN)};
+    const Instr body1[] = {LOAD(0), opImm(Op::ADD, 10), bare(Op::RETURN)};
+    ProcSource procs[] = {
+        {0, body0, 3},
+        {1, body1, 3},
+    };
+    uint8_t bytes[32];
+    uint32_t len = encodeProgram(procs, 2, bytes, sizeof(bytes));
+
+    uint32_t pos;
+    uint32_t procCount = decodeLeb128(bytes, 0, pos);
+    CHECK(procCount == 2);
+
+    uint32_t argCount0 = decodeLeb128(bytes, pos, pos);
+    CHECK(argCount0 == 0);
+    for(uint32_t i = 0; i < 3; i++)
+    {
+        DecodedInstr d = decodeInstr(bytes, len, pos);
+        CHECK(sameInstr(d.instr, body0[i]));
+        pos = d.next;
+    }
+
+    uint32_t argCount1 = decodeLeb128(bytes, pos, pos);
+    CHECK(argCount1 == 1);
+    for(uint32_t i = 0; i < 3; i++)
+    {
+        DecodedInstr d = decodeInstr(bytes, len, pos);
+        CHECK(sameInstr(d.instr, body1[i]));
+        pos = d.next;
+    }
+    CHECK(pos == len);
+}
+
+TEST(EncodeJitProgramPrependsMaxCallDepthAndTotalDepth)
+{
+    const Instr body0[] = {bare(Op::RETURN)};
+    ProcSource procs[] = {{0, body0, 1}};
+
+    uint8_t plain[16];
+    uint32_t plainLen = encodeProgram(procs, 1, plain, sizeof(plain));
+
+    uint8_t jit[16];
+    uint32_t jitLen = encodeJitProgram(3, 300, procs, 1, jit, sizeof(jit));
+
+    uint32_t pos;
+    uint32_t maxCallDepth = decodeLeb128(jit, 0, pos);
+    CHECK(maxCallDepth == 3);
+    uint32_t totalDepth = decodeLeb128(jit, pos, pos);
+    CHECK(totalDepth == 300); // multi-byte LEB128 — proves the chain, not just a single byte
+    CHECK(jitLen - pos == plainLen);
+    CHECK(memcmp(jit + pos, plain, plainLen) == 0);
+}
+
 // ── The decode table against isa-core.md §5.2 itself ────────────────────
 
 namespace

@@ -13,6 +13,7 @@ SOURCES += test_translate_proc.cpp
 SOURCES += test_decode_encode.cpp
 SOURCES += test_blocks.cpp
 SOURCES += test_unaryops.cpp
+SOURCES += test_proc_scan.cpp
 
 # Test support
 SOURCES += main.cpp
@@ -29,6 +30,7 @@ SOURCES += ../../compiler/src/abi_strategy.cpp
 SOURCES += ../../compiler/src/decode_instr.cpp
 SOURCES += ../../compiler/src/blocks.cpp
 SOURCES += ../../compiler/src/unaryops.cpp
+SOURCES += ../../compiler/src/proc_scan.cpp
 SOURCES += ../../compiler/src/translate_proc.cpp
 
 # 1test library

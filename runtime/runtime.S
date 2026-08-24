@@ -27,7 +27,7 @@
 .global callHelper
 callHelper:
     mov   lr, r1               @ persist the record in lr — r1 is free again immediately after
-    lsls  r1, r2, #3          @ slotAddr-relative = Q_idx * 8
+    lsls  r1, r2, #4          @ slotAddr-relative = Q_idx * 16 (sizeof(ProcSlot))
     add   r1, r1, r8           @ r1 = slotAddr
     ldr   r3, [r1, #0]          @ r3 = codePtr
     movs  r2, #1                 @ offset+1 = 1, hardwired — a fresh call never resumes mid-procedure
@@ -64,8 +64,8 @@ returnHelperTail:
     lsrs  r2, r1, #16           @ r2 = offset+1
     sxth  r1, r1                  @ r1 = callerIdx, sign-extended — SXTH not UXTH: the
                                     @ sentinel procIdx (0xffff, "index -1") must resolve
-                                    @ to r8-8, not r8+524280
-    lsls  r1, r1, #3                 @ slotAddr-relative = callerIdx * 8
+                                    @ to r8-16, not r8+1048560
+    lsls  r1, r1, #4                 @ slotAddr-relative = callerIdx * 16 (sizeof(ProcSlot))
     add   r1, r1, r8                  @ r1 = slotAddr
     ldr   r3, [r1, #0]                 @ r3 = codePtr
     bx    r3
@@ -191,7 +191,7 @@ translatorTrampoline:
     push {r0, r1, r2, lr}
     mov  r3, r8              @ low-mirror the dispatch table base
     subs r0, r1, r3           @ r0 = slotAddr - dispatchBase
-    lsrs r0, r0, #3            @ r0 = idx — compileProc's 1st argument
+    lsrs r0, r0, #4            @ r0 = idx — compileProc's 1st argument (/16, sizeof(ProcSlot))
     mov  r1, r9                @ r1 = runtime pointer — compileProc's 2nd argument
     REALIGN_ENTER                @ compileProc is real, independently-compiled C — see above
     bl   compileProc

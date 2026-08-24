@@ -22,20 +22,31 @@ JIT-compile and execute one Generic Core program injected at runtime
 ```c
 typedef struct { uint32_t value; uint32_t trapped; } ProgramResult;
 
-ProgramResult enter_program(uint32_t argIn, uint32_t arenaSize,
-                            const FlashProc *procs, uint32_t procCount);
+ProgramResult enter_program(uint32_t argIn, const uint8_t *programBytes,
+                            uint32_t programSize, uint32_t arenaSize);
 
-ProgramResult enter_program_on_stack(uint32_t argIn, const FlashProc *procs,
-                                     uint32_t procCount, uint32_t codeArenaSize,
-                                     uint32_t operandStackBytes, uint32_t maxCallDepth,
+ProgramResult enter_program_on_stack(uint32_t argIn, const uint8_t *programBytes,
+                                     uint32_t programSize, uint32_t codeArenaSize,
                                      uint32_t stackLimit, uint32_t interruptReserve);
 
-ProgramResult enter_program_split(uint32_t argIn, const FlashProc *procs,
-                                  uint32_t procCount, uint32_t codeArenaBase,
-                                  uint32_t codeArenaSize, uint32_t operandStackBytes,
-                                  uint32_t maxCallDepth, uint32_t stackLimit,
+ProgramResult enter_program_split(uint32_t argIn, const uint8_t *programBytes,
+                                  uint32_t programSize, uint32_t codeArenaBase,
+                                  uint32_t codeArenaSize, uint32_t stackLimit,
                                   uint32_t interruptReserve);
 ```
+
+`programBytes`/`programSize` is one whole serialized program: a
+jit-armv6m-specific envelope (`max_call_depth:LEB128 total_depth:LEB128` —
+`packages/machine/src/bytecode.ts`'s `encodeJitProgram`) prepended to an
+ordinary isa-core.md §5.5 program (`proc_count:LEB128`, then each
+procedure's own `arg_count:LEB128` immediately followed by its own body).
+`proc_count` and both whole-program stats come out of that envelope, not a
+caller-supplied parameter — isa-core.md §5.5/§11.4's own extension point
+("a procedure header's extension fields... added when a real need
+appears"): a bare-metal JIT needs `max_call_depth`/`total_depth` before it
+can compile a single instruction (§2's static stack reservation, below),
+and `validateProgram` already computes both, once, before the program is
+ever serialized.
 
 `trapped` is 0 for a normal return, nonzero for a `TRAP` code (isa-core.md
 §4.5) propagated out or a `RESOURCE_ERROR` (§12). None of these return
@@ -84,14 +95,15 @@ which is the geometry that makes sharing work:
 
 `enter_program` computes a hard ceiling for compiled code once, at entry:
 `codeLimit = SP(at entry) − requiredStackBytes`. Every term of
-`requiredStackBytes` (`jit-armv6m/runtime/runtime_host.cpp`) is a real
-parameter or a measured constant:
+`requiredStackBytes` (`jit-armv6m/runtime/runtime_host.cpp`) is derived
+from the program's own wire envelope (§1) or a measured constant:
 
 | Term | Source |
 |---|---|
-| `Runtime` plus its dispatch table | `sizeof(Runtime) + (procCount+1)·sizeof(DispatchEntry)` |
-| Operand stack | `operandStackBytes`, the program's worst-case TOS depth in bytes |
-| Live call/return records | `maxCallDepth · CALL_RECORD_BYTES` |
+| `Runtime` plus its dispatch table | `sizeof(Runtime) + (procCount+1)·sizeof(ProcSlot)` |
+| Operand stack | `operandStackBytes` = `totalDepth · 4`, from the program's own envelope |
+| Live call/return records | `maxCallDepth · CALL_RECORD_BYTES`, `maxCallDepth` from the same envelope |
+| compileProc's own callee-argCount lookup table | `procCount · CALLEE_ARG_COUNTS_BYTES_PER_PROC` (a VLA, not a fixed cap — §9's `ProcSlot` doesn't give O(1) indexing by callee for free) |
 | Fixed implementation overhead | `ENTER_DISPATCH_FIXED_BYTES` plus the translator's entry worst case |
 | Exception entry | `interruptReserve` |
 
@@ -490,7 +502,7 @@ The shared tail unpacks and dispatches:
 ```
 LSRS r2, r1, #16            ; r2 = offset+1
 SXTH r1, r1                 ; r1 = caller_idx, sign-extended
-LSLS r1, r1, #3             ; · sizeof(DispatchEntry)
+LSLS r1, r1, #4             ; · sizeof(ProcSlot)
 ADD  r1, r1, r8             ; r1 = slotAddr
 LDR  r3, [r1, #0]           ; r3 = code_ptr
 BX   r3
@@ -545,10 +557,15 @@ supplying a hardwired `1` (a fresh call never resumes mid-procedure) and
 whether the target is resident; that decision lives entirely in what the
 dispatch slot currently holds.
 
-**Dispatch table entry: 8 bytes.**
+**Dispatch table entry: 16 bytes.**
 
 ```c
-struct DispatchEntry { uint32_t code_ptr; uint32_t last_used; };
+struct ProcSlot {
+    uint32_t code_ptr;    // mutable — dispatch address (Thumb bit set) or translator_trampoline
+    uint32_t last_used;   // mutable — LRU tick, bumped by the prologue stub
+    uint32_t body_ptr;    // static — absolute flash address of this procedure's own body_bytes
+    uint32_t static_info; // static, packed: bit31 needs_lr_save; bits[30:20] arg_count; bits[19:0] body_bytes
+};
 ```
 
 No `state` field: "not resident" is `code_ptr == translator_trampoline`. No
@@ -558,9 +575,22 @@ timestamp needs one store, and eviction, the rare heavy path, absorbs a
 linear minimum scan instead. No `size` field (§8 derives it); the bytes it
 would have cost fold into widening `last_used` to a full word, which at 32
 bits doesn't realistically wrap in an embedded system's lifetime, so the
-scan is a plain comparison. Being a power of two makes `idx → slotAddr` a
-single `LSLS r1,r1,#3` rather than a `MULS` that first has to materialize
-the entry size.
+scan is a plain comparison.
+
+The static half (`body_ptr`/`static_info`) is what makes this table
+double as the whole-program procedure directory §16 originally tracked as
+missing entirely: `enter_program`'s one-time wire-format walk
+(`Runtime::init`, `jit-armv6m/runtime/runtime_internal.h`) fills it in for
+every procedure before `enter_dispatch` ever runs, and `compileProc` reads
+a procedure's own `arg_count`/body location/`needs_lr_save` straight out
+of its own slot instead of any fixture- or caller-supplied side channel.
+It has to live in the *same* table as the mutable dispatch half — not a
+second array — because a struct may have only one trailing flexible-array
+member, and everything here is meant to be reachable through the one
+fixed ABI pointer (`r8`), not a second, independently-based allocation.
+Stepped up from a tight 8 bytes to 16 to fit the static half in, while
+keeping `idx → slotAddr` a single `LSLS r1,r1,#4` rather than a `MULS`
+that first has to materialize the entry size.
 
 The table is preceded by a **sentinel slot** at index −1, whose `code_ptr`
 is `enter_dispatch`'s own landing address, so the entry procedure's `RETURN`
@@ -595,7 +625,7 @@ hop rather than two:
 
 ```
 MOV   lr, r1                ; persist the record; r1 free again immediately
-LSLS  r1, r2, #3            ; Q_idx · sizeof(DispatchEntry)
+LSLS  r1, r2, #4            ; Q_idx · sizeof(ProcSlot)
 ADD   r1, r1, r8            ; r1 = slotAddr
 LDR   r3, [r1, #0]          ; r3 = code_ptr
 MOVS  r2, #1                ; offset+1 = 1, hardwired
@@ -1012,6 +1042,27 @@ Triggering compaction from that collision has to relocate the in-progress
 code too and update the translator's own base pointer and cursor for it,
 mechanically identical to updating one more `code_ptr`. The block-nesting
 records need no equivalent update (§2's note on why).
+
+**Done**: `compiler/src/arena_room.h`'s `ArenaRoom::ensureRoom(Emitter&,
+neededHalfwords)` is the one seam the otherwise Runtime-agnostic
+translator has into this — checked at `translateProc`'s existing
+per-instruction checkpoint (`blocks.h`'s `instrMaxBytes`, the same budget
+`maxSpanBytes` already used for a different reason), before the prologue
+stub, and before a literal-pool flush (all three sized to their own
+worst-case emission). `test/qemu/compile_proc_real.cpp`'s
+`RuntimeArenaRoom` is the concrete implementation: it runs the ordinary
+`findEvictionVictim`/`evict` loop, but `Runtime::evict`
+(`runtime/runtime_internal.h`) now takes an `inProgressLenBytes` parameter
+(default 0, so every other caller's behavior is unchanged) that extends
+its own tail-relocation range from `arenaCursor` to
+`arenaCursor + inProgressLenBytes` — the in-progress procedure's own base
+is always exactly `arenaCursor`, since nothing has bumped it yet
+(`Runtime::allocate` only ever runs once, on success), so this one memmove
+keeps that invariant true on the other side: the caller rereads
+`arenaCursor` afterward and rebases its `Emitter` there
+(`Emitter::rebase`). `compile_proc_real.cpp` itself no longer needs a
+scratch buffer or a final `memcpy` — it constructs its `Emitter` directly
+over `arenaCursor` and lets `ArenaRoom` grow it in place.
 
 ---
 ## 12. Report and error model
@@ -1451,8 +1502,10 @@ excluded on both sides by design), including eviction/compaction and both
     code on real QEMU~~ — **done**: `test/qemu/main.cpp` measures
     each fixture procedure's real compiled size once (via a throwaway
     `translateProc` call) purely to size an undersized arena, then drives
-    the exercise through the ordinary lazy `g_realProcs`/`compileProc`
-    path — `testEvictionThreeDeepCallChain`,
+    the exercise through the ordinary lazy `enterProgram`/`compileProc`
+    path, reading each procedure's own metadata from the real program
+    bytes (item 22's `ProcSlot` directory) rather than any fixture-only
+    side channel — `testEvictionThreeDeepCallChain`,
     `testEvictionCallerAndCalleeNeverCoresident`, and
     `testResourceErrorSingleProcedureLargerThanArena` (code-area side) sit
     alongside `testOnStackRejectsBeforeTouchingAnything` (stack side), so
@@ -1540,3 +1593,65 @@ excluded on both sides by design), including eviction/compaction and both
     via `objdump` and the native QEMU suite's own `.text` size dropping
     accordingly, with the same fixtures (CLZ/REVBITS/BR_TABLE N>2) still
     producing identical values end to end.
+22. ~~`FlashProc`/`enter_program`'s real production input path was
+    write-only: `Runtime::flashProcs` was assigned in `init()` and read
+    nowhere, `enter_program`/`_on_stack`/`_split` had never had a real
+    caller anywhere in this repo, and `compile_proc_real.cpp` (despite its
+    own name) read exclusively from a fixture-only global
+    (`realProcs`/`test/qemu/fixtures.cpp`) that bypassed the wire format
+    entirely — a stand-in for a subsystem that had never actually been
+    built, not a simplified version of one that existed. Compounding it,
+    `compile_proc_real.cpp` translated into a private static scratch
+    buffer and `memcpy`'d the result into the arena afterward, contradicting
+    §2/§11's own description of the emitter writing directly into the arena
+    with eviction able to trigger mid-translation~~ — **done**, in three
+    parts:
+    - **The wire envelope** (§1): `packages/machine/src/bytecode.ts` gained
+      `encodeJitProgram`/`decodeJitProgram`, prepending
+      `max_call_depth`/`total_depth` to an ordinary `encodeProgram` blob —
+      isa-core.md's own extension point for exactly this. Porting the
+      boundary-finding side of this (`decodeProcBody`) surfaced a genuine,
+      previously-unnoticed bug in it, unrelated to this item's own scope
+      but blocking the native port below: a `BR_TABLE` case closed via a
+      bare `RETURN`/`TRAP` (legal per §8.5, and exactly what
+      `blocks.cpp`'s `closeCaseViaTerminator` produces) never decremented
+      the case frame's own `remaining` counter, so a non-last case using
+      that shape silently corrupted the boundary-finding for everything
+      after it. Fixed with regression tests
+      (`packages/machine/test/bytecode.test.ts`) before porting the
+      algorithm natively, so the port wouldn't inherit it.
+    - **The merged procedure directory** (§9): `DispatchEntry` → `ProcSlot`
+      (above). `jitc::scanProcBody` (`compiler/src/proc_scan.{h,cpp}`,
+      genuinely new code, not a move) ports `decodeProcBody`'s
+      boundary-finding as native recursion — one call per open
+      `LOOP`/`BR_TABLE`, mirroring `translate_proc.cpp`'s own
+      `translateBody` shape — rather than an explicit frame-stack array,
+      checked live against a stack floor for the identical reason
+      `translateBody` already is. `Runtime::init()` walks the whole
+      program once, building every slot's static half; `enter_program`'s
+      own three variants take one `(programBytes, programSize)` pointer
+      pair instead of a `FlashProc` array plus separately-supplied
+      `procCount`/`operandStackBytes`/`maxCallDepth` (§1's own updated
+      signatures) — nothing here can drift out of sync with what the
+      wire bytes actually contain, because there is no second copy of any
+      of it to drift.
+    - **Direct-arena compilation** (§11, above): the scratch buffer and
+      final `memcpy` are gone.
+    - Also retired: `test/qemu/fixtures.cpp`'s hand-populated `Proc`
+      arrays, replaced by real encoded programs (`compiler/src/
+      encode_instr.h`'s new `ProcSource`/`encodeProgram`/`encodeJitProgram`
+      — a native-side mirror of the TS encoder, since fixtures need to
+      produce real wire bytes without a `ts-node` round trip). Doing this
+      surfaced a second, independent bug — `Fixture fixtures[] = {...}`'s
+      own static initializer captured each program's `bytes`/`size` *by
+      value* at static-init time, before `initFixtures()` (a `main()`-time
+      function call) had ever run to fill them in, so every fixture
+      silently got a null pointer and a size of 0. Fixed by capturing each
+      program's own fixed address (`&f1Prog`, valid immediately, exactly
+      the trick the old `Proc*`-based scheme relied on without stating it)
+      and reading through it later, instead of copying the two fields out
+      by value. `test/host`'s 162 tests and `test/qemu`'s 9 all pass
+      against the final shape, including a `RuntimeArenaRoom` unit test
+      (host) and the existing eviction/`RESOURCE_ERROR` scenarios
+      (QEMU) — none needed new content, just adapting to the new call
+      shapes, since nothing about *what* they exercise changed.

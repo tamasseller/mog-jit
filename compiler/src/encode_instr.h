@@ -32,6 +32,38 @@ void encodeInstr(const Instr &instr, uint8_t *out, uint32_t &outLen, uint32_t ou
  *  no header. Returns the total byte length written. */
 uint32_t encodeBody(const Instr *body, uint32_t count, uint8_t *out, uint32_t outCapacity);
 
+/** One procedure, pre-encoding — the Instr[] literal a fixture is authored
+ *  as, plus its own arg_count. Mirrors packages/machine/src/rtl.ts's
+ *  RtlProc, not jitc::Proc (proc.h): a Proc's own body is already-encoded
+ *  wire bytes, exactly what encodeProgram below produces, never what it
+ *  consumes. */
+struct ProcSource
+{
+    uint32_t argCount;
+    const Instr *body;
+    uint32_t bodyCount; // Instr entries, not bytes
+};
+
+/** Encodes a whole program (isa-core.md §5.5): proc_count:LEB128, then
+ *  each procedure's own arg_count:LEB128 immediately followed by its own
+ *  body — no header table, no stored body length. Mirrors
+ *  packages/machine/src/bytecode.ts's encodeProgram. Returns the total
+ *  byte length written. */
+uint32_t encodeProgram(const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCapacity);
+
+/** jit-armv6m's own wire envelope (docs/design.md §2's static stack-
+ *  overflow guarantee) — max_call_depth:LEB128 total_depth:LEB128
+ *  prepended to an ordinary encodeProgram blob, mirroring
+ *  packages/machine/src/bytecode.ts's encodeJitProgram. Unlike that
+ *  side, there is no validateProgram here to compute the two stats from
+ *  the body — the caller supplies them directly, hand-derived from the
+ *  program's own known shape (this file's own callers are all test
+ *  fixtures with a small, by-construction-known call/stack depth, the
+ *  same reasoning test/qemu/main.cpp's own header comment already gives
+ *  for its enterProgramOnStack/enterProgramSplit scenarios). Returns the
+ *  total byte length written. */
+uint32_t encodeJitProgram(uint32_t maxCallDepth, uint32_t totalDepth, const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCapacity);
+
 } // namespace jitc
 
 #endif // JIT_ARMV6M_COMPILER_ENCODE_INSTR_H_

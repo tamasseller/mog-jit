@@ -180,4 +180,28 @@ uint32_t encodeBody(const Instr *body, uint32_t count, uint8_t *out, uint32_t ou
     return outLen;
 }
 
+uint32_t encodeProgram(const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCapacity)
+{
+    uint32_t outLen = 0;
+    encodeLeb128(procCount, out, outLen, outCapacity);
+    for(uint32_t i = 0; i < procCount; i++)
+    {
+        encodeLeb128(procs[i].argCount, out, outLen, outCapacity);
+        for(uint32_t j = 0; j < procs[i].bodyCount; j++)
+        {
+            encodeInstr(procs[i].body[j], out, outLen, outCapacity);
+        }
+    }
+    return outLen;
+}
+
+uint32_t encodeJitProgram(uint32_t maxCallDepth, uint32_t totalDepth, const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCapacity)
+{
+    uint32_t outLen = 0;
+    encodeLeb128(maxCallDepth, out, outLen, outCapacity);
+    encodeLeb128(totalDepth, out, outLen, outCapacity);
+    outLen += encodeProgram(procs, procCount, out + outLen, outCapacity - outLen);
+    return outLen;
+}
+
 } // namespace jitc

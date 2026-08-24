@@ -195,6 +195,29 @@ public:
         return count;
     }
 
+    // How much more can still be written before overflowing — what
+    // arena_room.h's ArenaRoom::ensureRoom checks against to decide
+    // whether growing is even needed.
+    uint32_t remainingHalfwords() const
+    {
+        return capacity - count;
+    }
+
+    // Repoints this Emitter at a new, (normally larger) underlying
+    // buffer — docs/design.md §11's mid-translation compaction: the
+    // caller (ArenaRoom::ensureRoom) has already relocated every
+    // already-written halfword to newBuf itself (a real memmove,
+    // Runtime::evict's own extended tail range), so count/overflowed stay
+    // exactly as they were; only where those halfwords physically live
+    // changes. Every method above resolves purely through `count`-relative
+    // offsets into `buf`, never an address captured earlier, so nothing
+    // else needs to know this happened.
+    void rebase(uint16_t *newBuf, uint32_t newCapacityHalfwords)
+    {
+        buf = newBuf;
+        capacity = newCapacityHalfwords;
+    }
+
     bool overflowed() const
     {
         return overflowedFlag;

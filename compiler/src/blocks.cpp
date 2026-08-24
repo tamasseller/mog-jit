@@ -14,20 +14,6 @@ namespace jitc
 using R = ArmV6M::LoReg;
 using Cond = ArmV6M::Condition;
 
-namespace
-{
-
-// Sized for CALL's own real-ABI sequence (this translator's single most
-// expensive ordinary instruction) without pricing that cost into every
-// cheaper ALU/LOAD/STORE/comparison instruction too.
-constexpr uint32_t ORDINARY_MAX_BYTES = 16;
-constexpr uint32_t CALL_MAX_BYTES = 64;
-constexpr uint32_t BR_TABLE_JUMP_OVERHEAD_BYTES = 32;
-// Thumb's real conditional-branch reach is ±252 bytes; this stays well
-// under that so maxSpanBytes's own deliberate looseness never has to be
-// exactly right, only safely conservative.
-constexpr uint32_t SAFE_COND_BRANCH_SPAN = 240;
-
 uint32_t instrMaxBytes(const Instr &instr)
 {
     if(instr.op == Op::CALL)
@@ -40,6 +26,14 @@ uint32_t instrMaxBytes(const Instr &instr)
     }
     return ORDINARY_MAX_BYTES;
 }
+
+namespace
+{
+
+// Thumb's real conditional-branch reach is ±252 bytes; this stays well
+// under that so maxSpanBytes's own deliberate looseness never has to be
+// exactly right, only safely conservative.
+constexpr uint32_t SAFE_COND_BRANCH_SPAN = 240;
 
 } // namespace
 

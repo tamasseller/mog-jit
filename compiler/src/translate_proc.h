@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include "proc.h"
+#include "arena_room.h"
 
 namespace jitc
 {
@@ -35,12 +36,40 @@ struct TranslateResult
 // checking, unchanged. The one real caller that matters,
 // compile_proc_real.cpp, always passes Runtime::liveStackFloor()'s own
 // live value instead.
+//
+// savesLROverride, if non-null, is the whole-program directory's own
+// precomputed answer (runtime/runtime_internal.h's ProcSlot) to "does this
+// body ever reach CALL/BR_TABLE(N>2)/CLZ/REVBITS" — needsLRSave(proc)
+// answers the same question by scanning the body fresh, exactly right for
+// a one-off host-test/pre-measurement call, but wasteful to redo on every
+// recompile once a directory already has the answer. Null (every existing
+// caller, unchanged) falls back to that scan.
+//
+// room, if non-null, lets the translator grow outBuf's own headroom
+// mid-pass by evicting/compacting other resident procedures
+// (arena_room.h, docs/design.md §11) — the one seam into Runtime-owned
+// state this otherwise fully Runtime-agnostic function has. Null (every
+// existing caller, unchanged) means outBuf's capacity is fixed for the
+// whole pass, exactly as today: TranslateResult::overflowed reports
+// exhaustion the same way either way.
 TranslateResult translateProc(
     const Proc &proc,
     uint32_t procIdx,
     const uint32_t *calleeArgCounts, uint32_t calleeCount,
     uint16_t *outBuf, uint32_t outCapacityHalfwords,
-    uint32_t stackFloor = 0);
+    uint32_t stackFloor = 0,
+    const bool *savesLROverride = nullptr,
+    ArenaRoom *room = nullptr);
+
+/** Whether proc's own body ever reaches an op needing lr protected before
+ *  anything can clobber it: a nested CALL, blocks.h's own openBrTableJump
+ *  (BR_TABLE N > 2 only), or unaryops.h's CLZ/REVBITS — all reached via
+ *  BLX through the helper vector, which clobbers real hardware lr exactly
+ *  like a local BL would. Exported for callers with no directory
+ *  (runtime/runtime_internal.h's ProcSlot) to source the answer from
+ *  instead — translateProc itself falls back to this whenever
+ *  savesLROverride is null. */
+bool needsLRSave(const Proc &proc);
 
 } // namespace jitc
 

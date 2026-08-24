@@ -21,19 +21,10 @@ hard memory ceiling.
 | Path | What |
 |---|---|
 | `compiler/src/` | the native C++ translator, targeting `runtime/` — covers the full instruction set (`EXT` excluded on both sides by design), plus `armv6.h` (the Thumb instruction encoder it's built on, adapted from tamasseller/sdvm) |
-| `runtime/` | the real dispatch/eviction runtime in C++ and hand-written asm: `runtime.S` (call/return helpers, translator trampoline, `enter_dispatch`), `runtime_host.cpp`/`.h` (the `enter_program` family), `runtime_internal.h` (`Runtime`/`DispatchEntry`, arena/eviction/compaction) |
+| `runtime/` | the real dispatch/eviction runtime in C++ and hand-written asm: `runtime.S` (call/return helpers, translator trampoline, `enter_dispatch`), `runtime_host.cpp`/`.h` (the `enter_program` family, taking one whole encoded program blob — `ProgramHeader`/`parseProgramHeader`), `runtime_internal.h` (`Runtime`/`ProcSlot` — the merged dispatch table and whole-program procedure directory, arena/eviction/compaction), `compile_proc_real.cpp` (the real `compileProc`: genuine translation straight from that directory, direct into the arena, no scratch buffer) |
 | `test/host` | unit tests: `armv6.h`'s raw encoders, and the translator end to end, against real libc (`--coverage`) |
-| `test/qemu` | the same translator plus the real, unmodified `runtime/`, run on `qemu-system-arm` — a harness-sanity smoke test, the hand-transcribed fixture corpus, and eviction/`RESOURCE_ERROR`/stack-layout scenarios. `vectors.S`/`linker.ld` (bare-metal startup) and `compile_proc_real.cpp`/`fixtures.h` (the `compileProc` this harness wires up, reading from its own fixture table) live here — test-only, never shipped |
+| `test/qemu` | the same translator plus the real, unmodified `runtime/`, run on `qemu-system-arm` — a harness-sanity smoke test, the hand-transcribed fixture corpus (real encoded wire bytes — `fixtures.h`/`.cpp`), and eviction/`RESOURCE_ERROR`/stack-layout scenarios. `vectors.S`/`linker.ld` (bare-metal startup) live here — test-only, never shipped |
 | `vendor/` | submodules: `ultimate-makefile`, `1test` |
-
-A TypeScript prototype (`prototype/`) existed earlier as a faster-iteration
-blueprint for working out the translation algorithm before committing it to
-C++ — `compiler/src/*.h`'s own header comments still note which prototype
-file a given piece was originally ported from, as a historical record. It
-was retired once `compiler/` reached full feature parity; `runtime/` (the
-actual dispatch/eviction runtime, genuinely shared infrastructure rather than
-prototype-specific) is what survived the move, relocated rather than
-deleted.
 
 ## Commands
 
