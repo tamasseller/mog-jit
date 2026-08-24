@@ -3,9 +3,12 @@
 // unmodified), actually compiles and runs every fixture (fixtures.cpp)
 // correctly on real QEMU — including LOOP/BR_TABLE/comparisons/unary ops,
 // terminator-closed blocks, a forced-long-branch case, actual
-// eviction+compaction under a small arena, and both RESOURCE_ERROR sides
-// (a too-small code arena, and enterProgramOnStack's own stack-usage
-// pre-check).
+// eviction+compaction under a small arena, both RESOURCE_ERROR sides (a
+// too-small code arena, and enterProgramOnStack's own stack-usage
+// pre-check), and literal pooling. Structured as 1test TEST cases
+// (vendor/1test, the same framework compiler/test/host runs) rather than a
+// hand-rolled bool-and/return-code aggregate, reported over semihosting
+// (semihosting_output.h) since this target has no <iostream>.
 #include <stdint.h>
 #include <cassert>
 #include "runtime_host.h"
@@ -13,18 +16,21 @@
 #include "instr.h"
 #include "encode_instr.h"
 #include "translate_proc.h"
+#include "Test.h"
+#include "semihosting_output.h"
 
 using namespace jitc;
 
 extern "C" {
 void writeHexResult(uint32_t v);
 void writeHexTrap(uint32_t v);
+void semihostingWrite0(const char *s);
 void semihostingExit(int code);
 }
 
 static const FlashProc dummyProcs[8] = {}; /* enterProgram's own procs param — never dereferenced on this path */
 
-static bool runFixtures()
+TEST(HandTranscribedFixturesMatchExpectedResults)
 {
     bool allOk = true;
 
@@ -39,17 +45,27 @@ static bool runFixtures()
         bool ok = (r.trapped != 0) == fx.expectTrapped && r.value == fx.expectValue;
         allOk = allOk && ok;
 
-        if(r.trapped)
+        // Every fixture runs regardless of an earlier one's own result —
+        // CHECK() below would longjmp out of this loop on the first
+        // mismatch, so the per-fixture name/value is printed inline
+        // instead, right where it's still known, and the aggregate is
+        // checked only once at the end.
+        if(!ok)
         {
-            writeHexTrap(r.value);
-        }
-        else
-        {
-            writeHexResult(r.value);
+            semihostingWrite0(fx.name);
+            semihostingWrite0(": ");
+            if(r.trapped)
+            {
+                writeHexTrap(r.value);
+            }
+            else
+            {
+                writeHexResult(r.value);
+            }
         }
     }
 
-    return allOk;
+    CHECK(allOk);
 }
 
 // enterProgramOnStack/enterProgramSplit — the layout-agnostic entry
@@ -91,7 +107,9 @@ Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8_t *byt
     return Proc{argCount, bytesOut, len};
 }
 
-bool testOnStackGenerousSucceeds()
+} // namespace
+
+TEST(OnStackGenerousSucceeds)
 {
     // A calls B — one live call record while B executes; B's own peak tos
     // is 1 (argCount=1, no further pushes).
@@ -109,12 +127,15 @@ bool testOnStackGenerousSucceeds()
     ProgramResult r = enterProgramOnStack(0, dummyProcs, 2, GENEROUS_ARENA,
         /*operandStackBytes=*/1 * 4, /*maxCallDepth=*/1, stackLimit, /*interruptReserve=*/0);
 
-    bool ok = !r.trapped && r.value == 42;
-    writeHexResult(r.value);
-    return ok;
+    if(r.trapped)
+    {
+        writeHexTrap(r.value);
+    }
+    CHECK(!r.trapped);
+    CHECK(r.value == 42);
 }
 
-bool testSplitThreeDeepCallChainSucceeds()
+TEST(SplitThreeDeepCallChainSucceeds)
 {
     // A->B->C — two live records while C executes; each procedure's own
     // peak tos is 1 (argCount=1, no further pushes).
@@ -136,19 +157,22 @@ bool testSplitThreeDeepCallChainSucceeds()
         (uint32_t)(uintptr_t)arena, GENEROUS_ARENA,
         /*operandStackBytes=*/2 * 4, /*maxCallDepth=*/2, stackLimit, /*interruptReserve=*/0);
 
+    if(r.trapped)
+    {
+        writeHexTrap(r.value);
+    }
+    CHECK(!r.trapped);
     // C: 5 + 100 = 105; B: 105 + 1 = 106; A returns B's result unchanged.
-    bool ok = !r.trapped && r.value == 106;
-    writeHexResult(r.value);
-    return ok;
+    CHECK(r.value == 106);
 }
 
-bool testOnStackRejectsBeforeTouchingAnything()
+TEST(OnStackRejectsBeforeTouchingAnything)
 {
     // stackLimit == (about) the entry sp itself — any nonzero requirement
     // fails the check immediately, before enterDispatch (or compileProc)
-    // ever runs; testOnStackGenerousSucceeds() already proved these
-    // programs compile fine given room, so a RESOURCE_ERROR here can only
-    // be the stack-usage pre-check, not a translator/runtime problem.
+    // ever runs; OnStackGenerousSucceeds already proved these programs
+    // compile fine given room, so a RESOURCE_ERROR here can only be the
+    // stack-usage pre-check, not a translator/runtime problem.
     const Instr proc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
     const Instr proc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
     uint8_t bytes0[16], bytes1[16];
@@ -163,7 +187,6 @@ bool testOnStackRejectsBeforeTouchingAnything()
     ProgramResult r = enterProgramOnStack(0, dummyProcs, 2, GENEROUS_ARENA,
         /*operandStackBytes=*/1 * 4, /*maxCallDepth=*/1, stackLimit, /*interruptReserve=*/0);
 
-    bool ok = r.trapped && r.value == 0x52455343u; // RESOURCE_ERROR_CODE, "RESC"
     if(r.trapped)
     {
         writeHexTrap(r.value);
@@ -172,10 +195,9 @@ bool testOnStackRejectsBeforeTouchingAnything()
     {
         writeHexResult(r.value);
     }
-    return ok;
+    CHECK(r.trapped);
+    CHECK(r.value == 0x52455343u); // RESOURCE_ERROR_CODE, "RESC"
 }
-
-} // namespace
 
 // Eviction + compaction. This measures each procedure's own compiled size
 // by calling the real translateProc() once per procedure up front (a
@@ -197,14 +219,15 @@ uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint32_t *c
     return r.halfwordCount;
 }
 
-bool testEvictionThreeDeepCallChain()
+} // namespace
+
+TEST(EvictionThreeDeepCallChain)
 {
-    // Same chain as testSplitThreeDeepCallChainSucceeds() — here the point
-    // is that it cannot all be resident together, so compiling the
-    // deepest call forces evicting an ancestor (possibly the entry
-    // procedure itself, still suspended on the control stack), which then
-    // has to be recompiled from scratch when its own RETURN eventually
-    // fires.
+    // Same chain as SplitThreeDeepCallChainSucceeds — here the point is
+    // that it cannot all be resident together, so compiling the deepest
+    // call forces evicting an ancestor (possibly the entry procedure
+    // itself, still suspended on the control stack), which then has to be
+    // recompiled from scratch when its own RETURN eventually fires.
     const Instr proc0Body[] = {CONST(5), call(1), bare(Op::RETURN)};
     const Instr proc1Body[] = {LOAD(0), call(2), opImm(Op::ADD, 1), bare(Op::RETURN)};
     const Instr proc2Body[] = {LOAD(0), opImm(Op::ADD, 100), bare(Op::RETURN)};
@@ -233,19 +256,15 @@ bool testEvictionThreeDeepCallChain()
     realProcCount = 3;
     ProgramResult r = enterProgram(0, arenaSize, dummyProcs, 3);
 
-    bool ok = !r.trapped && r.value == 106;
     if(r.trapped)
     {
         writeHexTrap(r.value);
     }
-    else
-    {
-        writeHexResult(r.value);
-    }
-    return ok;
+    CHECK(!r.trapped);
+    CHECK(r.value == 106);
 }
 
-bool testEvictionCallerAndCalleeNeverCoresident()
+TEST(EvictionCallerAndCalleeNeverCoresident)
 {
     // A calls B; the arena fits only one of the two at a time, so
     // compiling B evicts A (still suspended on the control stack, mid-
@@ -269,20 +288,16 @@ bool testEvictionCallerAndCalleeNeverCoresident()
     realProcCount = 2;
     ProgramResult r = enterProgram(0, arenaSize, dummyProcs, 2);
 
-    // B: 1 + 1 = 2; A: 2 + 1000 = 1002.
-    bool ok = !r.trapped && r.value == 1002;
     if(r.trapped)
     {
         writeHexTrap(r.value);
     }
-    else
-    {
-        writeHexResult(r.value);
-    }
-    return ok;
+    CHECK(!r.trapped);
+    // B: 1 + 1 = 2; A: 2 + 1000 = 1002.
+    CHECK(r.value == 1002);
 }
 
-bool testEvictionSlidesAProcedureHoldingAPooledLiteral()
+TEST(EvictionSlidesAProcedureHoldingAPooledLiteral)
 {
     // The one test that actually exercises PC-relative literal addressing
     // against real runtime addresses rather than translation-time layout.
@@ -312,20 +327,16 @@ bool testEvictionSlidesAProcedureHoldingAPooledLiteral()
     realProcCount = 2;
     ProgramResult r = enterProgram(0, arenaSize, dummyProcs, 2);
 
-    // B: 0x12345678 ^ 0x0F0F0F0F = 0x1D3B5977. A: + 0x11111111 = 0x2E4C6A88.
-    bool ok = !r.trapped && r.value == 0x2E4C6A88u;
     if(r.trapped)
     {
         writeHexTrap(r.value);
     }
-    else
-    {
-        writeHexResult(r.value);
-    }
-    return ok;
+    CHECK(!r.trapped);
+    // B: 0x12345678 ^ 0x0F0F0F0F = 0x1D3B5977. A: + 0x11111111 = 0x2E4C6A88.
+    CHECK(r.value == 0x2E4C6A88u);
 }
 
-bool testResourceErrorSingleProcedureLargerThanArena()
+TEST(ResourceErrorSingleProcedureLargerThanArena)
 {
     // 41 arithmetic instructions is comfortably beyond any arena worth
     // testing against below — no eviction victim can ever free enough room
@@ -348,7 +359,6 @@ bool testResourceErrorSingleProcedureLargerThanArena()
     realProcCount = 1;
     ProgramResult r = enterProgram(0, arenaSize, dummyProcs, 1);
 
-    bool ok = r.trapped && r.value == 0x52455343u; // RESOURCE_ERROR_CODE, "RESC"
     if(r.trapped)
     {
         writeHexTrap(r.value);
@@ -357,24 +367,14 @@ bool testResourceErrorSingleProcedureLargerThanArena()
     {
         writeHexResult(r.value);
     }
-    return ok;
+    CHECK(r.trapped);
+    CHECK(r.value == 0x52455343u); // RESOURCE_ERROR_CODE, "RESC"
 }
-
-} // namespace
 
 int main(void)
 {
     initFixtures();
-
-    bool allOk = runFixtures();
-    allOk = testOnStackGenerousSucceeds() && allOk;
-    allOk = testSplitThreeDeepCallChainSucceeds() && allOk;
-    allOk = testOnStackRejectsBeforeTouchingAnything() && allOk;
-    allOk = testEvictionThreeDeepCallChain() && allOk;
-    allOk = testEvictionCallerAndCalleeNeverCoresident() && allOk;
-    allOk = testEvictionSlidesAProcedureHoldingAPooledLiteral() && allOk;
-    allOk = testResourceErrorSingleProcedureLargerThanArena() && allOk;
-
-    semihostingExit(allOk ? 0 : 1);
+    bool ok = test::TestRunner::runAllTests(&SemihostingOutput::instance);
+    semihostingExit(ok ? 0 : 1);
     return 0;
 }

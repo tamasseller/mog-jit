@@ -1,8 +1,12 @@
-# Builds and runs all 7 hand-transcribed fixtures (fixtures.cpp) against
-# the real translator (jit-armv6m/compiler/src) and the real, unmodified
-# dispatch/eviction runtime (jit-armv6m/runtime). No program.cpp
-# code-generation step, unlike the now-retired TS prototype's own Makefile —
-# everything here is a checked-in, hand-written source file.
+# Builds and runs the hand-transcribed fixtures (fixtures.cpp) plus a
+# handful of scenario TESTs (main.cpp) against the real translator
+# (jit-armv6m/compiler/src) and the real, unmodified dispatch/eviction
+# runtime (jit-armv6m/runtime). No program.cpp code-generation step, unlike
+# the now-retired TS prototype's own Makefile — everything here is a
+# checked-in, hand-written source file. Test cases are 1test TESTs (the
+# same framework compiler/test/host runs), reported over semihosting
+# (semihosting_output.cpp) rather than compiler/test/host's PrintfOutput —
+# this target has no <iostream>.
 
 OUTPUT = run.elf
 
@@ -31,12 +35,20 @@ SOURCES += ../../src/translate_proc.cpp
 # ever decodes, fixtures.cpp is what needs to produce wire bytes)
 SOURCES += ../../src/encode_instr.cpp
 SOURCES += fixtures.cpp
+SOURCES += semihosting_output.cpp
+SOURCES += cxx_abi_stubs.cpp
 SOURCES += main.cpp
+
+# 1test library — TestRunner.cpp only; PrintfOutput.cpp needs <iostream>,
+# unavailable on this bare-metal target (semihosting_output.cpp is this
+# build's own TestOutput sink instead).
+SOURCES += ../../../vendor/1test/TestRunner.cpp
 
 INCLUDE_DIRS += ../../../src            # armv6.h
 INCLUDE_DIRS += ../../../runtime         # runtime_host.h / runtime_internal.h
 INCLUDE_DIRS += ../../src                 # jitc:: headers
-INCLUDE_DIRS += .                          # fixtures.h
+INCLUDE_DIRS += .                          # fixtures.h / semihosting_output.h
+INCLUDE_DIRS += ../../../vendor/1test      # Test.h
 
 # arm-none-eabi-g++ for AS too (not arm-none-eabi-as): runtime.S has a real
 # `#include "runtime_host.h"` that needs preprocessing, which the g++
