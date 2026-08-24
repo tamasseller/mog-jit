@@ -282,6 +282,49 @@ bool testEvictionCallerAndCalleeNeverCoresident()
     return ok;
 }
 
+bool testEvictionSlidesAProcedureHoldingAPooledLiteral()
+{
+    // The one test that actually exercises PC-relative literal addressing
+    // against real runtime addresses rather than translation-time layout.
+    //
+    // Both procedures carry pooled 32-bit literals, and the arena fits
+    // only one at a time — so compiling B evicts A, and A's own RETURN
+    // recompiles it, each time landing at a different arena address.
+    // Every LDR [pc,#imm] offset is resolved procedure-relative at
+    // translation time, so it stays correct only because Runtime::allocate
+    // starts every procedure word-aligned and reserves whole words (making
+    // each compaction slide a multiple of 4). Drop either half and these
+    // loads read the wrong word — silently, with no trap.
+    const Instr proc0Body[] = {CONST(0x12345678), call(1), opImm(Op::ADD, 0x11111111), bare(Op::RETURN)};
+    const Instr proc1Body[] = {LOAD(0), opImm(Op::XOR, 0x0F0F0F0F), bare(Op::RETURN)};
+    uint8_t bytes0[24], bytes1[24];
+    Proc procs[] = {
+        makeProc(0, proc0Body, 4, bytes0, sizeof(bytes0)),
+        makeProc(1, proc1Body, 3, bytes1, sizeof(bytes1)),
+    };
+    uint32_t argCounts[] = {0, 1};
+
+    uint32_t size0 = measuredHalfwords(procs[0], 0, argCounts, 2) * 2;
+    uint32_t size1 = measuredHalfwords(procs[1], 1, argCounts, 2) * 2;
+    uint32_t arenaSize = (size0 > size1 ? size0 : size1) + 4; // fits at most one at a time
+
+    realProcs = procs;
+    realProcCount = 2;
+    ProgramResult r = enterProgram(0, arenaSize, dummyProcs, 2);
+
+    // B: 0x12345678 ^ 0x0F0F0F0F = 0x1D3B5977. A: + 0x11111111 = 0x2E4C6A88.
+    bool ok = !r.trapped && r.value == 0x2E4C6A88u;
+    if(r.trapped)
+    {
+        writeHexTrap(r.value);
+    }
+    else
+    {
+        writeHexResult(r.value);
+    }
+    return ok;
+}
+
 bool testResourceErrorSingleProcedureLargerThanArena()
 {
     // 41 arithmetic instructions is comfortably beyond any arena worth
@@ -329,6 +372,7 @@ int main(void)
     allOk = testOnStackRejectsBeforeTouchingAnything() && allOk;
     allOk = testEvictionThreeDeepCallChain() && allOk;
     allOk = testEvictionCallerAndCalleeNeverCoresident() && allOk;
+    allOk = testEvictionSlidesAProcedureHoldingAPooledLiteral() && allOk;
     allOk = testResourceErrorSingleProcedureLargerThanArena() && allOk;
 
     semihostingExit(allOk ? 0 : 1);

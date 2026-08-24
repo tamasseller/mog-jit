@@ -102,8 +102,16 @@ SpanResult maxSpanBytes(const uint8_t *bytes, uint32_t bytesLen, uint32_t from, 
  *  standard invert-and-long-branch idiom. Returns the site to hand to
  *  Emitter::patchBranch later; callers never need to know which shape
  *  they got (patchBranch/readBranchTarget already dispatch on the site's
- *  own encoding). */
-uint32_t emitGuardedBranch(Emitter &e, ArmV6M::Condition condition, const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount);
+ *  own encoding).
+ *
+ *  pendingPoolBytes is what translate_proc.cpp's literal pool still owes
+ *  the output stream (translate_proc.cpp's own literalPoolDebt) — bytes
+ *  that maxSpanBytes cannot see, since it walks bytecode alone, but that a
+ *  flush may well drop inside this very span. Sites *added* within the
+ *  span need no extra budget: each costs 2 bytes of placeholder plus 4 of
+ *  pool word against the ORDINARY_MAX_BYTES already priced for its own
+ *  instruction. */
+uint32_t emitGuardedBranch(Emitter &e, ArmV6M::Condition condition, const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount, uint32_t pendingPoolBytes);
 
 /** isa-core.md §7.1: acc < N executes case[acc]. Only the branch-fusion
  *  shape (N ∈ {1,2}) — condition is the *true* Thumb condition of
@@ -114,8 +122,8 @@ uint32_t emitGuardedBranch(Emitter &e, ArmV6M::Condition condition, const uint8_
  *  seed). When fused, case[0] (this frame's own entry) starts with
  *  accState already set to reflect the comparison's known-false result —
  *  see Frame::fusedBoolean for case[1]'s own half of this. bytes/bytesLen
- *  /pc are only for emitGuardedBranch's own span bound. */
-Frame openBrTable(Emitter &e, Window &window, AccState &accState, uint32_t n, ArmV6M::Condition condition, bool fused, const uint8_t *bytes, uint32_t bytesLen, uint32_t pc);
+ *  /pc/pendingPoolBytes are only for emitGuardedBranch's own span bound. */
+Frame openBrTable(Emitter &e, Window &window, AccState &accState, uint32_t n, ArmV6M::Condition condition, bool fused, const uint8_t *bytes, uint32_t bytesLen, uint32_t pc, uint32_t pendingPoolBytes);
 
 /** isa-core.md §7.1 for N > 2: a genuine multi-way selector, dispatched via
  *  the flash-resident brTableJumpHelper (docs/design.md §11's reserved slot
@@ -149,7 +157,7 @@ Frame openLoop(Emitter &e, Window &window, AccState &accState);
  *  level. */
 bool closeBlockEnd(Emitter &e, Window &window, AccState &accState, Frame &frame,
     bool hasLoopExitCondition, ArmV6M::Condition loopExitCondition, bool fusedLoopExit,
-    const uint8_t *bytes, uint32_t bytesLen, uint32_t pc);
+    const uint8_t *bytes, uint32_t bytesLen, uint32_t pc, uint32_t pendingPoolBytes);
 
 /** isa-core.md §4.5/§7.1: a case frame's own close, when this case ends via
  *  a bare RETURN/TRAP instead of BLOCK_END (validated programs may shape it

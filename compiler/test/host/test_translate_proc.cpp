@@ -7,6 +7,7 @@
 #include "Test.h"
 #include "translate_proc.h"
 #include "encode_instr.h"
+#include "armv6.h"
 
 using namespace jitc;
 
@@ -23,6 +24,56 @@ Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8_t *byt
 {
     uint32_t len = encodeBody(body, count, bytesOut, bytesCap);
     return Proc{argCount, bytesOut, len};
+}
+
+uint32_t literalSiteCount(const uint16_t *buf, uint32_t halfwords)
+{
+    uint32_t n = 0;
+    for(uint32_t i = 0; i < halfwords; i++)
+    {
+        uint16_t off;
+        if(ArmV6M::getLiteralOffset(buf[i], off))
+        {
+            n++;
+        }
+    }
+    return n;
+}
+
+/** The 32-bit word the literal load at halfword index site actually
+ *  reaches, resolved exactly the way the hardware does — Align(pc,4) with
+ *  pc being the site's own address + 4. Returns false if it lands outside
+ *  the emitted output, which is the failure this indirection exists to
+ *  catch. */
+bool loadedWord(const uint16_t *buf, uint32_t halfwords, uint32_t site, uint32_t &valueOut)
+{
+    uint16_t off;
+    if(!ArmV6M::getLiteralOffset(buf[site], off))
+    {
+        return false; // GCOV_EXCL_LINE — only on a failing test's own bad site
+    }
+    uint32_t target = ((site * 2 + 4) & ~3u) + off * 4u;
+    if(target % 4 != 0 || target / 2 + 1 >= halfwords)
+    {
+        return false; // GCOV_EXCL_LINE — the failure this helper exists to report
+    }
+    valueOut = (uint32_t)buf[target / 2] | ((uint32_t)buf[target / 2 + 1] << 16);
+    return true;
+}
+
+/** Index of the nth (0-based) literal load in the output, or halfwords if
+ *  there aren't that many. */
+uint32_t nthLiteralSite(const uint16_t *buf, uint32_t halfwords, uint32_t n)
+{
+    for(uint32_t i = 0; i < halfwords; i++)
+    {
+        uint16_t off;
+        if(ArmV6M::getLiteralOffset(buf[i], off) && n-- == 0)
+        {
+            return i;
+        }
+    }
+    return halfwords; // GCOV_EXCL_LINE — only when a test asks for a site that isn't there
 }
 }
 
@@ -270,7 +321,13 @@ TEST(TrapAtTopLevel)
     uint16_t buf[32];
     TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
     CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 14);
+    // The 0x80000003 sentinel takes 5 synthesis halfwords, so it pools
+    // instead: one LDR plus a word at the end. pc lands word-aligned
+    // here, so no pad halfword.
+    CHECK(r.halfwordCount == 12);
+    CHECK(buf[6] == 0x4801);  // LDR r0,[pc,#4] — Align(12+4,4)=16, +4 -> byte 20
+    CHECK(buf[10] == 0x0003); // and the pooled word is the *sentinel*,
+    CHECK(buf[11] == 0x8000); // not TRAP's own raw decoded imm
 }
 
 TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
@@ -291,7 +348,14 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
     uint16_t buf[32];
     TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
     CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 21);
+    // trapInstr(9)'s sentinel pools too. Its site sits at byte 18, an odd
+    // multiple of 2, so its base rounds *down* to 20 — and the pool needs
+    // a NOP pad to reach a word boundary.
+    CHECK(r.halfwordCount == 20);
+    CHECK(buf[9] == 0x4804);  // LDR r0,[pc,#16] — Align(18+4,4)=20, +16 -> byte 36
+    CHECK(buf[17] == 0xBF00); // pad, after the last real instruction
+    CHECK(buf[18] == 0x0009);
+    CHECK(buf[19] == 0x8000);
 }
 
 TEST(LoadFromOutOfWindowSlot)
@@ -348,6 +412,9 @@ TEST(StoreStandaloneOutOfWindowAndLastArgFoldRefCountZero)
 
 TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
 {
+    // CONST(1000) synthesizes in 3 halfwords, one short of
+    // POOLING_MIN_LENGTH — so this also guards the pooling threshold's
+    // lower edge: nothing here may become a literal load.
     const Instr body[] = {CONST(1000), bare(Op::RETURN)};
     uint32_t argCounts[] = {0};
     uint8_t bodyBytes[8];
@@ -356,6 +423,7 @@ TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
     TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
     CHECK(!r.overflowed);
     CHECK(r.halfwordCount == 12);
+    CHECK(literalSiteCount(buf, r.halfwordCount) == 0);
 }
 
 TEST(ConstFoldsDirectlyIntoAFollowingStore)
@@ -600,4 +668,176 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     uint32_t floor = currentSp();
     TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 16, floor);
     CHECK(r.overflowed);
+}
+
+// ── Literal pooling ─────────────────────────────────────────────────────
+
+TEST(LargeConstAndLargeOperandBothPoolIntoOneChunk)
+{
+    // Both immediates need 7 synthesis halfwords each, so both pool. The
+    // whole emitted output is checked literally: the two sites sit at byte
+    // 12 and 14 — one word-aligned, one not — so between them they cover
+    // both halves of Align(pc+4,4)'s rounding, resolving to the same base
+    // (16) but different pool words.
+    const Instr body[] = {CONST(0x12345678), opImm(Op::ADD, 0x0ABCDEF0), bare(Op::RETURN)};
+    uint32_t argCounts[] = {0};
+    uint8_t bodyBytes[16];
+    Proc proc = makeProc(0, body, 3, bodyBytes, sizeof(bodyBytes));
+    uint16_t buf[32];
+    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
+
+    CHECK(!r.overflowed);
+    CHECK(r.halfwordCount == 16); // 24 unpooled: 7 + 7 synthesis halfwords
+
+    const uint16_t expected[] = {
+        0x465B, 0x604B, 0x3301, 0x469B, 0x447A, 0x4710, // prologue stub
+        0x4802,                                          // LDR r0,[pc,#8]   -> byte 24
+        0x4A03,                                          // LDR r2,[pc,#12]  -> byte 28
+        0x1880,                                          // ADDS r0,r0,r2 — operand came from the pool
+        0x4653, 0x685B, 0x4718,                          // return sequence
+        0x5678, 0x1234,                                  // pool: 0x12345678
+        0xDEF0, 0x0ABC,                                  // pool: 0x0ABCDEF0
+    };
+    for(uint32_t i = 0; i < r.halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
+}
+
+TEST(ShiftAmountNeverPoolsEvenWhenHardToSynthesize)
+{
+    // A shift's IMM_ACC operand is consumed straight as an Imm<5>, so it
+    // must stay an immediate no matter what it costs to synthesize.
+    const Instr body[] = {LOAD(0), opImm(Op::SHL, 3), bare(Op::RETURN)};
+    uint32_t argCounts[] = {1};
+    uint8_t bodyBytes[16];
+    Proc proc = makeProc(1, body, 3, bodyBytes, sizeof(bodyBytes));
+    uint16_t buf[32];
+    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
+    CHECK(!r.overflowed);
+    CHECK(literalSiteCount(buf, r.halfwordCount) == 0);
+}
+
+TEST(PooledLoadInsideGuardedRegionStillResolves)
+{
+    // One pooled site in each arm of an if/else. The chunk spans the whole
+    // construct and flushes at the end of the procedure, so
+    // emitGuardedBranch has to have priced the pool debt into its own
+    // short-vs-long branch choice.
+    const Instr body[] = {
+        CONST(5), opImm(Op::GT_U, 3), brTable(2),
+            CONST(0x12345678), bare(Op::BLOCK_END),
+            CONST(0x0ABCDEF0), bare(Op::BLOCK_END),
+        bare(Op::RETURN),
+    };
+    uint32_t argCounts[] = {0};
+    uint8_t bodyBytes[32];
+    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
+    uint16_t buf[32];
+    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
+
+    CHECK(!r.overflowed);
+    CHECK(literalSiteCount(buf, r.halfwordCount) == 2);
+
+    uint32_t value = 0;
+    CHECK(loadedWord(buf, r.halfwordCount, nthLiteralSite(buf, r.halfwordCount, 0), value));
+    CHECK(value == 0x12345678);
+    CHECK(loadedWord(buf, r.halfwordCount, nthLiteralSite(buf, r.halfwordCount, 1), value));
+    CHECK(value == 0x0ABCDEF0);
+}
+
+TEST(BrTableJumpForcesAFlushBeforeItsOwnTable)
+{
+    // BR_TABLE N>2 emits raw halfwords that can look exactly like a parked
+    // literal load, so the chunk must close before the table is laid down
+    // — otherwise a later flush's scan would sweep table slots up as
+    // though they were pending sites.
+    const Instr body[] = {
+        CONST(0x12345678), brTable(3),
+            CONST(1), bare(Op::BLOCK_END),
+            CONST(2), bare(Op::BLOCK_END),
+            CONST(3), bare(Op::BLOCK_END),
+        bare(Op::RETURN),
+    };
+    uint32_t argCounts[] = {0};
+    uint8_t bodyBytes[32];
+    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
+    uint16_t buf[64];
+    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 64);
+
+    CHECK(!r.overflowed);
+    // The pool is flushed early, so its word lands before the jump table
+    // rather than after it: a low offset, not one reaching past the table.
+    uint32_t site = nthLiteralSite(buf, r.halfwordCount, 0);
+    CHECK(site * 2 == 14);
+    uint32_t value = 0;
+    CHECK(loadedWord(buf, r.halfwordCount, site, value));
+    CHECK(value == 0x12345678);
+    CHECK(buf[9] == 0xBF00); // pad, after the flush's own branch-around at byte 16
+}
+
+TEST(BytecodeDistanceOverflowFlushesMidProcedure)
+{
+    // 300 single-byte instructions between two pooled sites push the
+    // second one's bytecode delta past the 8-bit tag, forcing a flush and
+    // a fresh chunk. Both loads must still reach their own word.
+    Instr body[304];
+    uint32_t n = 0;
+    body[n++] = CONST(0x12345678);
+    for(uint32_t i = 0; i < 300; i++)
+    {
+        body[n++] = bare(Op::NOT);
+    }
+    body[n++] = opImm(Op::ADD, 0x0ABCDEF0);
+    body[n++] = bare(Op::RETURN);
+
+    uint8_t bodyBytes[512];
+    uint32_t argCounts[] = {0};
+    Proc proc = makeProc(0, body, n, bodyBytes, sizeof(bodyBytes));
+    uint16_t buf[512];
+    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 512);
+
+    CHECK(!r.overflowed);
+    CHECK(literalSiteCount(buf, r.halfwordCount) == 2);
+
+    uint32_t value = 0;
+    CHECK(loadedWord(buf, r.halfwordCount, nthLiteralSite(buf, r.halfwordCount, 0), value));
+    CHECK(value == 0x12345678);
+    CHECK(loadedWord(buf, r.halfwordCount, nthLiteralSite(buf, r.halfwordCount, 1), value));
+    CHECK(value == 0x0ABCDEF0);
+}
+
+TEST(OutputReachOverflowFlushesBeforeGoingOutOfRange)
+{
+    // CALL emits far more output per bytecode byte than anything else, so
+    // a long run of them exhausts the load's 1020-byte forward reach well
+    // before the bytecode tag overflows — the other flush trigger.
+    Instr body[128];
+    uint32_t n = 0;
+    body[n++] = CONST(0x12345678);
+    for(uint32_t i = 0; i < 120; i++)
+    {
+        body[n++] = call(0);
+    }
+    body[n++] = bare(Op::RETURN);
+
+    uint8_t bodyBytes[512];
+    uint32_t argCounts[] = {0};
+    Proc proc = makeProc(0, body, n, bodyBytes, sizeof(bodyBytes));
+    uint16_t buf[2048];
+    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 2048);
+
+    CHECK(!r.overflowed);
+    CHECK(literalSiteCount(buf, r.halfwordCount) == 1);
+
+    uint32_t site = nthLiteralSite(buf, r.halfwordCount, 0);
+    uint32_t value = 0;
+    CHECK(loadedWord(buf, r.halfwordCount, site, value));
+    CHECK(value == 0x12345678);
+
+    // Flushed early, so the word sits far short of the end of the output.
+    uint16_t off;
+    CHECK(ArmV6M::getLiteralOffset(buf[site], off));
+    CHECK(off * 4u <= 1020);
+    CHECK(r.halfwordCount * 2 > 1020); // the run really did outgrow one chunk's reach
 }

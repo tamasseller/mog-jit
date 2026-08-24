@@ -40,76 +40,91 @@ struct Instr
 {
     Op op;
     Combo combo = Combo::NONE;
-    int32_t imm = 0;          // CONST's value / IMM_ACC operand / TRAP's code / BR_TABLE's N
-    uint32_t target = 0;      // LOAD/STORE/REG_ACC/REG_REG's slot index k
-    uint32_t calleeIndex = 0; // CALL only
+
+    /** One 32-bit auxiliary slot under three names. isa-core.md §5.4 gives
+     *  every core instruction form at most one trailing operand, and which
+     *  of these three it is follows from op/combo alone — so they alias
+     *  deliberately rather than sitting side by side, and the name a read
+     *  site picks documents which meaning applies there.
+     *
+     *  imm is the member everything writes through (both the builders below
+     *  and decode_instr.cpp); target/calleeIndex are read-side views of the
+     *  same bits, which is exact because a slot index and a procedure index
+     *  are never negative. Only CONST and an IMM_ACC operand are genuinely
+     *  signed, and those read imm. */
+    union
+    {
+        int32_t imm = 0;      // CONST's value / IMM_ACC operand / TRAP's code / BR_TABLE's N
+        uint32_t target;      // LOAD/STORE/REG_ACC/REG_REG's slot index k
+        uint32_t calleeIndex; // CALL only
+    };
 };
 
 // Builder helpers — 1:1 with packages/machine/src/rtl.ts's constructors, so
 // a transcribed fixture reads like its TS source line for line.
 constexpr Instr CONST(int32_t v)
 {
-    return Instr{Op::CONST, Combo::NONE, v, 0, 0};
+    return Instr{Op::CONST, Combo::NONE, v};
 }
 
 constexpr Instr LOAD(uint32_t target)
 {
-    return Instr{Op::LOAD, Combo::NONE, 0, target, 0};
+    return Instr{Op::LOAD, Combo::NONE, (int32_t)target};
 }
 
 constexpr Instr STORE(uint32_t target)
 {
-    return Instr{Op::STORE, Combo::NONE, 0, target, 0};
+    return Instr{Op::STORE, Combo::NONE, (int32_t)target};
 }
 
 constexpr Instr PUSH()
 {
-    return Instr{Op::PUSH, Combo::NONE, 0, 0, 0};
+    return Instr{Op::PUSH};
 }
 
 constexpr Instr POP()
 {
-    return Instr{Op::POP, Combo::NONE, 0, 0, 0};
+    return Instr{Op::POP};
 }
 
 constexpr Instr bare(Op op)
 {
-    return Instr{op, Combo::NONE, 0, 0, 0};
+    return Instr{op};
 }
 
 constexpr Instr trapInstr(uint32_t code)
 {
-    return Instr{Op::TRAP, Combo::NONE, (int32_t)code, 0, 0};
+    return Instr{Op::TRAP, Combo::NONE, (int32_t)code};
 }
 
 constexpr Instr call(uint32_t calleeIndex)
 {
-    return Instr{Op::CALL, Combo::NONE, 0, 0, calleeIndex};
+    return Instr{Op::CALL, Combo::NONE, (int32_t)calleeIndex};
 }
 
 constexpr Instr opReg(Op op, uint32_t target)
 {
-    return Instr{op, Combo::REG_ACC, 0, target, 0};
+    return Instr{op, Combo::REG_ACC, (int32_t)target};
 }
 
 constexpr Instr opRegWriteback(Op op, uint32_t target)
 {
-    return Instr{op, Combo::REG_REG, 0, target, 0};
+    return Instr{op, Combo::REG_REG, (int32_t)target};
 }
 
 constexpr Instr opImm(Op op, int32_t v)
 {
-    return Instr{op, Combo::IMM_ACC, v, 0, 0};
+    return Instr{op, Combo::IMM_ACC, v};
 }
 
 constexpr Instr opStack(Op op, Combo combo)
 {
-    return Instr{op, combo, 0, 0, 0};
+    return Instr{op, combo};
 }
 
 constexpr Instr brTable(uint32_t n)
 {
-    return Instr{Op::BR_TABLE, Combo::NONE, (int32_t)n, 0, 0};
+    return Instr{Op::BR_TABLE, Combo::NONE, (int32_t)n};
 }
 
 /** Whether op is one of the ten comparison opcodes. blocks.h uses this to
@@ -118,6 +133,14 @@ constexpr Instr brTable(uint32_t n)
 constexpr bool isComparisonOp(Op op)
 {
     return op >= Op::EQ && op <= Op::GE_U;
+}
+
+/** Whether op takes its IMM_ACC operand as a shift *amount* rather than a
+ *  value — binops.h consumes it directly as an Imm<5>, so unlike every
+ *  other immediate operand it must stay an immediate. */
+constexpr bool isShiftOp(Op op)
+{
+    return op == Op::SHL || op == Op::SHR || op == Op::ASR;
 }
 
 } // namespace jitc

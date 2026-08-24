@@ -123,7 +123,163 @@ struct Ctx
     Cond pendingComparisonCondition = Cond::EQ;
 
     bool nestingExceeded = false;
+
+    // The literal pool's whole deferral state — four scalars, no side
+    // array. Procedure-global rather than per-Frame: a chunk is never
+    // required to close at a construct boundary, so it needs no stack of
+    // its own despite translateBody's recursion.
+    bool literalChunkOpen = false;
+    uint32_t pendingLiteralBytecodeStart = 0; // bytecode pc of the chunk's oldest pending site
+    uint32_t pendingLiteralOutputStart = 0;   // output offset of that site's placeholder
+    uint32_t pendingLiteralCount = 0;
 };
+
+// Uoff<2,8>'s own exact ceiling: a multiple of 4, below 1024.
+constexpr uint32_t LITERAL_POOL_MAX_REACH = 1020;
+// The chunk's bytecode-offset tags are 8 bits.
+constexpr uint32_t LITERAL_POOL_MAX_TAG = 0xff;
+// Headroom the reach check keeps in hand, since it runs *before* an
+// instruction whose own emission then extends the distance to the pool.
+// Must exceed the most any single instruction or block close can emit —
+// blocks.cpp prices CALL at 64 and this file's own stack-margin comment
+// above budgets closeBlockEnd at 80.
+constexpr uint32_t LITERAL_POOL_REACH_MARGIN = 128;
+
+uint32_t roundUpToWord(uint32_t v)
+{
+    return (v + 3u) & ~3u;
+}
+
+// What the open chunk still owes the output stream: one word per pending
+// site, plus the branch-around and worst-case pad its flush will emit.
+// blocks.h's emitGuardedBranch needs this because maxSpanBytes walks
+// bytecode alone and so cannot see any of it.
+uint32_t literalPoolDebt(const Ctx &ctx)
+{
+    return ctx.literalChunkOpen ? 4 * ctx.pendingLiteralCount + 4 : 0;
+}
+
+// The 32 bits a pooled site actually loads, recovered from the bytecode
+// rather than carried through the deferral window. Must stay in lockstep
+// with the pooling call sites in translateBody below — TRAP is the one op
+// whose pooled value isn't simply its own decoded immediate.
+uint32_t pooledLiteralValue(const Instr &instr)
+{
+    if(instr.op == Op::TRAP)
+    {
+        return 0x80000000u | (uint32_t)instr.imm;
+    }
+    return (uint32_t)instr.imm;
+}
+
+// Close the open chunk: branch around the pool (nothing executes past a
+// terminator, so the end-of-procedure flush needs none), pad to a word
+// boundary, then walk the chunk's own output window turning each parked
+// placeholder into a real load of a real pool word.
+//
+// The window can only ever contain this chunk's placeholders: an earlier
+// chunk's sites all sit before pendingLiteralOutputStart (which matters,
+// since a resolved site still matches isLiteralAccess), and BR_TABLE
+// N>2's jump table — the one other raw-halfword producer in the
+// translator, whose slots can hold anything — is kept out by the forced
+// flush before openBrTableJump.
+void flushLiteralPool(Ctx &ctx, bool endOfProcedure)
+{
+    if(!ctx.literalChunkOpen)
+    {
+        return;
+    }
+    ctx.literalChunkOpen = false;
+    if(ctx.e.overflowed())
+    {
+        return; // GCOV_EXCL_LINE — pc() has frozen, so no offset here would mean anything
+    }
+
+    uint32_t scanEnd = ctx.e.pc();
+    uint32_t branchSite = 0;
+    if(!endOfProcedure)
+    {
+        branchSite = ctx.e.placeholderBranch();
+    }
+    if(ctx.e.pc() % 4 != 0)
+    {
+        ctx.e.emit(ArmV6M::nop());
+    }
+
+    for(uint32_t site = ctx.pendingLiteralOutputStart; site < scanEnd; site += 2)
+    {
+        uint16_t tag;
+        if(!ctx.e.getLiteralOffsetAt(site, tag))
+        {
+            continue;
+        }
+        if(ctx.e.overflowed())
+        {
+            break; // GCOV_EXCL_LINE — see the early return above
+        }
+
+        DecodedInstr source = decodeInstr(ctx.bytes, ctx.bytesLen, ctx.pendingLiteralBytecodeStart + tag);
+        uint32_t value = pooledLiteralValue(source.instr);
+
+        uint32_t word = ctx.e.pc();
+        ctx.e.emit((uint16_t)(value & 0xffff));
+        ctx.e.emit((uint16_t)(value >> 16));
+        ctx.e.patchLiteralOffset(site, ArmV6M::Uoff<2, 8>((uint16_t)(word - ((site + 4) & ~3u))));
+    }
+
+    if(!endOfProcedure)
+    {
+        ctx.e.patchBranch(branchSite, ctx.e.pc());
+    }
+}
+
+// Flush while every site in the open chunk can still reach its own pool
+// word. Bounds the chunk as a whole rather than any single site, because
+// which site is worst depends on how they're spaced: a chunk spread over
+// a lot of output strands its *oldest* site, while densely packed
+// placeholders strand the *newest* one (each site's word advances 4 bytes
+// while its own Align(pc+4,4) base advances only 2). The span bound covers
+// both without having to know which case this is.
+void guardLiteralPoolReach(Ctx &ctx)
+{
+    if(!ctx.literalChunkOpen)
+    {
+        return;
+    }
+    uint32_t poolEnd = roundUpToWord(ctx.e.pc() + 2) + 4 * ctx.pendingLiteralCount;
+    if(poolEnd - ctx.pendingLiteralOutputStart + LITERAL_POOL_REACH_MARGIN > LITERAL_POOL_MAX_REACH)
+    {
+        flushLiteralPool(ctx, false);
+    }
+}
+
+// Get value into dstReg: a pooled PC-relative load when that beats
+// shift-and-add, otherwise the inline synthesis. bytecodePc must be the
+// pc of the instruction the value came from — that's the only thing the
+// placeholder carries, and what flushLiteralPool re-decodes.
+void materializeLargeImmediate(Ctx &ctx, uint32_t dstReg, uint32_t value, uint32_t bytecodePc)
+{
+    if(!isPoolingEligible(value))
+    {
+        emitSynthesizeImm32(ctx.e, dstReg, value);
+        return;
+    }
+
+    if(ctx.literalChunkOpen && bytecodePc - ctx.pendingLiteralBytecodeStart > LITERAL_POOL_MAX_TAG)
+    {
+        flushLiteralPool(ctx, false);
+    }
+    if(!ctx.literalChunkOpen)
+    {
+        ctx.literalChunkOpen = true;
+        ctx.pendingLiteralBytecodeStart = bytecodePc;
+        ctx.pendingLiteralOutputStart = ctx.e.pc();
+        ctx.pendingLiteralCount = 0;
+    }
+
+    ctx.e.placeholderLiteralLoad(dstReg, (uint8_t)(bytecodePc - ctx.pendingLiteralBytecodeStart));
+    ctx.pendingLiteralCount++;
+}
 
 void returnSequence(Ctx &ctx)
 {
@@ -172,6 +328,12 @@ void translateBody(Ctx &ctx, Frame *frame)
 
     while(ctx.pc < ctx.bytesLen)
     {
+        // Before the instruction, not at the pooling sites: arbitrarily
+        // much code can be emitted between a site being parked and the
+        // flush that resolves it, so this is the only place the distance
+        // to the pool can be kept bounded.
+        guardLiteralPoolReach(ctx);
+
         DecodedInstr decoded = decodeInstr(ctx.bytes, ctx.bytesLen, ctx.pc);
         const Instr &instr = decoded.instr;
         uint32_t afterInstr = decoded.next;
@@ -249,7 +411,8 @@ void translateBody(Ctx &ctx, Frame *frame)
                 assert(!ctx.hasPendingComparisonCondition); // GCOV_EXCL_LINE — comparison fused into nothing; malformed program
             }
             bool stillOpen = closeBlockEnd(ctx.e, ctx.window, ctx.accState, *frame,
-                hasLoopExitCondition, loopExitCondition, fusedLoopExit, ctx.bytes, ctx.bytesLen, ctx.pc);
+                hasLoopExitCondition, loopExitCondition, fusedLoopExit, ctx.bytes, ctx.bytesLen, ctx.pc,
+                literalPoolDebt(ctx));
             ctx.pc = afterInstr;
             if(!stillOpen)
             {
@@ -281,6 +444,11 @@ void translateBody(Ctx &ctx, Frame *frame)
             ctx.pc = afterInstr;
             if(n > 2)
             {
+                // The jump table's slots are raw halfwords that can hold
+                // anything, including something a flush's scan would read
+                // as a parked literal load. Closing the chunk first keeps
+                // every table out of every scan window.
+                flushLiteralPool(ctx, false);
                 Frame opened = openBrTableJump(ctx.e, ctx.window, n, ctx.accState);
                 ctx.hasPendingComparisonCondition = false;
                 translateBody(ctx, &opened);
@@ -295,7 +463,7 @@ void translateBody(Ctx &ctx, Frame *frame)
                 // case 0's own body, never the BR_TABLE opcode itself
                 // (which would recurse into it as if it were a nested
                 // construct one level further in).
-                Frame inner = openBrTable(ctx.e, ctx.window, ctx.accState, n, trueCondition, fused, ctx.bytes, ctx.bytesLen, afterInstr);
+                Frame inner = openBrTable(ctx.e, ctx.window, ctx.accState, n, trueCondition, fused, ctx.bytes, ctx.bytesLen, afterInstr, literalPoolDebt(ctx));
                 translateBody(ctx, &inner);
             }
             if(ctx.nestingExceeded)
@@ -332,7 +500,7 @@ void translateBody(Ctx &ctx, Frame *frame)
             // No real error-reporting model this slice — sentinel-encode
             // the trap (high bit set, low bits the trap code) the same way
             // the QEMU test harness already expects.
-            emitSynthesizeImm32(ctx.e, ACC_REG, 0x80000000u | (uint32_t)instr.imm);
+            materializeLargeImmediate(ctx, ACC_REG, 0x80000000u | (uint32_t)instr.imm, ctx.pc);
             returnSequence(ctx);
             ctx.pc = afterInstr;
             if(frame != nullptr)
@@ -389,7 +557,7 @@ void translateBody(Ctx &ctx, Frame *frame)
                 ctx.pc = afterInstr;
                 continue;
             }
-            emitSynthesizeImm32(ctx.e, target, (uint32_t)instr.imm);
+            materializeLargeImmediate(ctx, target, (uint32_t)instr.imm, ctx.pc);
             ctx.accState.setClean(target);
             ctx.pc = fold.reg >= 0 ? fold.afterNext : afterInstr;
             continue;
@@ -419,7 +587,21 @@ void translateBody(Ctx &ctx, Frame *frame)
             }
             else if(combo == Combo::IMM_ACC)
             {
-                operandStorage = Shape::ofImm(instr.imm);
+                // A hard-to-synthesize operand is worth pooling, and
+                // pre-materializing it here is all that takes: binops.cpp
+                // does no strength reduction, so it would have had to
+                // materialize the value into SCRATCH_REG anyway, and
+                // Shape::ofReg(SCRATCH_REG) is already what the spilled
+                // REG_ACC path above hands it.
+                if(!isShiftOp(instr.op) && isPoolingEligible((uint32_t)instr.imm))
+                {
+                    materializeLargeImmediate(ctx, SCRATCH_REG, (uint32_t)instr.imm, ctx.pc);
+                    operandStorage = Shape::ofReg(SCRATCH_REG);
+                }
+                else
+                {
+                    operandStorage = Shape::ofImm(instr.imm);
+                }
             }
             else if(combo == Combo::POP_ACC)
             {
@@ -586,6 +768,7 @@ TranslateResult translateProc(
     }
 
     translateBody(ctx, nullptr);
+    flushLiteralPool(ctx, true);
 
     return TranslateResult{e.halfwordCount(), e.overflowed() || ctx.nestingExceeded};
 }

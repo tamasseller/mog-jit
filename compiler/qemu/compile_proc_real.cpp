@@ -61,7 +61,7 @@ extern "C" void compileProc(uint32_t idx, Runtime *runtime)
     uint32_t need = result.halfwordCount * 2;
     register uint32_t now asm("r11");
 
-    while(!runtime->hasRoomFor(need))
+    while(!runtime->hasRoomFor(Runtime::reserveFor(need)))
     {
         int victim = runtime->findEvictionVictim(now);
         if(victim < 0)

@@ -98,7 +98,14 @@ public:
     {
         arenaBase = codeArenaBase;
         arenaEnd = codeArenaBase + codeArenaSize;
-        arenaCursor = codeArenaBase;
+        /* Rounded up here, not left to the caller: enterProgramOnStack
+         * anchors the arena at stackLimit and enterProgramSplit takes the
+         * base as a parameter, so neither can be covered by an alignas on
+         * some array. Together with allocate()'s own rounding this makes
+         * "arenaCursor is 4-aligned" inductive, which is what every
+         * procedure's PC-relative literal loads depend on — see
+         * allocate(). */
+        arenaCursor = (codeArenaBase + 3u) & ~3u;
         flashProcs = procs;
         this->procCount = procCount;
         this->stackLimit = stackLimit;
@@ -148,10 +155,29 @@ public:
         return (arenaOverlapsStack && arenaCursor > stackLimit) ? arenaCursor : stackLimit;
     }
 
+    /* What allocate(need) actually consumes — the value to check
+     * hasRoomFor against, so eviction can't satisfy it on the unpadded
+     * size and then have allocate() run past arenaEnd. */
+    static uint32_t reserveFor(uint32_t need)
+    {
+        return (need + 3u) & ~3u;
+    }
+
+    /* Every procedure starts 4-aligned, and occupies a whole number of
+     * words. Both halves matter for PC-relative literal loads: the
+     * translator resolves LDR [pc,#imm] offsets in procedure-relative
+     * terms, and those stay correct at runtime only because
+     * Align(instrAddr + 4, 4) depends on instrAddr % 4 alone — which
+     * equals the relative offset's own low bits exactly when the
+     * procedure base is 4-aligned. Padding the reservation is what keeps
+     * that true after eviction too: occupiedSizeOf is derived from
+     * codePtr/arenaCursor gaps, so every compaction slide delta becomes a
+     * multiple of 4 and no surviving procedure is ever knocked off
+     * alignment by the memmove. */
     uint32_t allocate(uint32_t need)
     {
         uint32_t dest = arenaCursor;
-        arenaCursor += need;
+        arenaCursor += reserveFor(need);
         return dest;
     }
 
@@ -241,9 +267,16 @@ public:
 
 /* runtime.S hardcodes both of these since it can't call offsetof itself —
  * these ties catch any layout drift at compile time instead of letting it
- * corrupt memory silently. */
+ * corrupt memory silently.
+ *
+ * The table offset is checked only for a 32-bit target, the only thing
+ * runtime.S is ever assembled for: flashProcs is a pointer, so on the
+ * 64-bit host that builds the compiler's own unit tests the struct is
+ * legitimately wider and the constant legitimately wouldn't match. */
+#if UINTPTR_MAX == 0xFFFFFFFFu
 static_assert(offsetof(Runtime, dispatchTable) + sizeof(DispatchEntry) == RUNTIME_DISPATCH_TABLE_OFFSET,
     "runtime.S's own RUNTIME_DISPATCH_TABLE_OFFSET must match Runtime's real layout");
+#endif
 static_assert(sizeof(DispatchEntry) == DISPATCH_SENTINEL_OFFSET,
     "runtime.S's own DISPATCH_SENTINEL_OFFSET must match sizeof(DispatchEntry)");
 

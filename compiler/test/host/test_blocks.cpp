@@ -34,7 +34,7 @@ TEST(EmitGuardedBranchUsesShortFormWhenSpanFitsInRange)
 
     uint16_t buf[8];
     Emitter e(buf, 8);
-    uint32_t site = emitGuardedBranch(e, Cond::EQ, bytes, len, 0, 1);
+    uint32_t site = emitGuardedBranch(e, Cond::EQ, bytes, len, 0, 1, 0);
     CHECK(e.halfwordCount() == 1); // bare conditional branch, no long form
     CHECK(site == 0);
     CHECK(ArmV6M::isCondBranch(buf[0]));
@@ -55,7 +55,7 @@ TEST(EmitGuardedBranchUsesLongFormWhenSpanExceedsRange)
 
     uint16_t buf[8];
     Emitter e(buf, 8);
-    uint32_t site = emitGuardedBranch(e, Cond::EQ, bytes, len, 0, 1);
+    uint32_t site = emitGuardedBranch(e, Cond::EQ, bytes, len, 0, 1, 0);
     CHECK(e.halfwordCount() == 2); // condBranch(inverse) + long b
     CHECK(ArmV6M::isCondBranch(buf[0]));
     uint16_t rawOff;
@@ -143,7 +143,7 @@ TEST(OpenBrTableIfWithNoElseSelfLinksEndFixupChain)
     Emitter e(buf, 8);
     Window window(0);
     AccState accState;
-    Frame frame = openBrTable(e, window, accState, 1, Cond::NE, false, bytes, len, 0);
+    Frame frame = openBrTable(e, window, accState, 1, Cond::NE, false, bytes, len, 0, 0);
     CHECK(frame.kind == FrameKind::Case);
     CHECK(frame.remaining == 1);
     CHECK(frame.nextCaseFixup == -1); // no case[1] — never populated
@@ -162,7 +162,7 @@ TEST(OpenBrTableIfWithNoElseSelfLinksEndFixupChain)
     // OpenBrTableIfElseFusion's two-case chain link below, which
     // readBranchTarget sees as unconditional instead).
     e.emit(ArmV6M::mvns(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ACC_REG)));
-    bool stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 1);
+    bool stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 1, 0);
     CHECK(!stillOpen);
     CHECK(ArmV6M::getCondBranchOffset(buf[guardSite / 2], rawOff)); // patched, still a cond branch
     int32_t delta = ArmV6M::signExtend(rawOff, 8) << 1;
@@ -184,7 +184,7 @@ TEST(OpenBrTableIfElseFusionPatchesNextCaseFixupToCase1Start)
     Emitter e(buf, 16);
     Window window(0);
     AccState accState;
-    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, false, bytes, len, 0);
+    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, false, bytes, len, 0, 0);
     CHECK(frame.kind == FrameKind::Case);
     CHECK(frame.remaining == 2);
     CHECK(frame.nextCaseFixup >= 0); // not case 1 (n==1 self-links instead)
@@ -192,7 +192,7 @@ TEST(OpenBrTableIfElseFusionPatchesNextCaseFixupToCase1Start)
 
     // case 0's body: NOT (dest = ACC_REG, matching translate_proc.cpp's dispatch).
     e.emit(ArmV6M::mvns(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ACC_REG)));
-    bool stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 1);
+    bool stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 1, 0);
     CHECK(stillOpen); // case 1 still to come
     CHECK(frame.remaining == 1);
 
@@ -208,7 +208,7 @@ TEST(OpenBrTableIfElseFusionPatchesNextCaseFixupToCase1Start)
     e.emit(ArmV6M::mvns(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ACC_REG)));
     int32_t skipSite = frame.endFixupChain; // case 0's own "skip to end" branch, still pending
     CHECK(skipSite >= 0);
-    stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 3);
+    stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 3, 0);
     CHECK(!stillOpen);
 
     // case 0's skip-to-end branch now resolves to the construct's real
@@ -236,7 +236,7 @@ TEST(OpenBrTableSeedsAccStateWithTheFusedFalseConstant)
     Window window(0);
     AccState accState;
     accState.setClean(5); // a distinguishable "stale" value, never 0/1
-    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, /*fused=*/true, bytes, len, 0);
+    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, /*fused=*/true, bytes, len, 0, 0);
     CHECK(frame.fusedBoolean);
     Shape s = accState.peek();
     CHECK(s.isImm && s.imm == 0);
@@ -255,7 +255,7 @@ TEST(OpenBrTableLeavesAccStateAloneWhenNotFused)
     Window window(0);
     AccState accState;
     accState.setClean(5);
-    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, /*fused=*/false, bytes, len, 0);
+    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, /*fused=*/false, bytes, len, 0, 0);
     CHECK(!frame.fusedBoolean);
     Shape s = accState.peek();
     CHECK(!s.isImm && s.reg == 5);
@@ -271,10 +271,10 @@ TEST(CloseBlockEndSeedsAccStateWithTheFusedTrueConstantEnteringCase1)
     Emitter e(buf, 16);
     Window window(0);
     AccState accState;
-    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, /*fused=*/true, bytes, len, 0);
+    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, /*fused=*/true, bytes, len, 0, 0);
     e.emit(ArmV6M::mvns(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ACC_REG))); // case 0's (dummy) body
     accState.setClean(5); // simulate case 0's body leaving some other value pending
-    bool stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 1);
+    bool stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 1, 0);
     CHECK(stillOpen); // case 1 still to come
     Shape s = accState.peek();
     CHECK(s.isImm && s.imm == 1);
@@ -292,7 +292,7 @@ TEST(CloseBlockEndSeedsLoopBodyWithTheFusedTrueConstant)
     AccState accState;
     Frame frame = openLoop(e, window, accState);
     accState.setClean(5); // simulate the condition sub-block's body leaving some other value pending
-    bool stillOpen = closeBlockEnd(e, window, accState, frame, true, Cond::NE, /*fusedLoopExit=*/true, bytes, len, 0);
+    bool stillOpen = closeBlockEnd(e, window, accState, frame, true, Cond::NE, /*fusedLoopExit=*/true, bytes, len, 0, 0);
     CHECK(stillOpen);
     CHECK(frame.kind == FrameKind::LoopBody);
     Shape s = accState.peek();
@@ -311,7 +311,7 @@ TEST(CloseBlockEndLeavesLoopBodyAccStateAloneWhenNotFused)
     AccState accState;
     Frame frame = openLoop(e, window, accState);
     accState.setClean(5);
-    bool stillOpen = closeBlockEnd(e, window, accState, frame, true, Cond::NE, /*fusedLoopExit=*/false, bytes, len, 0);
+    bool stillOpen = closeBlockEnd(e, window, accState, frame, true, Cond::NE, /*fusedLoopExit=*/false, bytes, len, 0, 0);
     CHECK(stillOpen);
     Shape s = accState.peek();
     CHECK(!s.isImm && s.reg == 5);

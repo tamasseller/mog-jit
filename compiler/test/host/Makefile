@@ -2,6 +2,8 @@ OUTPUT = jit-armv6m-compiler-host-tests
 
 # Test code
 SOURCES += test_window.cpp
+SOURCES += test_emitter.cpp
+SOURCES += test_runtime_arena.cpp
 SOURCES += test_accstate.cpp
 SOURCES += test_binops.cpp
 SOURCES += test_imm_synth.cpp
@@ -33,6 +35,7 @@ SOURCES += ../../../vendor/1test/PrintfOutput.cpp
 
 INCLUDE_DIRS += ../../src
 INCLUDE_DIRS += ../../../src            # jit-armv6m/src/armv6.h
+INCLUDE_DIRS += ../../../runtime      # runtime_internal.h / runtime_host.h
 INCLUDE_DIRS += ../../../vendor/1test
 
 CXXFLAGS += -std=c++17

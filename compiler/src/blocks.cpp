@@ -78,9 +78,9 @@ SpanResult maxSpanBytes(const uint8_t *bytes, uint32_t bytesLen, uint32_t from, 
     return {total, pc};
 }
 
-uint32_t emitGuardedBranch(Emitter &e, Cond condition, const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount)
+uint32_t emitGuardedBranch(Emitter &e, Cond condition, const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount, uint32_t pendingPoolBytes)
 {
-    if(maxSpanBytes(bytes, bytesLen, from, blockCount).bytes <= SAFE_COND_BRANCH_SPAN)
+    if(maxSpanBytes(bytes, bytesLen, from, blockCount).bytes + pendingPoolBytes <= SAFE_COND_BRANCH_SPAN)
     {
         return e.placeholderCondBranch(condition);
     }
@@ -91,7 +91,7 @@ uint32_t emitGuardedBranch(Emitter &e, Cond condition, const uint8_t *bytes, uin
     return site;
 }
 
-Frame openBrTable(Emitter &e, Window &window, AccState &accState, uint32_t n, Cond condition, bool fused, const uint8_t *bytes, uint32_t bytesLen, uint32_t pc)
+Frame openBrTable(Emitter &e, Window &window, AccState &accState, uint32_t n, Cond condition, bool fused, const uint8_t *bytes, uint32_t bytesLen, uint32_t pc, uint32_t pendingPoolBytes)
 {
     assert(n == 1 || n == 2); // GCOV_EXCL_LINE — only if/if-else are supported; N>2 goes through openBrTableJump
 
@@ -104,7 +104,7 @@ Frame openBrTable(Emitter &e, Window &window, AccState &accState, uint32_t n, Co
     frame.endFixupChain = -1;
     frame.fusedBoolean = fused;
 
-    uint32_t site = emitGuardedBranch(e, condition, bytes, bytesLen, pc, 1); // guards exactly case[0]'s own body
+    uint32_t site = emitGuardedBranch(e, condition, bytes, bytesLen, pc, 1, pendingPoolBytes); // guards exactly case[0]'s own body
     if(n == 1)
     {
         e.patchBranch(site, site); // no case[1] to skip to — sole chain entry, self-linked to terminate
@@ -242,7 +242,7 @@ void closeLoopBodyViaTerminator(Emitter &e, Window &window, AccState &accState, 
 
 bool closeBlockEnd(Emitter &e, Window &window, AccState &accState, Frame &frame,
     bool hasLoopExitCondition, Cond loopExitCondition, bool fusedLoopExit,
-    const uint8_t *bytes, uint32_t bytesLen, uint32_t pc)
+    const uint8_t *bytes, uint32_t bytesLen, uint32_t pc, uint32_t pendingPoolBytes)
 {
     if(frame.kind == FrameKind::Case)
     {
@@ -263,7 +263,7 @@ bool closeBlockEnd(Emitter &e, Window &window, AccState &accState, Frame &frame,
     {
         restoreWindow(e, window, frame.entryTos);
         assert(hasLoopExitCondition); // GCOV_EXCL_LINE — LOOP condition block closed with no fused comparison to branch on
-        uint32_t exitFixup = emitGuardedBranch(e, loopExitCondition, bytes, bytesLen, pc + 1, 1);
+        uint32_t exitFixup = emitGuardedBranch(e, loopExitCondition, bytes, bytesLen, pc + 1, 1, pendingPoolBytes);
         frame.kind = FrameKind::LoopBody;
         frame.exitFixup = (int32_t)exitFixup;
         // entryTos/loopStart already carried over from the LoopCond frame.

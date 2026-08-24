@@ -74,6 +74,30 @@ TEST(synthesizeImm32LengthMatchesEmittedCountAcrossValues)
     }
 }
 
+TEST(poolingEligibilityTracksSynthesisLength)
+{
+    // The threshold's own edges, keyed off the real cost model rather than
+    // hardcoded values: pooling costs a fixed 6 bytes (LDR + word), so it
+    // must lose at 3 halfwords of synthesis and win at 4.
+    CHECK(synthesizeImm32Length(0x1234) == 3);
+    CHECK(!isPoolingEligible(0x1234));
+
+    CHECK(synthesizeImm32Length(0x123400) == 4);
+    CHECK(isPoolingEligible(0x123400));
+
+    CHECK(!isPoolingEligible(0));          // 1 — a bare MOVS
+    CHECK(!isPoolingEligible(0xff));       // 1
+    CHECK(isPoolingEligible(0xffffffffu)); // 7 — the worst case
+    CHECK(isPoolingEligible(0x80000003u)); // 5 — a TRAP sentinel
+
+    // Every legal shift amount stays inline, which is what lets
+    // translate_proc.cpp's IMM_ACC pooling leave shifts alone safely.
+    for(uint32_t amount = 0; amount < 32; amount++)
+    {
+        CHECK(!isPoolingEligible(amount));
+    }
+}
+
 TEST(fitsImm)
 {
     CHECK(fitsImm8(0) && fitsImm8(255) && !fitsImm8(256) && !fitsImm8(-1));

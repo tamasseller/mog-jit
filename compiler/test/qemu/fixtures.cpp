@@ -283,6 +283,44 @@ const Instr f23Proc0[] = {
 };
 Proc f23Procs[1];
 
+// ---- Fixture 24: literal pooling, both routes at once. CONST's own
+// hard-to-synthesize value pools, and so does the ADD's immediate operand
+// (which reaches the pool through Combo::IMM_ACC rather than CONST), so
+// this executes two PC-relative loads at different alignment parities.
+// expect 0x12345678 + 0x11111111.
+const Instr f24Proc0[] = {CONST(0x12345678), opImm(Op::ADD, 0x11111111), bare(Op::RETURN)};
+Proc f24Procs[1];
+
+// ---- Fixture 25: a pooled load whose pool is flushed mid-procedure,
+// with the flush's branch-around actually executed. BR_TABLE N>2 forces
+// the flush (its jump table's raw halfwords must not land in a later
+// scan window), so the pool lands in the middle of the code and control
+// has to jump over it to reach the dispatch. The pooled value is read
+// back afterwards from a local, proving both the load and the jump-around
+// worked. expect 0xDEADBEEF.
+const Instr f25Proc0[] = {
+    CONST(0xDEADBEEF), PUSH(), // pooled — the chunk is open across the BR_TABLE
+    CONST(1), brTable(3),       // forces the flush, mid-code, before the table
+        CONST(100), bare(Op::BLOCK_END),
+        CONST(200), bare(Op::BLOCK_END),
+        CONST(300), bare(Op::BLOCK_END),
+    LOAD(0),
+    bare(Op::RETURN),
+};
+Proc f25Procs[1];
+
+// ---- Fixture 26: a pooled load in a procedure that does *not* start at
+// the arena base. proc0 compiles to an odd number of halfwords (38 bytes,
+// i.e. 2 mod 4), so without Runtime::allocate rounding its reservation up
+// proc1 would land 2 bytes off a word boundary — and every
+// Align(pc,4)-based literal offset in it, resolved procedure-relative at
+// translation time, would then read 2 bytes away from its own pool word.
+// This is the fixture that actually fails if that rounding is dropped.
+// 5 ^ 0x0F0F0F0F = 0x0F0F0F0A, + 1 = 0x0F0F0F0B.
+const Instr f26Proc0[] = {CONST(5), call(1), opImm(Op::ADD, 1), bare(Op::RETURN)};
+const Instr f26Proc1[] = {LOAD(0), opImm(Op::XOR, 0x0F0F0F0F), bare(Op::RETURN)};
+Proc f26Procs[2];
+
 // Every original fixture's own compiled output measures well under 110
 // bytes — fixture 18 is a deliberate exception (it pads its own source
 // body specifically to force the long-branch form). 64 bytes of source
@@ -291,7 +329,7 @@ Proc f23Procs[1];
 // (encodeInto(), below), since Proc::body is raw wire bytes rather than
 // something an Instr[] literal can become at compile time on its own.
 constexpr uint32_t BYTES_PER_PROC = 64;
-constexpr uint32_t TOTAL_PROCS = 28; // 2+2+1+2+1+1+3 (fixtures 1-7) + 16 (fixtures 8-23, one proc each)
+constexpr uint32_t TOTAL_PROCS = 32; // 2+2+1+2+1+1+3 (fixtures 1-7) + 18 (fixtures 8-25, one proc each) + 2 (fixture 26)
 uint8_t scratch[TOTAL_PROCS][BYTES_PER_PROC];
 
 uint32_t nextScratchSlot = 0;
@@ -343,6 +381,10 @@ void initFixtures()
     encodeInto(1, f21Proc0, sizeof(f21Proc0) / sizeof(f21Proc0[0]), f21Procs[0]);
     encodeInto(1, f22Proc0, sizeof(f22Proc0) / sizeof(f22Proc0[0]), f22Procs[0]);
     encodeInto(0, f23Proc0, sizeof(f23Proc0) / sizeof(f23Proc0[0]), f23Procs[0]);
+    encodeInto(0, f24Proc0, sizeof(f24Proc0) / sizeof(f24Proc0[0]), f24Procs[0]);
+    encodeInto(0, f25Proc0, sizeof(f25Proc0) / sizeof(f25Proc0[0]), f25Procs[0]);
+    encodeInto(0, f26Proc0, sizeof(f26Proc0) / sizeof(f26Proc0[0]), f26Procs[0]);
+    encodeInto(1, f26Proc1, sizeof(f26Proc1) / sizeof(f26Proc1[0]), f26Procs[1]);
 }
 
 Fixture fixtures[] = {
@@ -400,5 +442,9 @@ Fixture fixtures[] = {
     {"accState fusion-merge regression: case[0] (false) probe", f22Procs, 1, false, 0, 5},
     {"accState fusion-merge regression: case[1] (true) probe", f22Procs, 1, false, 1, 200},
     {"accState fusion-merge regression: LOOP body probe", f23Procs, 1, false, 1},
+
+    {"pooled literal: CONST and IMM_ACC operand", f24Procs, 1, false, 0x23456789u},
+    {"pooled literal: mid-code flush with executed jump-around", f25Procs, 1, false, 0xDEADBEEFu},
+    {"pooled literal in a procedure past an odd-sized one", f26Procs, 2, false, 0x0F0F0F0Bu},
 };
 const uint32_t fixtureCount = sizeof(fixtures) / sizeof(fixtures[0]);

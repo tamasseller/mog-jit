@@ -24,6 +24,21 @@ void emitSynthesizeImm32(Emitter &e, uint32_t dstReg, uint32_t value);
  *  own algorithm (cross-checked directly in test_imm_synth.cpp). */
 uint32_t synthesizeImm32Length(uint32_t value);
 
+/** Shortest synthesis worth replacing with a pooled `LDR Rd,[pc,#imm]`
+ *  (2 bytes of instruction + a 4-byte pool word). At 3 the two tie on
+ *  size, but a mid-procedure pool's branch-around is *executed*, costing
+ *  a chunk of n sites 2n+3 cycles against 3n — a loss for small n. From 4
+ *  up, pooling wins on both size and cycles. */
+constexpr uint32_t POOLING_MIN_LENGTH = 4;
+
+/** Whether value is worth pooling rather than synthesizing inline.
+ *  Deliberately expressed in terms of synthesizeImm32Length so there's no
+ *  second cost model to keep in lockstep with the real one. */
+inline bool isPoolingEligible(uint32_t value)
+{
+    return synthesizeImm32Length(value) >= POOLING_MIN_LENGTH;
+}
+
 constexpr bool fitsImm8(int32_t v)
 {
     return v >= 0 && v <= 0xff;

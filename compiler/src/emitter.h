@@ -134,6 +134,47 @@ public:
         buf[idx] = value;
     }
 
+    // Emit an `LDR dstReg,[pc,#...]` whose 8-bit field carries scratchTag
+    // instead of a real offset — translate_proc.cpp's literal pool parks
+    // the literal's own bytecode-offset delta there until the pool is
+    // flushed and the true forward distance is known. Goes through
+    // fmtImm8 rather than ArmV6M::setLiteralOffset deliberately: a
+    // bytecode delta is an arbitrary byte count, and setLiteralOffset's
+    // Uoff<2,8> would (rightly) assert on one that isn't a multiple of 4.
+    // Returns the site's byte offset, like the placeholders above.
+    uint32_t placeholderLiteralLoad(uint32_t dstReg, uint8_t scratchTag)
+    {
+        return emit(ArmV6M::fmtImm8(ArmV6M::Imm8Op::LDR, (uint16_t)dstReg, scratchTag));
+    }
+
+    // Whether the halfword at siteOffset is a literal-load site and, if
+    // so, its raw 8-bit field — either a placeholderLiteralLoad() scratch
+    // tag or an already-resolved offset, since patchLiteralOffset() below
+    // leaves the encoding still matching. Mirrors
+    // ArmV6M::getLiteralOffset's own shape.
+    bool getLiteralOffsetAt(uint32_t siteOffset, uint16_t &off) const
+    {
+        uint32_t idx = siteOffset / 2;
+        if(idx >= count)
+        {
+            return false; // GCOV_EXCL_LINE — see patchBranch's own comment
+        }
+        return ArmV6M::getLiteralOffset(buf[idx], off);
+    }
+
+    // Resolve a placeholderLiteralLoad() site now that its pool word's
+    // position is known. byteOffset is measured from Align(siteOffset+4,4),
+    // so it's always a non-negative multiple of 4 — Uoff<2,8> asserts both.
+    void patchLiteralOffset(uint32_t siteOffset, ArmV6M::Uoff<2, 8> byteOffset)
+    {
+        uint32_t idx = siteOffset / 2;
+        if(idx >= count)
+        {
+            return; // GCOV_EXCL_LINE — see patchBranch's own comment
+        }
+        buf[idx] = ArmV6M::setLiteralOffset(buf[idx], byteOffset);
+    }
+
     // Resolve a placeholderBL() site once its target is known within this
     // same procedure.
     void patchBL(uint32_t siteOffset, uint32_t targetOffset)
