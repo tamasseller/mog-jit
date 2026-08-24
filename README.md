@@ -20,12 +20,10 @@ hard memory ceiling.
 
 | Path | What |
 |---|---|
-| `src/armv6.h` | Thumb instruction encoder (adapted from tamasseller/sdvm) |
-| `src/vectors.S`, `src/linker.ld` | bare-metal startup for the QEMU test targets |
-| `runtime/` | the real dispatch/eviction runtime in C++ and hand-written asm: `runtime.S` (call/return helpers, translator trampoline, `enter_dispatch`), `runtime_host.cpp`/`.h` (the `enter_program` family), `runtime_internal.h` (`Runtime`/`DispatchEntry`, arena/eviction/compaction), `semihosting.cpp` |
-| `compiler/` | the native C++ translator, targeting `runtime/`. Covers the full instruction set (`EXT` excluded on both sides by design) |
-| `test/host`, `test/qemu` | encoder unit tests, and a QEMU smoke test |
-| `compiler/test/host`, `compiler/test/qemu` | the native compiler's own unit and QEMU tests |
+| `compiler/src/` | the native C++ translator, targeting `runtime/` — covers the full instruction set (`EXT` excluded on both sides by design), plus `armv6.h` (the Thumb instruction encoder it's built on, adapted from tamasseller/sdvm) |
+| `runtime/` | the real dispatch/eviction runtime in C++ and hand-written asm: `runtime.S` (call/return helpers, translator trampoline, `enter_dispatch`), `runtime_host.cpp`/`.h` (the `enter_program` family), `runtime_internal.h` (`Runtime`/`DispatchEntry`, arena/eviction/compaction) |
+| `test/host` | unit tests: `armv6.h`'s raw encoders, and the translator end to end, against real libc (`--coverage`) |
+| `test/qemu` | the same translator plus the real, unmodified `runtime/`, run on `qemu-system-arm` — a harness-sanity smoke test, the hand-transcribed fixture corpus, and eviction/`RESOURCE_ERROR`/stack-layout scenarios. `vectors.S`/`linker.ld` (bare-metal startup) and `compile_proc_real.cpp`/`fixtures.h` (the `compileProc` this harness wires up, reading from its own fixture table) live here — test-only, never shipped |
 | `vendor/` | submodules: `ultimate-makefile`, `1test` |
 
 A TypeScript prototype (`prototype/`) existed earlier as a faster-iteration
@@ -40,9 +38,7 @@ deleted.
 ## Commands
 
 ```sh
-make test                   # everything below
-make test-host              # test/host
-make test-qemu              # test/qemu (needs qemu-system-arm)
-make test-compiler-host     # compiler/test/host
-make test-compiler-qemu     # compiler/test/qemu
+make test        # everything below
+make test-host   # test/host
+make test-qemu   # test/qemu (needs qemu-system-arm)
 ```

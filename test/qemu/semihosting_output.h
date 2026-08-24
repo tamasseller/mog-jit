@@ -17,6 +17,13 @@ void semihostingWrite0(const char *s);
 // vs "not" and can't carry an arbitrary pass/fail code.
 [[noreturn]] void semihostingExit(int code);
 
+// Prints "RESULT:xxxxxxxx\n" / "TRAP:xxxxxxxx\n" (8 lowercase hex
+// digits) — the fixture loop's own diagnostic for a mismatch, printed
+// alongside the fixture's name right before the aggregate CHECK() fails
+// (main.cpp), since CHECK's own failure text has no way to carry a value.
+void writeHexResult(uint32_t v);
+void writeHexTrap(uint32_t v);
+
 class SemihostingOutput : public test::TestOutput
 {
 protected:

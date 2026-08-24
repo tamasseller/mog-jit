@@ -15,21 +15,66 @@ namespace
     }
 
     // No libc console/printf on this bare image — just enough decimal
-    // formatting for the progress dots and final normal/failure counts.
+    // formatting for the final normal/failure counts. No division, not
+    // even by the constant 10: Cortex-M0 has no divide instruction and no
+    // 32x32->64 multiply either, so even `v % 10` on a compile-time
+    // literal still calls libgcc's __aeabi_uidiv — repeated subtraction
+    // against a fixed set of places avoids that entirely. Counts here are
+    // always small (fixture/scenario counts), so four decimal digits of
+    // headroom is plenty.
     void writeUint(uint32_t v)
     {
-        char buf[11];
-        char *p = buf + sizeof(buf);
-        *--p = '\0';
-
-        do
+        static const uint32_t PLACES[] = {1000, 100, 10, 1};
+        char buf[5];
+        uint32_t n = 0;
+        bool started = false;
+        for(uint32_t place : PLACES)
         {
-            *--p = '0' + (v % 10);
-            v /= 10;
-        } while(v != 0);
-
-        semihostingWrite0(p);
+            uint32_t digit = 0;
+            while(v >= place)
+            {
+                v -= place;
+                digit++;
+            }
+            if(digit != 0 || started || place == 1)
+            {
+                buf[n++] = (char)('0' + digit);
+                started = true;
+            }
+        }
+        buf[n] = '\0';
+        semihostingWrite0(buf);
     }
+
+    // "<prefix>xxxxxxxx\n" (8 lowercase hex digits) — shared by
+    // writeHexResult/writeHexTrap below.
+    void writeHexTagged(const char *prefix, uint32_t v)
+    {
+        char buf[16];
+        int i = 0;
+        for(; prefix[i]; i++)
+        {
+            buf[i] = prefix[i];
+        }
+        for(int shift = 28; shift >= 0; shift -= 4)
+        {
+            uint32_t nibble = (v >> shift) & 0xF;
+            buf[i++] = nibble < 10 ? (char)('0' + nibble) : (char)('a' + nibble - 10);
+        }
+        buf[i++] = '\n';
+        buf[i] = '\0';
+        semihostingWrite0(buf);
+    }
+}
+
+void writeHexResult(uint32_t v)
+{
+    writeHexTagged("RESULT:", v);
+}
+
+void writeHexTrap(uint32_t v)
+{
+    writeHexTagged("TRAP:", v);
 }
 
 void semihostingWrite0(const char *s)

@@ -407,7 +407,7 @@ than just at the boundary. Once that existed,
 chronological ordering they rely on already produces the right memory
 layout for a callee's deep arguments. Three constraints only a concrete deep
 case exposes (originally found via the now-retired TS prototype's own
-`deep-args.test.ts`; `compiler/test/host/test_window.cpp` and
+`deep-args.test.ts`; `test/host/test_window.cpp` and
 `test_abi_strategy.cpp` cover the equivalent native shapes):
 
 - `fillCalleeArgs` caps at `WINDOW_SIZE - 1`. `physReg` is periodic mod
@@ -1295,7 +1295,7 @@ corner (`rotation.test.ts`), `BR_TABLE N>2` including the `lr` Thumb-bit trap
 (`br-table.test.ts`), the §9 dispatch ABI end to end (`abi-dispatch.test.ts`),
 eviction and compaction (`eviction.test.ts`), and both §2 entry variants
 (`enter-program-variants.test.ts`) — all since re-verified directly against
-`compiler/test/host`/`compiler/test/qemu`, which now cover the native port's
+`test/host`/`test/qemu`, which now cover the native port's
 full instruction set (`LOOP`/`BR_TABLE`/unary ops/comparisons included, `EXT`
 excluded on both sides by design), including eviction/compaction and both
 `RESOURCE_ERROR` sides against genuinely native-compiled code on real QEMU
@@ -1448,7 +1448,7 @@ excluded on both sides by design), including eviction/compaction and both
     was no separate "native port" step needed for this one, since native
     was written this way from the start rather than retrofitted.
 17. ~~Eviction/compaction is untested against genuinely native-compiled
-    code on real QEMU~~ — **done**: `compiler/test/qemu/main.cpp` measures
+    code on real QEMU~~ — **done**: `test/qemu/main.cpp` measures
     each fixture procedure's real compiled size once (via a throwaway
     `translateProc` call) purely to size an undersized arena, then drives
     the exercise through the ordinary lazy `g_realProcs`/`compileProc`
