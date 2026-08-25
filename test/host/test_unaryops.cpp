@@ -13,10 +13,7 @@
 
 using namespace jitc;
 
-namespace
-{
 using R = ArmV6M::LoReg;
-}
 
 TEST(negEmitsSingleInstruction)
 {

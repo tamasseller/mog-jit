@@ -24,9 +24,6 @@ BinOpKind classifyBinOp(Op op, Combo combo)
     return BinOpKind::TwoOpInPlace; // AND, OR, XOR, MUL, and any shift with a register count
 }
 
-namespace
-{
-
 /** Rd = n +/- k, materializing k into scratch first when no native
  *  immediate form fits.
  *
@@ -37,7 +34,7 @@ namespace
  *  after would silently clobber that just-reloaded value before the final
  *  op ever reads it, computing `k op k` instead of `n op k` — copy n into
  *  dest first so it survives k's own materialization. */
-void addOrSubWithImm(Emitter &e, bool sub, uint32_t dest, uint32_t n, int32_t k)
+static void addOrSubWithImm(Emitter &e, bool sub, uint32_t dest, uint32_t n, int32_t k)
 {
     if(fitsImm3(k))
     {
@@ -64,7 +61,7 @@ void addOrSubWithImm(Emitter &e, bool sub, uint32_t dest, uint32_t n, int32_t k)
 /** Rd = k - n — immediate minus register, which has no direct native
  *  form: k===0 degenerates to NEG; otherwise materialize k into scratch.
  *  Same n == SCRATCH_REG hazard as addOrSubWithImm above, same fix. */
-void emitRsubImmAsLeft(Emitter &e, uint32_t dest, int32_t k, uint32_t n)
+static void emitRsubImmAsLeft(Emitter &e, uint32_t dest, int32_t k, uint32_t n)
 {
     if(k == 0)
     {
@@ -83,7 +80,7 @@ void emitRsubImmAsLeft(Emitter &e, uint32_t dest, int32_t k, uint32_t n)
 /** ADD/SUB/RSUB, covering every (accShape, operandShape) combination —
  *  operand===nullptr means PEEK_PEEK, whose right-hand operand is dest
  *  itself. */
-void emitAddSubRsub(Emitter &e, Op op, uint32_t dest, const Shape &accShape, const Shape *operand)
+static void emitAddSubRsub(Emitter &e, Op op, uint32_t dest, const Shape &accShape, const Shape *operand)
 {
     Shape rhs = operand ? *operand : Shape::ofReg(dest);
 
@@ -170,7 +167,7 @@ void emitAddSubRsub(Emitter &e, Op op, uint32_t dest, const Shape &accShape, con
     }
 }
 
-uint16_t shiftOpImm(Op op, uint32_t d, uint32_t m, int32_t amount)
+static uint16_t shiftOpImm(Op op, uint32_t d, uint32_t m, int32_t amount)
 {
     if(op == Op::SHL)
     {
@@ -183,7 +180,7 @@ uint16_t shiftOpImm(Op op, uint32_t d, uint32_t m, int32_t amount)
     return ArmV6M::asrs(R((uint16_t)d), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)amount));
 }
 
-uint16_t twoOpInPlaceNative(Op op, uint32_t dn, uint32_t m)
+static uint16_t twoOpInPlaceNative(Op op, uint32_t dn, uint32_t m)
 {
     switch(op)
     {
@@ -199,8 +196,6 @@ uint16_t twoOpInPlaceNative(Op op, uint32_t dn, uint32_t m)
             return 0;      // GCOV_EXCL_LINE
     }
 }
-
-} // namespace
 
 void emitBinaryOp(
     Emitter &e, Op op, Combo combo,

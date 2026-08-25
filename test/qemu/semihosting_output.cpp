@@ -1,12 +1,10 @@
 #include "semihosting_output.h"
 
-namespace
-{
-    constexpr uint32_t sysWrite0 = 0x04;
-    constexpr uint32_t sysExitExtended = 0x20;
-    constexpr uint32_t adpStoppedApplicationExit = 0x20026;
+static constexpr uint32_t sysWrite0 = 0x04;
+static constexpr uint32_t sysExitExtended = 0x20;
+static constexpr uint32_t adpStoppedApplicationExit = 0x20026;
 
-    inline uint32_t semihostingCall(uint32_t op, void *arg)
+static inline uint32_t semihostingCall(uint32_t op, void *arg)
     {
         register uint32_t r0 asm("r0") = op;
         register void *r1 asm("r1") = arg;
@@ -14,15 +12,15 @@ namespace
         return r0;
     }
 
-    // No libc console/printf on this bare image — just enough decimal
-    // formatting for the final normal/failure counts. No division, not
-    // even by the constant 10: Cortex-M0 has no divide instruction and no
-    // 32x32->64 multiply either, so even `v % 10` on a compile-time
-    // literal still calls libgcc's __aeabi_uidiv — repeated subtraction
-    // against a fixed set of places avoids that entirely. Counts here are
-    // always small (fixture/scenario counts), so four decimal digits of
-    // headroom is plenty.
-    void writeUint(uint32_t v)
+// No libc console/printf on this bare image — just enough decimal
+// formatting for the final normal/failure counts. No division, not
+// even by the constant 10: Cortex-M0 has no divide instruction and no
+// 32x32->64 multiply either, so even `v % 10` on a compile-time
+// literal still calls libgcc's __aeabi_uidiv — repeated subtraction
+// against a fixed set of places avoids that entirely. Counts here are
+// always small (fixture/scenario counts), so four decimal digits of
+// headroom is plenty.
+static void writeUint(uint32_t v)
     {
         static const uint32_t PLACES[] = {1000, 100, 10, 1};
         char buf[5];
@@ -46,9 +44,9 @@ namespace
         semihostingWrite0(buf);
     }
 
-    // "<prefix>xxxxxxxx\n" (8 lowercase hex digits) — shared by
-    // writeHexResult/writeHexTrap below.
-    void writeHexTagged(const char *prefix, uint32_t v)
+// "<prefix>xxxxxxxx\n" (8 lowercase hex digits) — shared by
+// writeHexResult/writeHexTrap below.
+static void writeHexTagged(const char *prefix, uint32_t v)
     {
         char buf[16];
         int i = 0;
@@ -65,7 +63,6 @@ namespace
         buf[i] = '\0';
         semihostingWrite0(buf);
     }
-}
 
 void writeHexResult(uint32_t v)
 {

@@ -18,9 +18,6 @@
 #include "arena_room.h"
 #include "emitter.h"
 
-namespace
-{
-
 /* The one seam between the Runtime-agnostic translator and Runtime's own
  * arena/eviction machinery — a plain stack local per compileProc call,
  * never heap-allocated (arena_room.h's own header comment has why it
@@ -62,8 +59,6 @@ public:
 private:
     Runtime *runtime;
 };
-
-} // namespace
 
 static void __attribute__((noreturn)) bailOut(Runtime *runtime, uint32_t trapCode)
 {

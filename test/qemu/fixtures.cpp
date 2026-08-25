@@ -4,17 +4,14 @@
 
 using namespace jitc;
 
-namespace
-{
-
 // ---- Fixture 1: single-argument call, entirely acc-passed. expect 42.
-const Instr f1Proc0[] = {CONST(37), call(1), bare(Op::RETURN)};
-const Instr f1Proc1[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
-Program f1Prog;
+static const Instr f1Proc0[] = {CONST(37), call(1), bare(Op::RETURN)};
+static const Instr f1Proc1[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
+static Program f1Prog;
 
 // ---- Fixture 2: 3-argument call with a phase-misaligned shuffle and
 // surviving leftover locals. expect 1629.
-const Instr f2Proc0[] = {
+static const Instr f2Proc0[] = {
     CONST(100), PUSH(), // leftover local 0 -- k=0
     CONST(200), PUSH(), // leftover local 1 -- k=1
     CONST(300), PUSH(), // leftover local 2 -- k=2
@@ -27,11 +24,11 @@ const Instr f2Proc0[] = {
     opReg(Op::ADD, 2),
     bare(Op::RETURN),
 };
-const Instr f2Proc1[] = {LOAD(0), opReg(Op::ADD, 1), opReg(Op::ADD, 2), bare(Op::RETURN)};
-Program f2Prog;
+static const Instr f2Proc1[] = {LOAD(0), opReg(Op::ADD, 1), opReg(Op::ADD, 2), bare(Op::RETURN)};
+static Program f2Prog;
 
 // ---- Fixture 3: out-of-window LOAD/STORE/REG_ACC/REG_REG, no CALL. expect 55.
-const Instr f3Proc0[] = {
+static const Instr f3Proc0[] = {
     CONST(10), PUSH(), // k=0
     CONST(20), PUSH(), // k=1
     CONST(30), PUSH(), // k=2
@@ -47,10 +44,10 @@ const Instr f3Proc0[] = {
     opReg(Op::ADD, 1),                // acc = 30 + k1(25) = 55
     bare(Op::RETURN),
 };
-Program f3Prog;
+static Program f3Prog;
 
 // ---- Fixture 4: CALL with stackArgs(6) > WINDOW_SIZE(4). expect 280.
-const Instr f4Proc0[] = {
+static const Instr f4Proc0[] = {
     CONST(10), PUSH(), // arg0
     CONST(20), PUSH(), // arg1
     CONST(30), PUSH(), // arg2
@@ -61,16 +58,16 @@ const Instr f4Proc0[] = {
     call(1),
     bare(Op::RETURN),
 };
-const Instr f4Proc1[] = {
+static const Instr f4Proc1[] = {
     LOAD(0),
     opReg(Op::ADD, 1), opReg(Op::ADD, 2), opReg(Op::ADD, 3),
     opReg(Op::ADD, 4), opReg(Op::ADD, 5), opReg(Op::ADD, 6),
     bare(Op::RETURN),
 };
-Program f4Prog;
+static Program f4Prog;
 
 // ---- Fixture 5: operand-fold. expect 10.
-const Instr f5Proc0[] = {
+static const Instr f5Proc0[] = {
     CONST(10), PUSH(), // a -- k=0
     CONST(20), PUSH(), // b -- k=1
     CONST(30), PUSH(), // c -- k=2
@@ -79,10 +76,10 @@ const Instr f5Proc0[] = {
     PUSH(),                // e = a -- k=4, evicts k=0's register
     bare(Op::RETURN),
 };
-Program f5Prog;
+static Program f5Prog;
 
 // ---- Fixture 6: destination-fold. expect 99.
-const Instr f6Proc0[] = {
+static const Instr f6Proc0[] = {
     CONST(10), PUSH(),
     CONST(20), PUSH(),
     CONST(30), PUSH(),
@@ -91,27 +88,27 @@ const Instr f6Proc0[] = {
     PUSH(),                // e = a (now 99) -- k=4, evicts k=0's register
     bare(Op::RETURN),
 };
-Program f6Prog;
+static Program f6Prog;
 
 // ---- Fixture 7: a 3-deep call chain. expect 106.
-const Instr f7Proc0[] = {CONST(5), call(1), bare(Op::RETURN)};
-const Instr f7Proc1[] = {LOAD(0), call(2), opImm(Op::ADD, 1), bare(Op::RETURN)};
-const Instr f7Proc2[] = {LOAD(0), opImm(Op::ADD, 100), bare(Op::RETURN)};
-Program f7Prog;
+static const Instr f7Proc0[] = {CONST(5), call(1), bare(Op::RETURN)};
+static const Instr f7Proc1[] = {LOAD(0), call(2), opImm(Op::ADD, 1), bare(Op::RETURN)};
+static const Instr f7Proc2[] = {LOAD(0), opImm(Op::ADD, 100), bare(Op::RETURN)};
+static Program f7Prog;
 
 // ---- Fixture 8: LOOP body closed by a bare terminator, not BLOCK_END.
 // arg 0 -> 999 (cond-false exit tail), arg != 0 -> 42 (body runs once,
 // returns directly).
-const Instr f8Proc0[] = {
+static const Instr f8Proc0[] = {
     bare(Op::LOOP), bare(Op::BLOCK_END),  // condition sub-block is empty — testAccNonzero(arg)
     CONST(42), bare(Op::RETURN),           // body — bare terminator closes it
     CONST(999), bare(Op::RETURN),          // reached only via the cond-false exit
 };
-Program f8Prog;
+static Program f8Prog;
 
 // ---- Fixture 9: a genuine (non-degenerate) LOOP with real accumulation
 // and a back-edge — sum(1..n). arg 4 -> 10, arg 0 -> 0, arg 1 -> 1.
-const Instr f9Proc0[] = {
+static const Instr f9Proc0[] = {
     LOAD(0), PUSH(),                             // k=1: counter := n
     CONST(0), PUSH(),                            // k=2: total := 0
     bare(Op::LOOP),
@@ -122,21 +119,21 @@ const Instr f9Proc0[] = {
     bare(Op::BLOCK_END),                          // back-edge
     LOAD(2), bare(Op::RETURN),
 };
-Program f9Prog;
+static Program f9Prog;
 
 // ---- Fixture 10: BR_TABLE if/else fusion, non-last case closed via a
 // bare RETURN, last case closes normally. arg <= 10 -> 111, arg > 10 -> 222.
-const Instr f10Proc0[] = {
+static const Instr f10Proc0[] = {
     LOAD(0), opImm(Op::GT_U, 10), brTable(2),
         CONST(111), bare(Op::RETURN),   // case 0 (n <= 10) — bare terminator
         CONST(222), bare(Op::BLOCK_END), // case 1 (n > 10) — normal close
     bare(Op::RETURN),
 };
-Program f10Prog;
+static Program f10Prog;
 
 // ---- Fixture 11: BR_TABLE N>2, the shared jump-table helper.
 // arg 0/1/2/3 -> 100/200/300/400.
-const Instr f11Proc0[] = {
+static const Instr f11Proc0[] = {
     LOAD(0), brTable(4),
         CONST(100), bare(Op::BLOCK_END),
         CONST(200), bare(Op::BLOCK_END),
@@ -144,37 +141,37 @@ const Instr f11Proc0[] = {
         CONST(400), bare(Op::BLOCK_END),
     bare(Op::RETURN),
 };
-Program f11Prog;
+static Program f11Prog;
 
 // ---- Fixture 12: a comparison feeds further arithmetic — (n > 4) * 5.
 // arg 6 -> 5, arg 3 -> 0.
-const Instr f12Proc0[] = {LOAD(0), opImm(Op::GT_U, 4), opImm(Op::MUL, 5), bare(Op::RETURN)};
-Program f12Prog;
+static const Instr f12Proc0[] = {LOAD(0), opImm(Op::GT_U, 4), opImm(Op::MUL, 5), bare(Op::RETURN)};
+static Program f12Prog;
 
 // ---- Fixtures 13-16: unary ops, one procedure per op.
-const Instr f13Neg[] = {LOAD(0), bare(Op::NEG), bare(Op::RETURN)};       // arg 5 -> 0xFFFFFFFB
-Program f13Prog;
-const Instr f14Not[] = {LOAD(0), bare(Op::NOT), bare(Op::RETURN)};       // arg 5 -> 0xFFFFFFFA
-Program f14Prog;
-const Instr f15Clz[] = {LOAD(0), bare(Op::CLZ), bare(Op::RETURN)};       // arg 1 -> 31, arg 0 -> 32
-Program f15Prog;
-const Instr f16Revbits[] = {LOAD(0), bare(Op::REVBITS), bare(Op::RETURN)}; // arg 1 -> 0x80000000
-Program f16Prog;
+static const Instr f13Neg[] = {LOAD(0), bare(Op::NEG), bare(Op::RETURN)};       // arg 5 -> 0xFFFFFFFB
+static Program f13Prog;
+static const Instr f14Not[] = {LOAD(0), bare(Op::NOT), bare(Op::RETURN)};       // arg 5 -> 0xFFFFFFFA
+static Program f14Prog;
+static const Instr f15Clz[] = {LOAD(0), bare(Op::CLZ), bare(Op::RETURN)};       // arg 1 -> 31, arg 0 -> 32
+static Program f15Prog;
+static const Instr f16Revbits[] = {LOAD(0), bare(Op::REVBITS), bare(Op::RETURN)}; // arg 1 -> 0x80000000
+static Program f16Prog;
 
 // ---- Fixture 17: PEEK_PEEK two-op-in-place. 10 & 12 = 8.
-const Instr f17Proc0[] = {
+static const Instr f17Proc0[] = {
     CONST(12), PUSH(),                 // k=0 = 12
     CONST(10),                          // acc = 10 (pending)
     opStack(Op::AND, Combo::PEEK_PEEK), // k0 := 10 & 12 = 8; acc poisoned
     POP(), bare(Op::RETURN),
 };
-Program f17Prog;
+static Program f17Prog;
 
 // ---- Fixture 18: branch-range guard forced into the long (invert-and-
 // branch) form — case 0's own body is padded past the 240-byte safe span,
 // so the dispatch guard itself can't be a bare short-form conditional
 // branch. arg <= 100 -> 1 (via the long form), arg > 100 -> 2 (normal).
-const Instr f18Proc0[] = {
+static const Instr f18Proc0[] = {
     LOAD(0), opImm(Op::GT_U, 100), brTable(2),
         bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT),
         bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT),
@@ -184,7 +181,7 @@ const Instr f18Proc0[] = {
         CONST(2), bare(Op::BLOCK_END),   // case 1 (n > 100) — normal
     bare(Op::RETURN),
 };
-Program f18Prog;
+static Program f18Prog;
 
 // ---- Fixture 19: regression for emitAddSubRsub with accShape and the
 // IMM_ACC operand both compile-time immediates (CONST directly followed by
@@ -193,8 +190,8 @@ Program f18Prog;
 // then the second immediate into that same register clobbers the first
 // value, silently computing `k op k` instead of `accShape op k`.
 // expect 5 + 1000 = 1005.
-const Instr f19Proc0[] = {CONST(5), opImm(Op::ADD, 1000), bare(Op::RETURN)};
-Program f19Prog;
+static const Instr f19Proc0[] = {CONST(5), opImm(Op::ADD, 1000), bare(Op::RETURN)};
+static Program f19Prog;
 
 // ---- Fixture 20: the same aliasing bug class, but the operand register
 // itself happens to be SCRATCH_REG, which happens for real whenever an
@@ -204,7 +201,7 @@ Program f19Prog;
 // where slot 0 gets evicted onto the real stack, so `opReg(ADD, 0)` must
 // reload it through SCRATCH_REG right after CONST(100) leaves acc pending.
 // expect 100 + argIn.
-const Instr f20Proc0[] = {
+static const Instr f20Proc0[] = {
     CONST(2), PUSH(), // slot1=2, tos=2
     CONST(3), PUSH(), // slot2=3, tos=3
     CONST(4), PUSH(), // slot3=4, tos=4
@@ -213,7 +210,7 @@ const Instr f20Proc0[] = {
     opReg(Op::ADD, 0),
     bare(Op::RETURN),
 };
-Program f20Prog;
+static Program f20Prog;
 
 // ---- Fixture 21: regression for armv6.h's isCondBranch, which excluded
 // Condition::LE (0b1101) — this codebase's own largest valid condition —
@@ -225,7 +222,7 @@ Program f20Prog;
 // procedure: an if/else guarded by LE_S, followed by a countdown loop
 // whose exit condition is GT_S's inverse. expect (arg<=5 ? 100 : 200) + 0
 // (the loop always counts down to 0).
-const Instr f21Proc0[] = {
+static const Instr f21Proc0[] = {
     LOAD(0), opImm(Op::LE_S, 5), brTable(2),      // if/else guarded directly by LE_S
         CONST(100), bare(Op::BLOCK_END),
         CONST(200), bare(Op::BLOCK_END),
@@ -239,7 +236,7 @@ const Instr f21Proc0[] = {
     LOAD(1), opReg(Op::ADD, 2),                     // branch result + counter(now 0)
     bare(Op::RETURN),
 };
-Program f21Prog;
+static Program f21Prog;
 
 // ---- Fixture 22: regression for the accState-merge-boundary bug —
 // emitComparison never materializes its 0/1 result into any register
@@ -251,7 +248,7 @@ Program f21Prog;
 // sentinel (77, never 0/1), and each case's own probe should overwrite it
 // with the comparison's real result instead. expect 0 for arg < 0x80
 // (case 0), 1 for arg >= 0x80 (case 1).
-const Instr f22Proc0[] = {
+static const Instr f22Proc0[] = {
     CONST(77), PUSH(),                      // slot1 = 77 (stale sentinel)
     LOAD(0), opImm(Op::GE_U, 0x80), brTable(2),
         STORE(1), bare(Op::BLOCK_END),      // case 0 (false): probe
@@ -259,13 +256,13 @@ const Instr f22Proc0[] = {
     LOAD(1),
     bare(Op::RETURN),
 };
-Program f22Prog;
+static Program f22Prog;
 
 // ---- Fixture 23: the same bug's LOOP-body half — the fused condition
 // closing LOOP's own condition sub-block has the identical gap. x = 7 (not
 // 0/1) is forced to 0 right inside the body instead of decremented
 // normally, so the loop runs its body exactly once. expect 1.
-const Instr f23Proc0[] = {
+static const Instr f23Proc0[] = {
     CONST(7), PUSH(),                        // slot0 = 7 (stale sentinel)
     CONST(0), PUSH(),                        // slot1 = probe target
     bare(Op::LOOP),
@@ -276,15 +273,15 @@ const Instr f23Proc0[] = {
     LOAD(1),
     bare(Op::RETURN),
 };
-Program f23Prog;
+static Program f23Prog;
 
 // ---- Fixture 24: literal pooling, both routes at once. CONST's own
 // hard-to-synthesize value pools, and so does the ADD's immediate operand
 // (which reaches the pool through Combo::IMM_ACC rather than CONST), so
 // this executes two PC-relative loads at different alignment parities.
 // expect 0x12345678 + 0x11111111.
-const Instr f24Proc0[] = {CONST(0x12345678), opImm(Op::ADD, 0x11111111), bare(Op::RETURN)};
-Program f24Prog;
+static const Instr f24Proc0[] = {CONST(0x12345678), opImm(Op::ADD, 0x11111111), bare(Op::RETURN)};
+static Program f24Prog;
 
 // ---- Fixture 25: a pooled load whose pool is flushed mid-procedure,
 // with the flush's branch-around actually executed. BR_TABLE N>2 forces
@@ -293,7 +290,7 @@ Program f24Prog;
 // has to jump over it to reach the dispatch. The pooled value is read
 // back afterwards from a local, proving both the load and the jump-around
 // worked. expect 0xDEADBEEF.
-const Instr f25Proc0[] = {
+static const Instr f25Proc0[] = {
     CONST(0xDEADBEEF), PUSH(), // pooled — the chunk is open across the BR_TABLE
     CONST(1), brTable(3),       // forces the flush, mid-code, before the table
         CONST(100), bare(Op::BLOCK_END),
@@ -302,7 +299,7 @@ const Instr f25Proc0[] = {
     LOAD(0),
     bare(Op::RETURN),
 };
-Program f25Prog;
+static Program f25Prog;
 
 // ---- Fixture 26: a pooled load in a procedure that does *not* start at
 // the arena base. proc0 compiles to an odd number of halfwords (38 bytes,
@@ -312,9 +309,9 @@ Program f25Prog;
 // translation time, would then read 2 bytes away from its own pool word.
 // This is the fixture that actually fails if that rounding is dropped.
 // 5 ^ 0x0F0F0F0F = 0x0F0F0F0A, + 1 = 0x0F0F0F0B.
-const Instr f26Proc0[] = {CONST(5), call(1), opImm(Op::ADD, 1), bare(Op::RETURN)};
-const Instr f26Proc1[] = {LOAD(0), opImm(Op::XOR, 0x0F0F0F0F), bare(Op::RETURN)};
-Program f26Prog;
+static const Instr f26Proc0[] = {CONST(5), call(1), opImm(Op::ADD, 1), bare(Op::RETURN)};
+static const Instr f26Proc1[] = {LOAD(0), opImm(Op::XOR, 0x0F0F0F0F), bare(Op::RETURN)};
+static Program f26Prog;
 
 // ---- Fixture 27: a non-leaf procedure (proc1, argCount=5) with an
 // out-of-window argument (k=0, argCount > WINDOW_SIZE(4)) sitting below its
@@ -323,7 +320,7 @@ Program f26Prog;
 // proc1's own nested call returns, exercising spillOffset's savesLR shift
 // for a live read, not just the reclaim at RETURN. expect 1501:
 // proc2(1) = 1001, + arg4(500) = 1501.
-const Instr f27Proc0[] = {
+static const Instr f27Proc0[] = {
     CONST(1), PUSH(),  // arg0 for proc1 -- k=0, proc1's out-of-window arg
     CONST(2), PUSH(),  // arg1 -- k=1
     CONST(3), PUSH(),  // arg2 -- k=2
@@ -332,14 +329,14 @@ const Instr f27Proc0[] = {
     call(1),
     bare(Op::RETURN),
 };
-const Instr f27Proc1[] = {
+static const Instr f27Proc1[] = {
     LOAD(0),              // acc = arg0 (k=0, out-of-window)
     call(2),               // proc2(arg0) -- makes proc1 non-leaf (savesLR)
     opReg(Op::ADD, 4),       // acc += arg4 (k=4, still in-window)
     bare(Op::RETURN),
 };
-const Instr f27Proc2[] = {LOAD(0), opImm(Op::ADD, 1000), bare(Op::RETURN)};
-Program f27Prog;
+static const Instr f27Proc2[] = {LOAD(0), opImm(Op::ADD, 1000), bare(Op::RETURN)};
+static Program f27Prog;
 
 // Every original fixture's own compiled output measures well under 110
 // bytes — fixture 18 is a deliberate exception (it pads its own source
@@ -355,9 +352,9 @@ Program f27Prog;
 // (putByte, compiler/src/encode_instr.cpp), which is what would actually
 // catch it on a host build; the QEMU build's own -DNDEBUG strips that, so
 // keep this margin real rather than tight.
-constexpr uint32_t SCRATCH_CAPACITY = 3072;
-uint8_t scratch[SCRATCH_CAPACITY];
-uint32_t scratchUsed = 0;
+static constexpr uint32_t SCRATCH_CAPACITY = 3072;
+static uint8_t scratch[SCRATCH_CAPACITY];
+static uint32_t scratchUsed = 0;
 
 // max_call_depth/total_depth are both 0 for every fixture here: none of
 // them ever reach enterProgram through a path that actually checks them
@@ -365,7 +362,7 @@ uint32_t scratchUsed = 0;
 // scenarios in main.cpp are for, with their own hand-derived, real
 // values) — plain enterProgram never consults its envelope's stats at
 // all, only parses past them to find proc_count.
-Program finishProgram(const ProcSource *procs, uint32_t count)
+static Program finishProgram(const ProcSource *procs, uint32_t count)
 {
     uint8_t *slot = scratch + scratchUsed;
     uint32_t len = encodeJitProgram(0, 0, procs, count, slot, SCRATCH_CAPACITY - scratchUsed);
@@ -378,8 +375,6 @@ Program finishProgram(const ProcSource *procs, uint32_t count)
 // write out at every encodeInto() call site before this, just no longer
 // naming a destination slot (finishProgram, above, owns that now).
 #define PROC(argCount, body) ProcSource{argCount, body, sizeof(body) / sizeof(body[0])}
-
-} // namespace
 
 void initFixtures()
 {

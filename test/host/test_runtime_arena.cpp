@@ -23,10 +23,8 @@ using namespace jitc;
 // distinct non-zero value serves as the not-resident marker here.
 extern const uint32_t trampolineAddr = 0xDEADBEEFu;
 
-namespace
-{
-const uint32_t ARENA_BASE = 0x20000000;
-const uint32_t ARENA_SIZE = 512;
+static const uint32_t ARENA_BASE = 0x20000000;
+static const uint32_t ARENA_SIZE = 512;
 
 // Built by reinterpreting raw bytes exactly the way every real caller
 // does — Runtime is a trivial aggregate with a flexible array member and
@@ -65,7 +63,6 @@ public:
         assert(ok); // GCOV_EXCL_LINE — this file's own encoding setup, not the thing under test
     }
 };
-}
 
 TEST(ReserveForRoundsUpToAWholeWord)
 {

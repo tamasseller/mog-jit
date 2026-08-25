@@ -11,10 +11,7 @@
 
 using namespace jitc;
 
-namespace
-{
-
-bool sameInstr(const Instr &a, const Instr &b)
+static bool sameInstr(const Instr &a, const Instr &b)
 {
     if(a.op != b.op || a.combo != b.combo)
     {
@@ -35,7 +32,7 @@ bool sameInstr(const Instr &a, const Instr &b)
     return true;
 }
 
-const Instr kCases[] = {
+static const Instr kCases[] = {
     opReg(Op::ADD, 3), opRegWriteback(Op::SUB, 1), opStack(Op::MUL, Combo::PEEK_PEEK),
     opStack(Op::AND, Combo::POP_ACC), opImm(Op::XOR, 42),
     opReg(Op::EQ, 2), opStack(Op::LT_S, Combo::POP_ACC), opImm(Op::EQ, 0), opImm(Op::GE_U, 100),
@@ -44,9 +41,7 @@ const Instr kCases[] = {
     call(3), bare(Op::RETURN), trapInstr(0), trapInstr(7),
     PUSH(), POP(), LOAD(4), STORE(9), CONST(3), CONST(12345), CONST(-1),
 };
-constexpr uint32_t kCaseCount = sizeof(kCases) / sizeof(kCases[0]);
-
-} // namespace
+static constexpr uint32_t kCaseCount = sizeof(kCases) / sizeof(kCases[0]);
 
 TEST(DecodeInstrRoundTripsEveryShape)
 {
@@ -197,17 +192,14 @@ TEST(EncodeJitProgramPrependsMaxCallDepthAndTotalDepth)
 
 // ── The decode table against isa-core.md §5.2 itself ────────────────────
 
-namespace
-{
-
 // §5.2's own orderings, transcribed straight from the spec rather than
 // from decode_instr.cpp, so a typo in that file's table can't hide by
 // agreeing with itself.
-const Op SPEC_ARITH[10] = {Op::ADD, Op::SUB, Op::RSUB, Op::MUL, Op::AND, Op::OR, Op::XOR, Op::SHL, Op::SHR, Op::ASR};
-const Combo SPEC_ARITH_MODE[5] = {Combo::REG_ACC, Combo::REG_REG, Combo::PEEK_PEEK, Combo::POP_ACC, Combo::IMM_ACC};
-const Op SPEC_CMP[10] = {Op::EQ, Op::NE, Op::LT_S, Op::LE_S, Op::GT_S, Op::GE_S, Op::LT_U, Op::LE_U, Op::GT_U, Op::GE_U};
-const Combo SPEC_CMP_MODE[4] = {Combo::REG_ACC, Combo::POP_ACC, Combo::IMM_ACC, Combo::IMM_ACC};
-const Op SPEC_MISC[18] = {
+static const Op SPEC_ARITH[10] = {Op::ADD, Op::SUB, Op::RSUB, Op::MUL, Op::AND, Op::OR, Op::XOR, Op::SHL, Op::SHR, Op::ASR};
+static const Combo SPEC_ARITH_MODE[5] = {Combo::REG_ACC, Combo::REG_REG, Combo::PEEK_PEEK, Combo::POP_ACC, Combo::IMM_ACC};
+static const Op SPEC_CMP[10] = {Op::EQ, Op::NE, Op::LT_S, Op::LE_S, Op::GT_S, Op::GE_S, Op::LT_U, Op::LE_U, Op::GT_U, Op::GE_U};
+static const Combo SPEC_CMP_MODE[4] = {Combo::REG_ACC, Combo::POP_ACC, Combo::IMM_ACC, Combo::IMM_ACC};
+static const Op SPEC_MISC[18] = {
     Op::NEG, Op::NOT, Op::CLZ, Op::REVBITS,               // 90-93
     Op::BLOCK_END, Op::LOOP, Op::BR_TABLE, Op::BR_TABLE,  // 94-97
     Op::BR_TABLE, Op::CALL, Op::RETURN, Op::TRAP,         // 98-101
@@ -215,7 +207,7 @@ const Op SPEC_MISC[18] = {
     Op::STORE, Op::CONST,                                  // 106-107
 };
 // Which assigned opcodes carry a trailing LEB128 (§5.4).
-bool specHasTrailingOperand(uint32_t code)
+static bool specHasTrailingOperand(uint32_t code)
 {
     if(code <= 49)
     {
@@ -228,8 +220,6 @@ bool specHasTrailingOperand(uint32_t code)
     }
     return code == 98 || code == 99 || code == 102 || code == 105 || code == 106 || code == 107;
 }
-
-} // namespace
 
 TEST(DecodeTableAgreesWithTheSpecsOwnFormulas)
 {

@@ -5,9 +5,6 @@
 namespace jitc
 {
 
-namespace
-{
-
 // How an instruction's single auxiliary value is obtained. isa-core.md
 // §5.2 gives every core form at most one, and only these four shapes
 // occur across all 124 assigned codes.
@@ -38,12 +35,12 @@ struct Entry
     uint8_t shape; // (Combo << 2) | AuxKind
 };
 
-constexpr uint8_t shapeOf(Combo combo, AuxKind aux)
+static constexpr uint8_t shapeOf(Combo combo, AuxKind aux)
 {
     return (uint8_t)(((uint8_t)combo << 2) | (uint8_t)aux);
 }
 
-constexpr Entry row(Op op, Combo combo, AuxKind aux)
+static constexpr Entry row(Op op, Combo combo, AuxKind aux)
 {
     return Entry{(uint8_t)op, shapeOf(combo, aux)};
 }
@@ -104,8 +101,6 @@ constexpr uint32_t SMALL_CONST_LAST = 123;
 
 static_assert(sizeof(TABLE) / sizeof(TABLE[0]) == SMALL_CONST_BASE,
     "decode table must cover exactly opcodes 0..SMALL_CONST_BASE-1 (isa-core.md §5.2)");
-
-} // namespace
 
 uint32_t decodeLeb128(const uint8_t *bytes, uint32_t offset, uint32_t &next)
 {

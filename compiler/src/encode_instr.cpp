@@ -5,21 +5,16 @@
 namespace jitc
 {
 
-namespace
-{
-
-bool isArithOp(Op op)
+static bool isArithOp(Op op)
 {
     return op >= Op::ADD && op <= Op::ASR;
 }
 
-void putByte(uint8_t b, uint8_t *out, uint32_t &outLen, uint32_t outCapacity)
+static void putByte(uint8_t b, uint8_t *out, uint32_t &outLen, uint32_t outCapacity)
 {
     assert(outLen < outCapacity); // GCOV_EXCL_LINE — fixture-authoring bug, never a runtime condition
     out[outLen++] = b;
 }
-
-} // namespace
 
 void encodeLeb128(uint32_t n, uint8_t *out, uint32_t &outLen, uint32_t outCapacity)
 {

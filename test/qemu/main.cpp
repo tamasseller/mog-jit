@@ -68,10 +68,7 @@ TEST(HandTranscribedFixturesMatchExpectedResults)
 // whole-program static analyzer of its own to call.
 extern "C" uint8_t __bss_end; /* vectors.S/linker.ld's own symbol — the one genuinely safe floor for anything placed on the C stack */
 
-namespace
-{
-
-constexpr uint32_t GENEROUS_ARENA = 400;
+static constexpr uint32_t GENEROUS_ARENA = 400;
 // A small, non-negative margin above __bss_end — not a raw subtraction
 // from the measured sp at the call site: this fixture corpus has a real
 // .bss footprint (scratch et al.), so "sp minus some generous-looking
@@ -79,20 +76,20 @@ constexpr uint32_t GENEROUS_ARENA = 400;
 // genuinely free stack space) depending on how big that footprint is.
 // Anchoring above __bss_end instead is the one bound that's actually safe
 // regardless.
-constexpr uint32_t GENEROUS_SLACK = 512;
+static constexpr uint32_t GENEROUS_SLACK = 512;
 
-uint32_t currentSp()
+static uint32_t currentSp()
 {
     register uint32_t sp asm("sp");
     return sp;
 }
 
-uint32_t stackLimitAboveBss()
+static uint32_t stackLimitAboveBss()
 {
     return (uint32_t)(uintptr_t)&__bss_end + GENEROUS_SLACK;
 }
 
-uint32_t makeProgram(uint32_t maxCallDepth, uint32_t totalDepth, const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCap)
+static uint32_t makeProgram(uint32_t maxCallDepth, uint32_t totalDepth, const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCap)
 {
     return encodeJitProgram(maxCallDepth, totalDepth, procs, procCount, out, outCap);
 }
@@ -101,13 +98,11 @@ uint32_t makeProgram(uint32_t maxCallDepth, uint32_t totalDepth, const ProcSourc
 // the eviction scenarios below feed straight to translateProc for their
 // own pre-measurement pass, unrelated to what they later feed
 // enterProgram (makeProgram, above).
-Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8_t *bytesOut, uint32_t bytesCap)
+static Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8_t *bytesOut, uint32_t bytesCap)
 {
     uint32_t len = encodeBody(body, count, bytesOut, bytesCap);
     return Proc{argCount, bytesOut, len};
 }
-
-} // namespace
 
 TEST(OnStackGenerousSucceeds)
 {
@@ -194,18 +189,13 @@ TEST(OnStackRejectsBeforeTouchingAnything)
 // and later needed again (the same flash blob must reproduce the same
 // layout, or a saved resume offset would no longer point at the right
 // place).
-namespace
-{
-
-uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint32_t *calleeArgCounts, uint32_t calleeCount)
+static uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint32_t *calleeArgCounts, uint32_t calleeCount)
 {
     static uint16_t scratch[128];
     TranslateResult r = translateProc(proc, procIdx, calleeArgCounts, calleeCount, scratch, 128);
     assert(!r.overflowed); // GCOV_EXCL_LINE — the scratch buffer above is already generous for this test corpus
     return r.halfwordCount;
 }
-
-} // namespace
 
 TEST(EvictionThreeDeepCallChain)
 {

@@ -51,9 +51,6 @@ bool needsLRSave(const Proc &proc)
     return false;
 }
 
-namespace
-{
-
 // translateBody's own stack frame (160 bytes, measured via -fstack-usage
 // at -Os), plus the single most expensive non-recursive call chain any one
 // open-LOOP/BR_TABLE level might make on its way back out —
@@ -65,7 +62,7 @@ namespace
 // stackFloor (below), so the check fires with this much margin still
 // intact rather than exactly at the edge — nesting depth itself is never
 // counted or capped.
-constexpr uint32_t TRANSLATE_BODY_STACK_MARGIN = 512;
+static constexpr uint32_t TRANSLATE_BODY_STACK_MARGIN = 512;
 
 // Slot k's window register a peek at the instruction starting at byte
 // offset afterPc resolves to, if that instruction is a STORE targeting a
@@ -80,7 +77,7 @@ struct FoldResult
     uint32_t afterNext;
 };
 
-FoldResult peekStoreFold(const uint8_t *bytes, uint32_t bytesLen, uint32_t afterPc, uint32_t tos)
+static FoldResult peekStoreFold(const uint8_t *bytes, uint32_t bytesLen, uint32_t afterPc, uint32_t tos)
 {
     if(afterPc >= bytesLen)
     {
@@ -98,7 +95,7 @@ FoldResult peekStoreFold(const uint8_t *bytes, uint32_t bytesLen, uint32_t after
 // every Instr's target field is meaningful, only for these ops/combos
 // (instr.h's own header has why the field is always present regardless).
 // Needed by the last-argument-fold reference scan below.
-bool hasTargetField(const Instr &i)
+static bool hasTargetField(const Instr &i)
 {
     return i.op == Op::LOAD || i.op == Op::STORE || i.combo == Combo::REG_ACC || i.combo == Combo::REG_REG;
 }
@@ -138,17 +135,17 @@ struct Ctx
 };
 
 // Uoff<2,8>'s own exact ceiling: a multiple of 4, below 1024.
-constexpr uint32_t LITERAL_POOL_MAX_REACH = 1020;
+static constexpr uint32_t LITERAL_POOL_MAX_REACH = 1020;
 // The chunk's bytecode-offset tags are 8 bits.
-constexpr uint32_t LITERAL_POOL_MAX_TAG = 0xff;
+static constexpr uint32_t LITERAL_POOL_MAX_TAG = 0xff;
 // Headroom the reach check keeps in hand, since it runs *before* an
 // instruction whose own emission then extends the distance to the pool.
 // Must exceed the most any single instruction or block close can emit —
 // blocks.cpp prices CALL at 64 and this file's own stack-margin comment
 // above budgets closeBlockEnd at 80.
-constexpr uint32_t LITERAL_POOL_REACH_MARGIN = 128;
+static constexpr uint32_t LITERAL_POOL_REACH_MARGIN = 128;
 
-uint32_t roundUpToWord(uint32_t v)
+static uint32_t roundUpToWord(uint32_t v)
 {
     return (v + 3u) & ~3u;
 }
@@ -157,7 +154,7 @@ uint32_t roundUpToWord(uint32_t v)
 // site, plus the branch-around and worst-case pad its flush will emit.
 // blocks.h's emitGuardedBranch needs this because maxSpanBytes walks
 // bytecode alone and so cannot see any of it.
-uint32_t literalPoolDebt(const Ctx &ctx)
+static uint32_t literalPoolDebt(const Ctx &ctx)
 {
     return ctx.literalChunkOpen ? 4 * ctx.pendingLiteralCount + 4 : 0;
 }
@@ -167,7 +164,7 @@ uint32_t literalPoolDebt(const Ctx &ctx)
 // neededBytes, not halfwords: every call site below already thinks in
 // bytes (blocks.h's instrMaxBytes, literalPoolDebt), so the rounding-up
 // lives here once instead of at each one.
-void ensureRoom(Ctx &ctx, uint32_t neededBytes)
+static void ensureRoom(Ctx &ctx, uint32_t neededBytes)
 {
     if(ctx.room != nullptr)
     {
@@ -179,7 +176,7 @@ void ensureRoom(Ctx &ctx, uint32_t neededBytes)
 // rather than carried through the deferral window. Must stay in lockstep
 // with the pooling call sites in translateBody below — TRAP is the one op
 // whose pooled value isn't simply its own decoded immediate.
-uint32_t pooledLiteralValue(const Instr &instr)
+static uint32_t pooledLiteralValue(const Instr &instr)
 {
     if(instr.op == Op::TRAP)
     {
@@ -199,7 +196,7 @@ uint32_t pooledLiteralValue(const Instr &instr)
 // N>2's jump table — the one other raw-halfword producer in the
 // translator, whose slots can hold anything — is kept out by the forced
 // flush before openBrTableJump.
-void flushLiteralPool(Ctx &ctx, bool endOfProcedure)
+static void flushLiteralPool(Ctx &ctx, bool endOfProcedure)
 {
     if(!ctx.literalChunkOpen)
     {
@@ -303,7 +300,7 @@ void materializeLargeImmediate(Ctx &ctx, uint32_t dstReg, uint32_t value, uint32
     ctx.pendingLiteralCount++;
 }
 
-void returnSequence(Ctx &ctx)
+static void returnSequence(Ctx &ctx)
 {
     // Unwind whatever this body spilled — nothing downstream reads r4-r7
     // again, so there's nothing to reload for, only sp to rebalance before
@@ -339,7 +336,7 @@ bool closeFrameForTerminator(Ctx &ctx, Frame &frame)
 // ctx.stackFloor — a too-deeply-nested procedure is exactly the kind of
 // thing compile_proc_real.cpp's own caller already knows how to report as
 // RESOURCE_ERROR, so there's no reason to invent a second channel.
-void translateBody(Ctx &ctx, Frame *frame)
+static void translateBody(Ctx &ctx, Frame *frame)
 {
     register uint32_t sp asm("sp");
     if(sp < TRANSLATE_BODY_STACK_MARGIN || sp - TRANSLATE_BODY_STACK_MARGIN < ctx.stackFloor)
@@ -726,8 +723,6 @@ void translateBody(Ctx &ctx, Frame *frame)
 
     assert(frame == nullptr); // GCOV_EXCL_LINE — procedure body ended with an open block; malformed program
 }
-
-} // namespace
 
 TranslateResult translateProc(
     const Proc &proc,

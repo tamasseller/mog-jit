@@ -4,18 +4,13 @@
 
 using namespace jitc;
 
-namespace
-{
-
-uint32_t lengthOf(uint32_t value)
+static uint32_t lengthOf(uint32_t value)
 {
     uint16_t buf[8];
     Emitter e(buf, 8);
     emitSynthesizeImm32(e, 0, value);
     return e.halfwordCount();
 }
-
-} // namespace
 
 TEST(synthesizeImm32Zero)
 {

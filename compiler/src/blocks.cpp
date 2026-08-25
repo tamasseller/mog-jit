@@ -27,15 +27,10 @@ uint32_t instrMaxBytes(const Instr &instr)
     return ORDINARY_MAX_BYTES;
 }
 
-namespace
-{
-
 // Thumb's real conditional-branch reach is ±252 bytes; this stays well
 // under that so maxSpanBytes's own deliberate looseness never has to be
 // exactly right, only safely conservative.
-constexpr uint32_t SAFE_COND_BRANCH_SPAN = 240;
-
-} // namespace
+static constexpr uint32_t SAFE_COND_BRANCH_SPAN = 240;
 
 SpanResult maxSpanBytes(const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount)
 {
@@ -166,9 +161,6 @@ Frame openLoop(Emitter &e, Window &window, AccState &accState)
     return frame;
 }
 
-namespace
-{
-
 /** The forward-branch bookkeeping a case frame's own close always needs —
  *  nextCaseFixup/the jump table's own next slot resolving to "wherever
  *  this case's own translated code ends," and (once the *last* case
@@ -179,7 +171,7 @@ namespace
  *  (closeBlockEnd) has to actively branch past its own sibling cases'
  *  code; a case that ends via its own RETURN/TRAP (closeCaseViaTerminator)
  *  has already left the procedure entirely by the time this runs. */
-bool resolveCaseClose(Emitter &e, Frame &frame, bool emitSkipToEnd)
+static bool resolveCaseClose(Emitter &e, Frame &frame, bool emitSkipToEnd)
 {
     frame.remaining -= 1;
     if(frame.remaining > 0 && emitSkipToEnd)
@@ -215,8 +207,6 @@ bool resolveCaseClose(Emitter &e, Frame &frame, bool emitSkipToEnd)
     }
     return false;
 }
-
-} // namespace
 
 bool closeCaseViaTerminator(Emitter &e, Window &window, AccState &accState, Frame &frame)
 {
@@ -285,18 +275,13 @@ bool closeBlockEnd(Emitter &e, Window &window, AccState &accState, Frame &frame,
 
 // ── Comparison → branch fusion ──────────────────────────────────────────
 
-namespace
-{
-
-constexpr Cond DIRECT_CONDITION[10] = {
+static constexpr Cond DIRECT_CONDITION[10] = {
     Cond::EQ, Cond::NE, Cond::LT, Cond::LE, Cond::GT, Cond::GE, Cond::LO, Cond::LS, Cond::HI, Cond::HS,
 }; // EQ, NE, LT_S, LE_S, GT_S, GE_S, LT_U, LE_U, GT_U, GE_U
 
-constexpr Cond MIRRORED_CONDITION[10] = {
+static constexpr Cond MIRRORED_CONDITION[10] = {
     Cond::EQ, Cond::NE, Cond::GT, Cond::GE, Cond::LT, Cond::LE, Cond::HI, Cond::HS, Cond::LO, Cond::LS,
 };
-
-} // namespace
 
 Cond emitComparison(Emitter &e, AccState &accState, Op op, const Shape *operand)
 {

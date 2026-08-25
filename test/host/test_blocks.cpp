@@ -16,15 +16,10 @@
 using namespace jitc;
 using Cond = ArmV6M::Condition;
 
-namespace
-{
-
-uint32_t encode(const Instr *body, uint32_t count, uint8_t *out, uint32_t cap)
+static uint32_t encode(const Instr *body, uint32_t count, uint8_t *out, uint32_t cap)
 {
     return encodeBody(body, count, out, cap);
 }
-
-} // namespace
 
 TEST(EmitGuardedBranchUsesShortFormWhenSpanFitsInRange)
 {

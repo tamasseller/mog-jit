@@ -11,12 +11,7 @@ namespace jitc
 
 using R = ArmV6M::LoReg;
 
-namespace
-{
-
-constexpr uint32_t PC = 15;
-
-} // namespace
+static constexpr uint32_t PC = 15;
 
 void emitPrologueStub(Emitter &e)
 {
@@ -42,10 +37,7 @@ uint32_t packRecord(uint32_t procIdx, uint32_t offsetPlus1)
     return (procIdx & 0xffffu) | (offsetPlus1 << 16);
 }
 
-namespace
-{
-
-uint32_t buildCallSequenceLength(uint32_t procIdx, uint32_t calleeIndex, uint32_t k)
+static uint32_t buildCallSequenceLength(uint32_t procIdx, uint32_t calleeIndex, uint32_t k)
 {
     uint32_t record = packRecord(procIdx, k + 1);
     uint32_t len = synthesizeImm32Length(record);
@@ -54,7 +46,7 @@ uint32_t buildCallSequenceLength(uint32_t procIdx, uint32_t calleeIndex, uint32_
     return len;
 }
 
-void buildCallSequenceEmit(Emitter &e, uint32_t procIdx, uint32_t calleeIndex, uint32_t k)
+static void buildCallSequenceEmit(Emitter &e, uint32_t procIdx, uint32_t calleeIndex, uint32_t k)
 {
     uint32_t record = packRecord(procIdx, k + 1);
     emitSynthesizeImm32(e, ENTRY_IDX_REG, record);
@@ -76,7 +68,7 @@ void buildCallSequenceEmit(Emitter &e, uint32_t procIdx, uint32_t calleeIndex, u
  *  on how many instructions this same sequence takes to encode K itself
  *  (the packed record's immediate). Fixed-point, not two-pass: stable in
  *  one or two iterations for any realistic procedure size. */
-uint32_t findResumeOffset(uint32_t procIdx, uint32_t calleeIndex, uint32_t preCallPc)
+static uint32_t findResumeOffset(uint32_t procIdx, uint32_t calleeIndex, uint32_t preCallPc)
 {
     uint32_t guess = 0;
     for(int i = 0; i < 5; i++)
@@ -91,8 +83,6 @@ uint32_t findResumeOffset(uint32_t procIdx, uint32_t calleeIndex, uint32_t preCa
     assert(false && "abiEmitCall: CALL resume offset failed to converge"); // GCOV_EXCL_LINE
     return guess;
 }
-
-} // namespace
 
 void abiEmitCall(Emitter &e, uint32_t procIdx, uint32_t calleeIndex)
 {

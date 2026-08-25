@@ -11,22 +11,20 @@
 
 using namespace jitc;
 
-namespace
-{
 // proc0 (argCount 0): CONST(37), call(1), RETURN
-const Instr kProc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
+static const Instr kProc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
 // proc1 (argCount 1): LOAD(0), opImm(ADD, 5), RETURN
-const Instr kProc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
-const uint32_t kArgCounts[] = {0, 1};
+static const Instr kProc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
+static const uint32_t kArgCounts[] = {0, 1};
 
 /** Encodes an Instr[] fixture into the raw wire bytes Proc::body expects. */
-Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8_t *bytesOut, uint32_t bytesCap)
+static Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8_t *bytesOut, uint32_t bytesCap)
 {
     uint32_t len = encodeBody(body, count, bytesOut, bytesCap);
     return Proc{argCount, bytesOut, len};
 }
 
-uint32_t literalSiteCount(const uint16_t *buf, uint32_t halfwords)
+static uint32_t literalSiteCount(const uint16_t *buf, uint32_t halfwords)
 {
     uint32_t n = 0;
     for(uint32_t i = 0; i < halfwords; i++)
@@ -45,7 +43,7 @@ uint32_t literalSiteCount(const uint16_t *buf, uint32_t halfwords)
  *  pc being the site's own address + 4. Returns false if it lands outside
  *  the emitted output, which is the failure this indirection exists to
  *  catch. */
-bool loadedWord(const uint16_t *buf, uint32_t halfwords, uint32_t site, uint32_t &valueOut)
+static bool loadedWord(const uint16_t *buf, uint32_t halfwords, uint32_t site, uint32_t &valueOut)
 {
     uint16_t off;
     if(!ArmV6M::getLiteralOffset(buf[site], off))
@@ -63,7 +61,7 @@ bool loadedWord(const uint16_t *buf, uint32_t halfwords, uint32_t site, uint32_t
 
 /** Index of the nth (0-based) literal load in the output, or halfwords if
  *  there aren't that many. */
-uint32_t nthLiteralSite(const uint16_t *buf, uint32_t halfwords, uint32_t n)
+static uint32_t nthLiteralSite(const uint16_t *buf, uint32_t halfwords, uint32_t n)
 {
     for(uint32_t i = 0; i < halfwords; i++)
     {
@@ -74,7 +72,6 @@ uint32_t nthLiteralSite(const uint16_t *buf, uint32_t halfwords, uint32_t n)
         }
     }
     return halfwords; // GCOV_EXCL_LINE — only when a test asks for a site that isn't there
-}
 }
 
 TEST(TranslateProc0EntryProcedure)
@@ -610,14 +607,11 @@ TEST(LastArgumentFoldEagerlyFlushesWhenBodyStartReferenceIsNotALoad)
     CHECK(r.halfwordCount == 11);
 }
 
-namespace
-{
-uint32_t currentSp()
+static uint32_t currentSp()
 {
     register uint32_t sp asm("sp");
     return sp;
 }
-} // namespace
 
 TEST(DeeplyNestedButWellFormedBlocksSucceedWithNoStackFloor)
 {

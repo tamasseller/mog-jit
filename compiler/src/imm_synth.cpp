@@ -7,9 +7,6 @@ namespace jitc
 
 using R = ArmV6M::LoReg;
 
-namespace
-{
-
 /** MSB-first byte decomposition, and the index of the first nonzero byte
  *  among bytes[0..2] (bytes[3] is never skipped) — shared by
  *  emitSynthesizeImm32 and synthesizeImm32Length so the two can never
@@ -21,7 +18,7 @@ struct Decomposed
     int start;
 };
 
-Decomposed decompose(uint32_t v)
+static Decomposed decompose(uint32_t v)
 {
     Decomposed d;
     d.bytes[0] = (uint8_t)((v >> 24) & 0xff);
@@ -35,8 +32,6 @@ Decomposed decompose(uint32_t v)
     }
     return d;
 }
-
-} // namespace
 
 void emitSynthesizeImm32(Emitter &e, uint32_t dstReg, uint32_t value)
 {

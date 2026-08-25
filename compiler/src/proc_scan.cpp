@@ -7,16 +7,13 @@
 namespace jitc
 {
 
-namespace
-{
-
 // This function's own frame is tiny (no Emitter/Window/AccState, just a
 // couple of scalars) — far less than translate_proc.cpp's own
 // TRANSLATE_BODY_STACK_MARGIN, whose figure is dominated by exactly that
 // state.
-constexpr uint32_t SCAN_STACK_MARGIN = 128;
+static constexpr uint32_t SCAN_STACK_MARGIN = 128;
 
-bool triggersLRSave(const Instr &instr)
+static bool triggersLRSave(const Instr &instr)
 {
     return instr.op == Op::CALL
         || (instr.op == Op::BR_TABLE && instr.imm > 2)
@@ -43,7 +40,7 @@ struct ScanFrame
 // *either* reason below); `foundEnd` means the reason was a genuine
 // top-level terminator, not an overflow — the two must stay separate so a
 // stack overflow can never be misreported as a clean scan.
-void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool &needsLRSave, ScanFrame *frame, uint32_t stackFloor, bool &stop, bool &foundEnd)
+static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool &needsLRSave, ScanFrame *frame, uint32_t stackFloor, bool &stop, bool &foundEnd)
 {
     register uint32_t sp asm("sp");
     if(sp < SCAN_STACK_MARGIN || sp - SCAN_STACK_MARGIN < stackFloor)
@@ -137,8 +134,6 @@ void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool &needs
     // Ran off maxBytes without finding this level's own close: foundEnd
     // stays false, so the top-level caller reports !ok.
 }
-
-} // namespace
 
 BodyScanResult scanProcBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t startOffset, uint32_t stackFloor)
 {
