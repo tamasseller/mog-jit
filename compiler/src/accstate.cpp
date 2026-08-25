@@ -20,18 +20,17 @@ void AccState::flush(Emitter &e, uint32_t dstReg)
     reg = dstReg;
 }
 
-void emitBinary(
-    Emitter &e, AccState &accState, Op op, Combo combo,
-    const Shape *operand, uint32_t dest, bool clobbersAcc)
+void AccState::emitBinary(Emitter &e, Op op, Combo combo, const Shape *operand,
+                          uint32_t dest, bool clobbersAcc)
 {
-    emitBinaryOp(e, op, combo, accState.peek(), operand, dest);
+    emitBinaryOp(e, op, combo, peek(), operand, dest);
     if(clobbersAcc)
     {
-        accState.poison();
+        poison();
     }
     else
     {
-        accState.setClean(dest);
+        setClean(dest);
     }
 }
 

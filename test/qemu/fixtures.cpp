@@ -316,6 +316,31 @@ const Instr f26Proc0[] = {CONST(5), call(1), opImm(Op::ADD, 1), bare(Op::RETURN)
 const Instr f26Proc1[] = {LOAD(0), opImm(Op::XOR, 0x0F0F0F0F), bare(Op::RETURN)};
 Program f26Prog;
 
+// ---- Fixture 27: a non-leaf procedure (proc1, argCount=5) with an
+// out-of-window argument (k=0, argCount > WINDOW_SIZE(4)) sitting below its
+// own pushed call/return record — the abiEmitReturn/returnHelperFromStack-
+// Reclaim path (savesLR && initialSpilledCount > 0). k=0 is read after
+// proc1's own nested call returns, exercising spillOffset's savesLR shift
+// for a live read, not just the reclaim at RETURN. expect 1501:
+// proc2(1) = 1001, + arg4(500) = 1501.
+const Instr f27Proc0[] = {
+    CONST(1), PUSH(),  // arg0 for proc1 -- k=0, proc1's out-of-window arg
+    CONST(2), PUSH(),  // arg1 -- k=1
+    CONST(3), PUSH(),  // arg2 -- k=2
+    CONST(4), PUSH(),  // arg3 -- k=3
+    CONST(500),         // arg4 -- last, via acc
+    call(1),
+    bare(Op::RETURN),
+};
+const Instr f27Proc1[] = {
+    LOAD(0),              // acc = arg0 (k=0, out-of-window)
+    call(2),               // proc2(arg0) -- makes proc1 non-leaf (savesLR)
+    opReg(Op::ADD, 4),       // acc += arg4 (k=4, still in-window)
+    bare(Op::RETURN),
+};
+const Instr f27Proc2[] = {LOAD(0), opImm(Op::ADD, 1000), bare(Op::RETURN)};
+Program f27Prog;
+
 // Every original fixture's own compiled output measures well under 110
 // bytes — fixture 18 is a deliberate exception (it pads its own source
 // body specifically to force the long-branch form). This is a bump
@@ -462,6 +487,10 @@ void initFixtures()
         ProcSource procs[] = {PROC(0, f26Proc0), PROC(1, f26Proc1)};
         f26Prog = finishProgram(procs, 2);
     }
+    {
+        ProcSource procs[] = {PROC(0, f27Proc0), PROC(5, f27Proc1), PROC(1, f27Proc2)};
+        f27Prog = finishProgram(procs, 3);
+    }
 }
 
 Fixture fixtures[] = {
@@ -523,5 +552,7 @@ Fixture fixtures[] = {
     {"pooled literal: CONST and IMM_ACC operand", &f24Prog, false, 0x23456789u},
     {"pooled literal: mid-code flush with executed jump-around", &f25Prog, false, 0xDEADBEEFu},
     {"pooled literal in a procedure past an odd-sized one", &f26Prog, false, 0x0F0F0F0Bu},
+
+    {"savesLR return with out-of-window args below the pushed record", &f27Prog, false, 1501},
 };
 const uint32_t fixtureCount = sizeof(fixtures) / sizeof(fixtures[0]);

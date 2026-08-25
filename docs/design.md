@@ -482,20 +482,22 @@ LDR  r3, [r3, #4]           ; returnHelperFromLr (index 1)
 BX   r3
 ```
 
-Three shared entry points feed one tail (`jit-armv6m/runtime/runtime.S`), chosen
+Four shared entry points feed one tail (`jit-armv6m/runtime/runtime.S`), chosen
 per procedure by what that procedure's own prologue did:
 
 | Helper (vector index) | When | What it does |
 |---|---|---|
 | `returnHelperFromLr` (1) | leaf procedure | `MOV r1, lr`: the record has sat untouched since entry |
 | `returnHelperFromStack` (2) | ordinary non-leaf | `POP {r1}`: retrieve what its own prologue pushed |
-| `returnHelperTail` (3) | non-leaf with out-of-window arguments below the pushed record | reached directly, after the call site does its own `POP {r1}` and `sp` adjustment inline |
+| `returnHelperFromStackReclaim` (7) | non-leaf with out-of-window arguments below the pushed record | `POP {r1}` then `ADD sp, sp, r2`: same retrieval, plus reclaiming what `discardWindow` deliberately left behind |
+| `returnHelperTail` (3) | (shared unpack+dispatch) | reached by fallthrough from index 2/7, or by a plain branch from index 1 |
 
-The third case exists because reclaiming out-of-window arguments sitting
-below the pushed record needs a procedure-specific byte count no shared,
-parameterless routine can know, so that one case does the fetch and the
-`sp` increment inline and jumps straight into the bare tail
-(`abiEmitReturn`, `compiler/src/abi_strategy.cpp`).
+The fourth variant exists because reclaiming out-of-window arguments
+sitting below the pushed record needs a procedure-specific byte count no
+parameterless routine can know on its own — but the count itself is the
+*only* thing that varies, so the call site (`abiEmitReturn`,
+`compiler/src/abi_strategy.cpp`) loads it into `r2` and lets the helper do
+the retrieval and the reclaim together, rather than inlining either.
 
 The shared tail unpacks and dispatches:
 
@@ -1012,7 +1014,8 @@ needs nothing beyond the index:
 | 1 | `returnHelperFromLr` |
 | 2 | `returnHelperFromStack` |
 | 3 | `returnHelperTail` |
-| 4+ | reserved: `CLZ`, `REVBITS`, extension calls |
+| 4-6 | reserved: `CLZ`, `REVBITS`, extension calls |
+| 7 | `returnHelperFromStackReclaim` |
 
 The reserved slots are not padding. A small, stable table of host-provided
 functions the bytecode invokes by index is the on-device form of the same

@@ -709,7 +709,7 @@ void translateBody(Ctx &ctx, Frame *frame)
                 }
             }
 
-            emitBinary(ctx.e, ctx.accState, instr.op, combo, hasOperand ? &operandStorage : nullptr, dest, clobbersAcc);
+            ctx.accState.emitBinary(ctx.e, instr.op, combo, hasOperand ? &operandStorage : nullptr, dest, clobbersAcc);
             if(storeBackOffset >= 0)
             {
                 ctx.e.emit(ArmV6M::strSp(R(dest), ArmV6M::Uoff<2, 8>((uint16_t)storeBackOffset)));

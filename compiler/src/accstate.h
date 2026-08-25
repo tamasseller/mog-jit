@@ -64,6 +64,12 @@ public:
         kind = Kind::Poisoned;
     }
 
+    // Emit one arithmetic binary op and update this state to match. operand is
+    // nullptr for PEEK_PEEK (its right-hand operand is dest itself).
+    // clobbersAcc is true exactly for REG_REG/PEEK_PEEK.
+    void emitBinary(Emitter &e, Op op, Combo combo, const Shape *operand,
+                    uint32_t dest, bool clobbersAcc);
+
 private:
     enum class Kind : uint8_t
     {
@@ -75,13 +81,6 @@ private:
     Shape shape{};
     uint32_t reg;
 };
-
-// Emit one arithmetic binary op and update accState to match. operand is
-// nullptr for PEEK_PEEK (its right-hand operand is dest itself).
-// clobbersAcc is true exactly for REG_REG/PEEK_PEEK.
-void emitBinary(
-    Emitter &e, AccState &accState, Op op, Combo combo,
-    const Shape *operand, uint32_t dest, bool clobbersAcc);
 
 } // namespace jitc
 

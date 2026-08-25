@@ -103,19 +103,25 @@ void abiEmitCall(Emitter &e, uint32_t procIdx, uint32_t calleeIndex)
 
 void abiEmitReturn(Emitter &e, bool savesLR, uint32_t initialSpilledCount)
 {
-    // The rare case: neither shared returnHelper variant can both retrieve
-    // the record *and* reclaim this procedure's own out-of-window
-    // arguments below it (a per-procedure byte count no parameterless
-    // routine can know) — do both inline, then jump straight into the
-    // bare shared tail (index 3), skipping both fetch variants.
+    // The rare case: this procedure's own out-of-window arguments sit
+    // below the pushed record, so the record's own retriever needs an
+    // extra reclaim no parameterless routine can size on its own. Load
+    // that one per-procedure fact — the byte count — into r2 and dispatch
+    // to the shared helper that expects it there, instead of the bare
+    // fetch variant.
     if(savesLR && initialSpilledCount > 0)
     {
-        ArmV6M::LoRegs entryIdxOnly{0};
-        entryIdxOnly.add(R((uint16_t)ENTRY_IDX_REG));
-        e.emit(ArmV6M::pop(entryIdxOnly));
-        e.emit(ArmV6M::incrSp(ArmV6M::Uoff<2, 7>((uint16_t)(4 * initialSpilledCount))));
+        uint32_t bytes = 4 * initialSpilledCount;
+        if(fitsImm8((int32_t)bytes))
+        {
+            e.emit(ArmV6M::movs(R(ENTRY_OFFSET_REG), ArmV6M::Imm<8>((uint16_t)bytes)));
+        }
+        else
+        {
+            emitSynthesizeImm32(e, ENTRY_OFFSET_REG, bytes);
+        }
         e.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
-        e.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(12))); // returnHelperTail, index 3
+        e.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(28))); // returnHelperFromStackReclaim, index 7
         e.emit(ArmV6M::bx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
         return;
     }

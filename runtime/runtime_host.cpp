@@ -109,6 +109,7 @@ extern const uint16_t returnHelperTail[];        /* runtime.S */
 extern const uint16_t clzHelper[];               /* runtime.S */
 extern const uint16_t revbitsHelper[];           /* runtime.S */
 extern const uint16_t brTableJumpHelper[];       /* runtime.S */
+extern const uint16_t returnHelperFromStackReclaim[]; /* runtime.S */
 extern uint64_t enterDispatch(uint32_t argIn, Runtime *runtime); /* runtime.S */
 }
 
@@ -123,13 +124,14 @@ extern const uint32_t trampolineAddr = (uint32_t)(uintptr_t)translatorTrampoline
 /* r10 (helper vector base) — fixed for the whole program's lifetime, so
  * link-time const rather than something enterProgram fills in on every
  * call. No `| 1u` needed: .thumb_func (runtime.S) already bakes the Thumb
- * bit into each of these seven symbols' own value. Index 3
- * (returnHelperTail) is reached directly only by the rare non-leaf-with-
- * deep-args case, which does its own record fetch/reclaim inline and skips
- * both fetch variants. Indices 4-6 (clzHelper/revbitsHelper/
- * brTableJumpHelper) are the reserved software-helper slots — see
- * runtime.S's own header above those three symbols. */
-extern const uint32_t helperVec[7] = {
+ * bit into each of these eight symbols' own value. Every RETURN/TRAP
+ * dispatches to exactly one of indices 1/2/3/7 depending on savesLR and
+ * initialSpilledCount (abi_strategy.cpp's abiEmitReturn) — index 3
+ * (returnHelperTail) is also reached directly, by a plain branch, from
+ * indices 1 and 7. Indices 4-6 (clzHelper/revbitsHelper/brTableJumpHelper)
+ * are the reserved software-helper slots — see runtime.S's own header above
+ * those three symbols. */
+extern const uint32_t helperVec[8] = {
     (uint32_t)(uintptr_t)callHelper,
     (uint32_t)(uintptr_t)returnHelperFromLr,
     (uint32_t)(uintptr_t)returnHelperFromStack,
@@ -137,6 +139,7 @@ extern const uint32_t helperVec[7] = {
     (uint32_t)(uintptr_t)clzHelper,
     (uint32_t)(uintptr_t)revbitsHelper,
     (uint32_t)(uintptr_t)brTableJumpHelper,
+    (uint32_t)(uintptr_t)returnHelperFromStackReclaim,
 };
 
 /* Layout-agnostic core: every region (runtime itself, and the code arena it

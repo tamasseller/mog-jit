@@ -33,19 +33,17 @@ callHelper:
     movs  r2, #1                 @ offset+1 = 1, hardwired — a fresh call never resumes mid-procedure
     bx    r3
 
-// Three entry points feeding one shared tail: which one a procedure's own
+// Four entry points feeding one shared tail: which one a procedure's own
 // RETURN/TRAP dispatches to depends on whether that procedure's own
 // prologue pushed {lr}, and — if it did — whether it also has any original
 // out-of-window arguments (argCount > WINDOW_SIZE) sitting below that
-// pushed word. returnHelperTail is reachable both as a fallthrough from
-// returnHelperFromStack (the common non-leaf case) and directly, by name,
-// from that rare third case: reclaiming the out-of-window arguments below
-// the record needs a procedure-specific byte count no shared, parameterless
-// routine can know, so that case does its own pop{r1}/incrSp inline and
-// jumps here directly, skipping both fetch variants.
+// pushed word, needing an extra reclaim no parameterless routine can size
+// on its own. That size (in bytes) travels in r2, loaded by the call site
+// (abi_strategy.cpp's abiEmitReturn) only on the one variant that needs it.
 //
 // in: nothing (returnHelperFromLr) / the caller's own record already
-// pushed by this procedure's own prologue (returnHelperFromStack) / r1
+// pushed by this procedure's own prologue (returnHelperFromStack), same
+// plus r2 = the reclaim byte count (returnHelperFromStackReclaim) / r1
 // already holding the record (returnHelperTail, reached directly)
 // out: never returns — tail-jumps into the caller's resident code or the translator
 .thumb_func
@@ -69,6 +67,13 @@ returnHelperTail:
     add   r1, r1, r8                  @ r1 = slotAddr
     ldr   r3, [r1, #0]                 @ r3 = codePtr
     bx    r3
+
+.thumb_func
+.global returnHelperFromStackReclaim
+returnHelperFromStackReclaim:  @ non-leaf, with out-of-window arguments below the pushed record
+    pop   {r1}                @ r1 = packed record
+    add   sp, sp, r2          @ reclaim what discardWindow deliberately left for us — r2 set by the call site
+    b     returnHelperTail
 
 // The reserved software-helper slots: CLZ/REVBITS have no ARMv6-M native
 // form at all, and BR_TABLE(N>2) needs a genuine multi-way dispatch no
@@ -214,10 +219,10 @@ translatorTrampoline:
 // Only two inputs: runtime (r9 from here on) is the whole story —
 // dispatchBase (r8) is runtime + RUNTIME_DISPATCH_TABLE_OFFSET, and there's
 // no separate control-stack base to pass at all. r10 (helper vector base)
-// isn't a parameter either: helperVec (runtime_host.cpp, 7 entries:
+// isn't a parameter either: helperVec (runtime_host.cpp, 8 entries:
 // callHelper, returnHelperFromLr, returnHelperFromStack, returnHelperTail,
-// clzHelper, revbitsHelper, brTableJumpHelper) is link-time const, so it's
-// loaded here by name.
+// clzHelper, revbitsHelper, brTableJumpHelper, returnHelperFromStackReclaim)
+// is link-time const, so it's loaded here by name.
 //
 // Result comes back as a uint64_t (r0 = value, r1 = trapped), not a 2-word
 // struct: AAPCS32 returns composites over 4 bytes through a hidden pointer,

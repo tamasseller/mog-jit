@@ -39,15 +39,14 @@ uint32_t packRecord(uint32_t procIdx, uint32_t offsetPlus1);
 void abiEmitCall(Emitter &e, uint32_t procIdx, uint32_t calleeIndex);
 
 /** savesLR and initialSpilledCount (= max(0, argCount - WINDOW_SIZE))
- *  together select which of runtime.S's three dispatch targets this
+ *  together select which of runtime.S's four dispatch targets this
  *  procedure's own RETURN/TRAP reaches: returnHelperFromLr (the record is
  *  still in lr, untouched since entry), returnHelperFromStack (pop it —
- *  this procedure's own prologue pushed it), or — the rare case, savesLR
- *  *and* initialSpilledCount > 0 — an inline pop+incrSp here (neither
- *  shared variant can both retrieve the record *and* reclaim this
- *  procedure's own out-of-window arguments below it, which needs a
- *  per-procedure byte count no parameterless shared routine can know)
- *  followed by a tail-jump into the bare returnHelperTail. */
+ *  this procedure's own prologue pushed it), or, only when
+ *  initialSpilledCount > 0 too, returnHelperFromStackReclaim — the same
+ *  pop, plus an `add sp, sp, r2` for the out-of-window arguments sitting
+ *  below the pushed record. r2 is loaded here with the one thing no
+ *  parameterless routine can know: this procedure's own byte count. */
 void abiEmitReturn(Emitter &e, bool savesLR, uint32_t initialSpilledCount);
 
 } // namespace jitc

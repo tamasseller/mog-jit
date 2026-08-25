@@ -105,21 +105,38 @@ TEST(abiEmitReturnOrdinaryNonLeafDispatchesToReturnHelperFromStack)
     CHECK(buf[2] == 0x4718); // BX r3
 }
 
-TEST(abiEmitReturnDeepArgsNonLeafInlinesPopAndReclaim)
+TEST(abiEmitReturnDeepArgsNonLeafDispatchesToReturnHelperFromStackReclaim)
 {
-    // The rare case: savesLR and initialSpilledCount > 0 — neither shared
-    // returnHelper variant can both retrieve the record and reclaim the
-    // original out-of-window arguments below it, so this inlines pop+
-    // incrSp itself and jumps straight into the bare returnHelperTail.
+    // The rare case: savesLR and initialSpilledCount > 0 — neither bare
+    // fetch variant can both retrieve the record and reclaim the original
+    // out-of-window arguments below it, so this loads that one
+    // per-procedure byte count into r2 and dispatches to the shared helper
+    // that expects it there (index 7), instead of returnHelperFromStack.
     uint16_t buf[8];
     Emitter e(buf, 8);
     abiEmitReturn(e, /*savesLR=*/true, /*initialSpilledCount=*/3);
-    CHECK(e.halfwordCount() == 5);
-    CHECK(buf[0] == 0xBC02); // POP {r1}
-    CHECK(buf[1] == 0xB003); // ADD sp, #12  (4 * initialSpilledCount)
-    CHECK(buf[2] == 0x4653); // MOV r3, r10
-    CHECK(buf[3] == 0x68DB); // LDR r3, [r3, #12] (returnHelperTail, index 3)
-    CHECK(buf[4] == 0x4718); // BX r3
+    CHECK(e.halfwordCount() == 4);
+    CHECK(buf[0] == 0x220C); // MOVS r2, #12  (4 * initialSpilledCount)
+    CHECK(buf[1] == 0x4653); // MOV r3, r10
+    CHECK(buf[2] == 0x69DB); // LDR r3, [r3, #28] (returnHelperFromStackReclaim, index 7)
+    CHECK(buf[3] == 0x4718); // BX r3
+}
+
+TEST(abiEmitReturnDeepArgsNonLeafSynthesizesLargeReclaimByteCount)
+{
+    // initialSpilledCount large enough that 4*initialSpilledCount doesn't
+    // fit an 8-bit immediate — falls back to full synthesis instead of
+    // silently truncating, same as abiEmitCall already does for a large
+    // calleeIndex.
+    uint16_t buf[16];
+    Emitter e(buf, 16);
+    abiEmitReturn(e, /*savesLR=*/true, /*initialSpilledCount=*/100); // 4*100 = 400 > 0xff
+    CHECK(!e.overflowed());
+    uint32_t n = e.halfwordCount();
+    CHECK(n == synthesizeImm32Length(400) + 3);
+    CHECK(buf[n - 3] == 0x4653); // MOV r3, r10
+    CHECK(buf[n - 2] == 0x69DB); // LDR r3, [r3, #28] (returnHelperFromStackReclaim, index 7)
+    CHECK(buf[n - 1] == 0x4718); // BX r3
 }
 
 TEST(abiEmitPrologueAddsPushLrOnlyWhenSavesLR)
