@@ -1,18 +1,20 @@
-/* The real compileProc — genuine bytecode-to-Thumb translation
+/* jit-armv6m/runtime — layer 3a, the landing: compileProc, reached from
+ * translatorTrampoline (runtime.S) whenever dispatch lands on an
+ * uncompiled slot. Genuine bytecode-to-Thumb translation
  * (compiler/src/translate_proc.h), reading every procedure's own body
  * pointer/argCount/needsLRSave straight out of the whole-program directory
  * Runtime::init() already built (runtime_internal.h's ProcSlot) — never a
  * fixture-supplied stand-in. Reuses runtime_internal.h's Runtime/ProcSlot
  * and runtime_host.h's ProgramResult unmodified.
  *
- * Assembler (compiler/src/assembler.h) is now the only seam between this
- * and Runtime: an attached Assembler owns arena growth/eviction/
- * compaction and final dispatch-table registration internally
+ * Assembler (compiler/src/assembler.h, layer 3b) is now the only seam
+ * between this and Runtime: an attached Assembler owns arena growth/
+ * eviction/compaction and final dispatch-table registration internally
  * (translateProc's own Assembler::finalize() call), and exits directly to
- * RESOURCE_ERROR (Assembler::fail() -> runtimeBail, below) if even
- * evicting everything resident couldn't free enough room — this file no
- * longer needs its own scratch buffer, ArenaRoom implementor, or post-hoc
- * overflow check.
+ * RESOURCE_ERROR (Assembler::fail() -> dispatch_abi.cpp's runtimeBail) if
+ * even evicting everything resident couldn't free enough room — this file
+ * no longer needs its own scratch buffer, ArenaRoom implementor, or
+ * post-hoc overflow check.
  */
 #include <stdint.h>
 #include "runtime_internal.h"
@@ -28,7 +30,7 @@ extern "C" void compileProc(uint32_t idx, Runtime *runtime)
     /* abiEmitCall needs O(1) indexing by calleeIndex; ProcSlot's own
      * 16-byte stride doesn't give it that for free, so this dense copy —
      * a VLA, explicitly budgeted into requiredStackBytes
-     * (runtime_host.cpp's CALLEE_ARG_COUNTS_BYTES_PER_PROC) rather than a
+     * (dispatch_abi.h's CALLEE_ARG_COUNTS_BYTES_PER_PROC) rather than a
      * fixed cap, since a real program's own procCount isn't bounded to
      * any fixture-sized constant. */
     uint32_t calleeArgCounts[runtime->procCount];
@@ -47,24 +49,6 @@ extern "C" void compileProc(uint32_t idx, Runtime *runtime)
      * function to do afterward. Failure (arena exhaustion beyond what
      * Assembler::reserve() could free by evicting, or the live
      * stack-nesting guard tripping) never returns here at all: it
-     * unwinds straight through runtimeBail below. */
+     * unwinds straight through dispatch_abi.cpp's runtimeBail. */
     jitc::translateProc(proc, idx, calleeArgCounts, runtime->procCount, assembler, &savesLR);
-}
-
-/* Assembler::fail()'s own direct exit on an attached Assembler — restores
- * the caller's own saved sp and transfers to the sentinel landing, tagged
- * LANDING_TRAP, unwinding the entire excursion including the trampoline's
- * own pushed frame. Never returns. This is the old bailOut, moved
- * verbatim and renamed to the extern "C" name runtime_internal.h
- * declares — reached from inside Assembler now (compiler/src/
- * assembler.cpp's fail()) instead of from this file's own post-hoc
- * overflow check, which no longer exists. */
-extern "C" void runtimeBail(Runtime *runtime, uint32_t trapCode)
-{
-    register uint32_t trapCodeReg asm("r0") = trapCode;
-    register uint32_t tagReg asm("r2") = LANDING_TRAP;
-    register uint32_t landingReg asm("r3") = runtime->sentinelLandingAddress();
-    register uint32_t savedSpReg asm("r1") = runtime->savedSp;
-    asm volatile("mov sp, r1\n\tbx r3" : : "r"(trapCodeReg), "r"(savedSpReg), "r"(tagReg), "r"(landingReg));
-    __builtin_unreachable();
 }

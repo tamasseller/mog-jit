@@ -2,8 +2,9 @@
 
 ## Status
 
-**Stage 1: done, verified green.** 168/168 host tests, 9/9 QEMU tests.
-**Stage 2: not started.**
+**Stage 1: done, verified green.** **Stage 2: done, verified green.**
+**Post-Stage-2 cleanup: done, verified green.**
+168/168 host tests, 9/9 QEMU tests.
 
 | Stage 1 item | Status |
 |---|---|
@@ -17,6 +18,41 @@
 | 1.8 Signature cleanup (`pendingPoolBytes` gone) | done |
 | 1.9 Companion fixes | done (both) |
 | Stack budget re-measurement | done (488, was 400) |
+
+| Stage 2 item | Status |
+|---|---|
+| `runtime_host.cpp` split into `enter_program.cpp` + `dispatch_abi.{h,cpp}` | done |
+| Threefold `runtimeStorage`/`enterProgramCore` duplication collapsed | done (`enterProgramWithHeader`) |
+| `compile_proc_real.cpp` → `compile_proc.cpp` | done |
+| `abi_strategy.{h,cpp}` moved next to layer-2 conventions | **not done** — see below |
+| `RUNTIME_DISPATCH_TABLE_OFFSET`/`DISPATCH_SENTINEL_OFFSET` split resolved | done (documented, not merged — see below) |
+| `docs/design.md` updates (§2, §9, §11, new §16 item) | done |
+| Doc-drift cleanup from 1.9 | done |
+
+| Post-Stage-2 cleanup item | Status |
+|---|---|
+| `Runtime::arenaBase` (dead field) deleted | done |
+| Plain `enterProgram()` deleted; callers declare their own arena | done |
+| `abiEmitReturn`'s redundant `fitsImm8` branch collapsed | done |
+
+Two Stage 2 deviations from the written plan:
+
+- **`abi_strategy.{h,cpp}` did not move.** On inspection its helper-vector
+  indices and record packing (`packRecord`, the `Uoff<2,5>` index
+  literals) are genuinely emission code — they belong with the other
+  `compiler/src` emitters that share its `Assembler&` calling convention,
+  not with `dispatch_abi.h`'s own extern declarations and stack-cost
+  constants. Moving them would have split `abi_strategy.cpp` from the
+  `STUB_SIZE`/`abiEmitPrologue` it's defined alongside for no real
+  layering gain. Left in place.
+- **`RUNTIME_DISPATCH_TABLE_OFFSET`/`DISPATCH_SENTINEL_OFFSET` couldn't
+  physically merge.** The constants must stay in `runtime_host.h` (needed
+  under `__ASSEMBLER__`, before `Runtime`/`ProcSlot` are even defined
+  anywhere) while their `static_assert`s must stay in `runtime_internal.h`
+  (need the complete struct definitions). "Resolved" means both files now
+  carry an explicit, bidirectional comment pointing at the other half of
+  the guarantee — not a physical move, which the `__ASSEMBLER__`
+  constraint rules out.
 
 Deviation from the written plan: no `translateProc(uint16_t*, uint32_t)`
 convenience overload was kept — a single `Assembler&`-taking signature
@@ -48,7 +84,8 @@ for it exists yet.
 ---
 
 The rest of this document is the original restructuring plan, kept as
-the design record and as the Stage 2 task list.
+the design record — both stages are now done; deviations from the plan
+as written are called out inline and in the status section above.
 
 ## Context
 
@@ -234,39 +271,94 @@ out from under `k`).
   Previously asserted only in comments (`runtime.S`, `docs/design.md`),
   never actually passed to the compiler.
 
-Flagged, still not in scope: `Runtime::arenaBase` is write-only;
-`enterProgram` never checks `arenaSize` against `ARENA_CAPACITY`;
-`runtime_host.h`'s header comment overstates what it shares and what
-bytecode `TRAP` propagates; `design.md`'s sentinel-offset prose is stale
-(`ProcSlot` grew from 8 to 16 bytes).
+Four things were flagged here at the time. Two were already resolved by
+Stage 2's own "Doc-drift cleanup" below (`runtime_host.h`'s overstated
+"shares ProcSlot"/`TRAP`-propagation comments; `design.md`'s stale
+sentinel-offset prose) — this paragraph just never got updated to say so.
+The other two — `Runtime::arenaBase` being write-only, and `enterProgram`
+never checking `arenaSize` against its own `ARENA_CAPACITY` — are fixed by
+the post-Stage-2 cleanup below.
 
 ---
 
-## Stage 2 — layer/file reorganization (not started)
+## Stage 2 — layer/file reorganization (done)
 
-Purely structural; do only once Stage 1 stays green under real use.
+Purely structural.
 
-- Split `runtime_host.cpp` into layer 1 (`enter_program.cpp`: the three
-  entry points, `parseProgramHeader`, `requiredStackBytes`,
-  `stackHasRoom`) and layer 2 (`dispatch_abi.{h,cpp}`: `helperVec`,
-  `trampolineAddr`, `runtimeBail`, the fixed-cost constants). Collapse
-  the threefold duplication of `parseProgramHeader` + `totalDepth * 4` +
-  the `runtimeStorage` VLA + `enterProgramCore` across the three
-  `enterProgram*` variants into one helper.
+- `runtime_host.cpp` split into layer 1 (`enter_program.cpp`: the entry
+  points, `parseProgramHeader`, `requiredStackBytes`, `stackHasRoom`) and
+  layer 2 (`dispatch_abi.{h,cpp}`: `helperVec`, `trampolineAddr`,
+  `runtimeBail`, the fixed-cost constants). The threefold duplication of
+  `parseProgramHeader` + `totalDepth * 4` + the `runtimeStorage` VLA +
+  `enterProgramCore`, then across the three `enterProgram*` variants (this
+  was still three at the time — see the post-Stage-2 cleanup below, which
+  deletes plain `enterProgram`), collapsed into one shared
+  `enterProgramWithHeader` — each variant still parses the header and
+  runs its own stack-budget check first (the one thing that genuinely
+  differed among them), then hands off.
 - `compile_proc_real.cpp` → `compile_proc.cpp` (the "real" qualifier
-  distinguished it from a mock retired per `design.md` §16 item 22).
-- Move `abi_strategy.{h,cpp}`'s helper-vector indices and record packing
-  next to the layer-2 conventions they mirror, leaving the emission
-  functions in `compiler/src`.
-- Resolve the `RUNTIME_DISPATCH_TABLE_OFFSET`/`DISPATCH_SENTINEL_OFFSET`
-  split — the constants live in the public header (for `runtime.S`'s
-  `__ASSEMBLER__` include) but their `static_assert`s live in the
-  internal one.
-- `docs/design.md`: §10.2 (no fixup pass and no fixpoint), §11 (rewrite
-  the `ArenaRoom` "Done" paragraph — now genuinely done, differently),
-  §9, §2's `requiredStackBytes` table, plus a new §16 item recording this
-  restructuring and the two latent bugs it fixed.
-- Clean up the still-open doc-drift items noted under 1.9 above.
+  distinguished it from a mock retired per `design.md` §16 item 22);
+  `runtimeBail`'s target definition moved out to `dispatch_abi.cpp`,
+  next to `enterDispatch`'s own analogous sentinel/landing mechanism.
+- `abi_strategy.{h,cpp}` **not** moved — see the deviation note above.
+- `RUNTIME_DISPATCH_TABLE_OFFSET`/`DISPATCH_SENTINEL_OFFSET` split
+  **documented, not merged** — see the deviation note above.
+- `docs/design.md`: §9 (the `CALL` sequence is a constant 5 halfwords now,
+  fixpoint description rewritten past-tense; the stale `r8−8`/`524280`
+  sentinel-offset arithmetic, predating even Stage 1, fixed to `r8−16`/
+  `1048560`), §11 (`ArenaRoom` "Done" paragraph rewritten for `Assembler`),
+  §2 (`requiredStackBytes` file references; the stale
+  `MOCK_TRANSLATOR_ENTRY_WORST_CASE_BYTES` paragraph, also predating
+  Stage 1, replaced with a pointer at the now-current figure), new §16
+  item 23 recording both stages and the two latent bugs Stage 1 fixed.
+  (§10.2 turned out already accurate — its fixpoint-shaped language is
+  about Thumb branch-range fixup, unrelated to the deleted
+  `findResumeOffset`, which was always a §9 concern.)
+- Doc-drift cleanup from 1.9: `runtime_host.h`'s stale "shares ProcSlot"
+  claim and its overstated bytecode-`TRAP`-propagation comment both
+  fixed; every stale `runtime_host.cpp`/`compile_proc_real.cpp` filename
+  reference across comments and `README.md` swept to match the new
+  layout.
+
+---
+
+## Post-Stage-2 cleanup (done)
+
+Three loose ends, raised in review after Stage 2 landed:
+
+- **`Runtime::arenaBase` was dead** — written once in `init()`, read
+  nowhere. Deleted. `RUNTIME_DISPATCH_TABLE_OFFSET` (`runtime_host.h`)
+  drops from 44 to 40 to match `Runtime`'s new layout;
+  `runtime_internal.h`'s own `static_assert` pairing that `#define`
+  against `offsetof(Runtime, slots)` is what would have caught a
+  hand-arithmetic mistake here.
+- **Plain `enterProgram()` deleted.** It was an arbitrary special case
+  among the entry points: no `stackLimit` parameter, a fixed 512-byte
+  `static` arena baked into `enter_program.cpp`
+  (`ARENA_CAPACITY`/`arenaStorage`), and a blind
+  `GENEROUS_TRANSLATOR_STACK_MARGIN` in place of a real budget check —
+  exactly the kind of caller-invisible special-casing this whole
+  restructuring exists to remove. A caller that wants a plain global
+  arena now declares one itself (one line, sized to what it needs) and
+  calls `enterProgramSplit` — the pattern
+  `test/qemu/main.cpp`'s own `SplitThreeDeepCallChainSucceeds` already
+  used. `enter_program.cpp`/`runtime_host.h` now have two entry points,
+  not three. `test/qemu/main.cpp`'s fixture loop and its four
+  eviction/`RESOURCE_ERROR` scenarios (previously the heaviest
+  `enterProgram()` callers) moved to a file-local
+  `enterProgramWithSharedArena` helper wrapping `enterProgramSplit`
+  against one shared `static` buffer — the same shape the deleted
+  function had, just no longer hidden inside the runtime. Switching these
+  onto `enterProgramSplit` is a genuine (if inert in practice, since every
+  fixture's own wire envelope encodes `max_call_depth`/`total_depth` as 0)
+  behavior change: they now run the real up-front stack-budget check
+  instead of none at all.
+- **`abi_strategy.cpp`'s `abiEmitReturn` had a redundant branch.** Its
+  deep-args reclaim-byte-count site hand-wrote
+  `fitsImm8`-then-`MOVS`-else-`materializeImm32`, duplicating what
+  `materializeImm32` already does internally — `imm32SynthCost` returns 1
+  for any value that fits imm8, so `Assembler` was already going to emit
+  that same single `MOVS`. Collapsed to one unconditional call.
 
 ---
 
@@ -292,4 +384,20 @@ and the deeper of two pre-`translateBody` chains is now the
 last-argument-fold scan's eager-flush path (`AccState::flush` →
 `materializeShape` → `materializeImm32` → `emitSynthesizeImm32Into`, 96
 bytes) rather than the prologue's own `reserve()`/`growForAttached` chain
-(64 bytes).
+(64 bytes). Unaffected by Stage 2 — the file split moved this constant's
+home (`dispatch_abi.h`), not the call chain it measures.
+
+**Stage 2 rebuild:** clean rebuild of both suites after the file split
+and the `docs/design.md` edits — 168/168 host, 9/9 QEMU, unchanged.
+`run.elf`'s own `text` size dropped slightly (22512 → 22468 bytes) from
+`enterProgramWithHeader` deduplicating what had been three inlined
+copies.
+
+**Post-Stage-2 cleanup rebuild:** clean rebuild after deleting
+`arenaBase`, deleting plain `enterProgram()`, and collapsing
+`abiEmitReturn`'s redundant branch — 168/168 host, 9/9 QEMU, unchanged
+(including both `RESOURCE_ERROR` scenarios, still `0x52455343`).
+`run.elf`'s `text` dropped again, 22468 → 22424 bytes — plain
+`enterProgram()`'s own body (and the literal pool it carried) is simply
+gone; `sharedArena`'s 512 bytes replace `arenaStorage`'s in `.bss`, a
+wash.

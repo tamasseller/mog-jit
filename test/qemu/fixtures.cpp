@@ -356,12 +356,15 @@ static constexpr uint32_t SCRATCH_CAPACITY = 3072;
 static uint8_t scratch[SCRATCH_CAPACITY];
 static uint32_t scratchUsed = 0;
 
-// max_call_depth/total_depth are both 0 for every fixture here: none of
-// them ever reach enterProgram through a path that actually checks them
-// (that's what enterProgramOnStack/enterProgramSplit's own dedicated
-// scenarios in main.cpp are for, with their own hand-derived, real
-// values) — plain enterProgram never consults its envelope's stats at
-// all, only parses past them to find proc_count.
+// max_call_depth/total_depth are both 0 for every fixture here: main.cpp's
+// fixture loop does run every one of them through enterProgramSplit's own
+// real up-front stack-budget check, but a zeroed envelope makes that check
+// see no operand-stack/call-record cost at all, leaving only the fixed-cost
+// floor (Runtime/dispatch-table size, ENTER_DISPATCH_FIXED_BYTES,
+// TRANSLATOR_ENTRY_WORST_CASE_BYTES) — nowhere near tight enough to reject
+// anything real. Exercising the check against real, hand-derived
+// max_call_depth/total_depth values is what enterProgramOnStack/
+// enterProgramSplit's own dedicated scenarios in main.cpp are for instead.
 static Program finishProgram(const ProcSource *procs, uint32_t count)
 {
     uint8_t *slot = scratch + scratchUsed;

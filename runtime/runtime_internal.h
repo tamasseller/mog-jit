@@ -1,5 +1,5 @@
-/* Shared between runtime_host.cpp and compile_proc_real.cpp; not part of
- * runtime_host.h's public API. */
+/* Shared between enter_program.cpp, dispatch_abi.cpp, and compile_proc.cpp;
+ * not part of runtime_host.h's public API. */
 #ifndef RUNTIME_INTERNAL_H
 #define RUNTIME_INTERNAL_H
 
@@ -77,7 +77,7 @@ struct ProcSlot
 };
 static_assert(sizeof(ProcSlot) == 16, "power-of-two: idx*16 must stay a shift, not a multiply — runtime.S's own hardcoded stride");
 
-/* Link-time const, defined in runtime_host.cpp. `extern` has to be repeated
+/* Link-time const, defined in dispatch_abi.cpp. `extern` has to be repeated
  * at the definition too: a `const` global defaults to internal linkage in
  * C++, so without it neither compileProc nor this class's own methods could
  * see it. */
@@ -101,7 +101,6 @@ class Runtime
 {
 public:
     uint32_t savedSp; /* written by enterDispatch's own asm, never by C++ */
-    uint32_t arenaBase;
     uint32_t arenaEnd;
     uint32_t arenaCursor;
     uint32_t procCount;
@@ -110,9 +109,8 @@ public:
      * stackLimit is the hard, whole-execution floor. arenaOverlapsStack is
      * true only for enterProgramOnStack, whose code arena is anchored at
      * stackLimit itself and grows up from there — i.e. the same memory the
-     * translator's own recursion runs on, unlike plain enterProgram's
-     * separate static array or enterProgramSplit's caller-supplied,
-     * unrelated memory. */
+     * translator's own recursion runs on, unlike enterProgramSplit's
+     * caller-supplied, unrelated memory. */
     uint32_t stackLimit;
     uint32_t arenaOverlapsStack; /* 0/1, not bool, so this struct's layout
                                   * (and RUNTIME_DISPATCH_TABLE_OFFSET/
@@ -169,7 +167,6 @@ public:
     bool init(const uint8_t *programBytes, uint32_t programSize, uint32_t bodyOffset, uint32_t procCount,
         uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit, uint32_t arenaOverlapsStack)
     {
-        arenaBase = codeArenaBase;
         arenaEnd = codeArenaBase + codeArenaSize;
         /* Rounded up here, not left to the caller: enterProgramOnStack
          * anchors the arena at stackLimit and enterProgramSplit takes the
@@ -367,9 +364,15 @@ public:
     }
 };
 
-/* runtime.S hardcodes both of these since it can't call offsetof itself —
- * these ties catch any layout drift at compile time instead of letting it
- * corrupt memory silently.
+/* The other half of runtime_host.h's own split explanation, right above
+ * its RUNTIME_DISPATCH_TABLE_OFFSET/DISPATCH_SENTINEL_OFFSET #defines:
+ * runtime.S hardcodes both of those since it can't call offsetof itself,
+ * and can't see this file's own Runtime/ProcSlot types at all (it
+ * #includes runtime_host.h under __ASSEMBLER__, which hides this file
+ * from it entirely) — so the two asserts below live here, next to the
+ * real struct, checking the *other* file's numbers against it. Change
+ * either side and this is what catches the drift at compile time instead
+ * of letting it corrupt memory silently.
  *
  * The table offset is checked only for a 32-bit target, the only thing
  * runtime.S is ever assembled for: on the 64-bit host that builds the

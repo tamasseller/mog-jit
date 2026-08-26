@@ -22,9 +22,6 @@ JIT-compile and execute one Generic Core program injected at runtime
 ```c
 typedef struct { uint32_t value; uint32_t trapped; } ProgramResult;
 
-ProgramResult enter_program(uint32_t argIn, const uint8_t *programBytes,
-                            uint32_t programSize, uint32_t arenaSize);
-
 ProgramResult enter_program_on_stack(uint32_t argIn, const uint8_t *programBytes,
                                      uint32_t programSize, uint32_t codeArenaSize,
                                      uint32_t stackLimit, uint32_t interruptReserve);
@@ -34,6 +31,11 @@ ProgramResult enter_program_split(uint32_t argIn, const uint8_t *programBytes,
                                   uint32_t codeArenaSize, uint32_t stackLimit,
                                   uint32_t interruptReserve);
 ```
+
+No bare arena-less entry point: both variants take an explicit `stackLimit`
+and are checked against it up front. A caller that just wants a plain
+global arena declares one itself (one line, sized to what it actually
+needs) and calls `enter_program_split`.
 
 `programBytes`/`programSize` is one whole serialized program: a
 jit-armv6m-specific envelope (`max_call_depth:LEB128 total_depth:LEB128` —
@@ -95,8 +97,9 @@ which is the geometry that makes sharing work:
 
 `enter_program` computes a hard ceiling for compiled code once, at entry:
 `codeLimit = SP(at entry) − requiredStackBytes`. Every term of
-`requiredStackBytes` (`jit-armv6m/runtime/runtime_host.cpp`) is derived
-from the program's own wire envelope (§1) or a measured constant:
+`requiredStackBytes` (`jit-armv6m/runtime/enter_program.cpp`, summing the
+fixed-cost constants `jit-armv6m/runtime/dispatch_abi.h` declares) is
+derived from the program's own wire envelope (§1) or a measured constant:
 
 | Term | Source |
 |---|---|
@@ -151,20 +154,15 @@ compaction sliding the code region never invalidates a still-open record.
 The now-retired TS prototype's own mock translator (formerly
 `prototype/qemu/compile_proc.cpp`) had no Frame stack at all: it was an
 unconditionally-terminating copy from a precompiled blob, so its worst case
-was one number, folded into `MOCK_TRANSLATOR_ENTRY_WORST_CASE_BYTES` (48
-bytes of frame via `-fstack-usage`, plus 20 for whichever of
-`memcpy`/`memmove` it called, plus the trampoline's fixed push-and-realign
-overhead). That constant is still what `jit-armv6m/runtime/runtime_host.cpp`'s
-`requiredStackBytes` budgets for today, unconditionally — now wrong, since
-the mock translator it was calibrated for no longer exists anywhere in the
-tree and the real translator's actual frame is considerably larger (§16 item
-19, open). It was enforced rather than trusted in its original form:
-`compileProc` sat in its own translation unit so its Makefile could build it
-with `-Wstack-usage=48 -Werror=stack-usage=48`. The separate file was necessary
-because the same threshold applied to `enter_program_on_stack`/`_split`
-would flag their VLAs, which the compiler cannot bound at all. A real
-translator replaces this constant with the live accounting above, not a
-bigger constant.
+was one number (§16 item 19). The real translator's own figure,
+`TRANSLATOR_ENTRY_WORST_CASE_BYTES` (`jit-armv6m/runtime/dispatch_abi.h`),
+has been re-measured via `-fstack-usage` twice since — once when the real
+translator replaced the mock (item 19) and again when `compileProc`'s own
+call chain moved onto `Assembler` (item 23) — each time itemized per
+function on the real path, never guessed. Build-time enforcement (a
+per-file `-Wstack-usage=`/`-Werror=stack-usage=` pin, matching the
+now-retired mock translator's own analogous rule) remains a reasonable
+follow-up, not done.
 
 **Interrupt isolation.** Checked against ARMv6-M's exception-entry
 pseudocode (ARM DDI 0419E, `PushStack()`/`ExceptionTaken()`): the hardware
@@ -511,8 +509,8 @@ BX   r3
 ```
 
 `SXTH`, not `UXTH`: the boot record's sentinel `proc_idx` of `0xffff`
-("index −1") must resolve to `r8 − 8`, the sentinel slot, not
-`r8 + 524280`.
+("index −1") must resolve to `r8 − 16` (`sizeof(ProcSlot)`, §9), the
+sentinel slot, not `r8 + 1048560`.
 
 ---
 
@@ -598,21 +596,30 @@ The table is preceded by a **sentinel slot** at index −1, whose `code_ptr`
 is `enter_dispatch`'s own landing address, so the entry procedure's `RETURN`
 dispatches back into C through the identical mechanism as any other return.
 
-**`CALL Q`** compiles to one fixed, unconditional sequence of five to seven
-instructions (`abiEmitCall`, `compiler/src/abi_strategy.cpp`):
+**`CALL Q`** compiles to one fixed, unconditional, constant-length
+five-instruction sequence (`abiEmitCall`, `compiler/src/abi_strategy.cpp`):
 
 ```
-<synthesize>  r1, #REC(P_idx, K+1)    ; both halves compile-time constant
-MOVS/synth    r2, #Q_idx
+LDR           r1, [pc, #...]         ; #REC(P_idx, K+1) — pooled, never inline-synthesized
+MOVS/LDR      r2, #Q_idx             ; imm8 if it fits, else also pooled
 MOV           r3, r10                 ; low-mirror the helper vector base
 LDR           r3, [r3, #0]            ; callHelper (index 0)
 BX            r3                      ; tail; never returns to this site
 ; K = byte offset of the next instruction, from this procedure's body start
 ```
 
-`K` depends on how many instructions synthesizing the record's own immediate
-takes, so `findResumeOffset` solves it as a fixed point, stable in one or
-two iterations, rather than needing a scratch emit-and-discard pass.
+The record's own value depends on `K`, and `K` in turn depends on how many
+instructions this whole sequence takes to encode — a circular sizing
+problem an earlier version of this design solved by iterating
+(`findResumeOffset`) to a fixed point. `Assembler::materializeImm32Pooled`
+(`compiler/src/assembler.{h,cpp}`) removes the circularity instead: a
+pooled load is exactly one halfword at the call site regardless of the
+value it loads (the 4-byte word itself lands later, at the next literal-
+pool flush), so both operands above cost exactly one halfword each no
+matter what they encode, making the sequence's own length a compile-time
+constant and `K` closed-form. The record is *forced* through the pool
+(never left to the ordinary pool-or-synthesize threshold): that circular
+dependency is exactly what forcing exists to break.
 
 The record setup has to be part of this same fixed sequence, before the
 handoff. The call site cannot know which path the callee takes (real code,
@@ -1046,26 +1053,37 @@ code too and update the translator's own base pointer and cursor for it,
 mechanically identical to updating one more `code_ptr`. The block-nesting
 records need no equivalent update (§2's note on why).
 
-**Done**: `compiler/src/arena_room.h`'s `ArenaRoom::ensureRoom(Emitter&,
-neededHalfwords)` is the one seam the otherwise Runtime-agnostic
-translator has into this — checked at `translateProc`'s existing
-per-instruction checkpoint (`blocks.h`'s `instrMaxBytes`, the same budget
-`maxSpanBytes` already used for a different reason), before the prologue
-stub, and before a literal-pool flush (all three sized to their own
-worst-case emission). `test/qemu/compile_proc_real.cpp`'s
-`RuntimeArenaRoom` is the concrete implementation: it runs the ordinary
-`findEvictionVictim`/`evict` loop, but `Runtime::evict`
-(`runtime/runtime_internal.h`) now takes an `inProgressLenBytes` parameter
-(default 0, so every other caller's behavior is unchanged) that extends
-its own tail-relocation range from `arenaCursor` to
+**Done**: `compiler/src/assembler.{h,cpp}`'s `Assembler::reserve(maxBytes,
+poolEntries)` is the one seam the otherwise Runtime-agnostic translator
+has into this — checked at `translateProc`'s existing per-instruction
+checkpoint (`blocks.h`'s `instrMaxBytes`, the same budget `maxSpanBytes`
+already used for a different reason), before the prologue stub, and (via
+the same call) before a literal-pool flush. `reserve` is a plain method on
+`Assembler` itself now, not a virtual call through a separate interface
+(§16 item 23 retired the `ArenaRoom` abstraction this paragraph originally
+described — there was only ever one implementor, hiding a `Runtime` the
+host build already instantiates directly). An *attached* `Assembler`
+(constructed over a real `Runtime*`) runs the ordinary
+`findEvictionVictim`/`evict` loop internally, best-effort: `neededBytes`
+is always a worst-case upper bound, so evicting everything resident and
+still coming up short is a normal outcome, not a failure — only a later
+real overflow at `emit()` is genuine, and *that* exits directly
+(`Assembler::fail()` → `runtimeBail`, `runtime/dispatch_abi.cpp`) rather
+than propagating a flag, since the caller (`compileProc`,
+`runtime/compile_proc.cpp`) has nothing useful left to do once arena
+exhaustion is real. `Runtime::evict` (`runtime/runtime_internal.h`) is
+unchanged: it still takes an `inProgressLenBytes` parameter (default 0,
+so every other caller's behavior is unchanged) that extends its own
+tail-relocation range from `arenaCursor` to
 `arenaCursor + inProgressLenBytes` — the in-progress procedure's own base
 is always exactly `arenaCursor`, since nothing has bumped it yet
 (`Runtime::allocate` only ever runs once, on success), so this one memmove
-keeps that invariant true on the other side: the caller rereads
-`arenaCursor` afterward and rebases its `Emitter` there
-(`Emitter::rebase`). `compile_proc_real.cpp` itself no longer needs a
-scratch buffer or a final `memcpy` — it constructs its `Emitter` directly
-over `arenaCursor` and lets `ArenaRoom` grow it in place.
+keeps that invariant true on the other side: `Assembler` rereads
+`arenaCursor` afterward and rebases its own buffer pointer there.
+`compile_proc.cpp` itself needs no scratch buffer or final `memcpy` — it
+constructs its `Assembler` directly over `arenaCursor` and lets `reserve`
+grow it in place, then finalizes it (flush the pool, `Runtime::allocate`,
+`Runtime::markCompiled`) as `translateProc`'s own last step.
 
 ---
 ## 12. Report and error model
@@ -1505,7 +1523,7 @@ excluded on both sides by design), including eviction/compaction and both
     code on real QEMU~~ — **done**: `test/qemu/main.cpp` measures
     each fixture procedure's real compiled size once (via a throwaway
     `translateProc` call) purely to size an undersized arena, then drives
-    the exercise through the ordinary lazy `enterProgram`/`compileProc`
+    the exercise through the ordinary lazy `enterProgramSplit`/`compileProc`
     path, reading each procedure's own metadata from the real program
     bytes (item 22's `ProcSlot` directory) rather than any fixture-only
     side channel — `testEvictionThreeDeepCallChain`,
@@ -1658,3 +1676,103 @@ excluded on both sides by design), including eviction/compaction and both
       (host) and the existing eviction/`RESOURCE_ERROR` scenarios
       (QEMU) — none needed new content, just adapting to the new call
       shapes, since nothing about *what* they exercise changed.
+23. **The compiler/runtime boundary had no real seam** — `ArenaRoom`
+    (`compiler/src/arena_room.h`) was a one-method interface with exactly
+    one implementor, existing only to hide a `Runtime` the host build
+    already instantiated directly (`test_runtime_arena.cpp`); the literal
+    pool lived in `translate_proc.cpp`'s own `Ctx` while the primitives it
+    drove sat in `Emitter`; pool debt was threaded by hand through three
+    `blocks.h` signatures; and because the pool recovered each word by
+    *re-decoding bytecode* at flush time, it needed a scan of its own
+    output, which is what forced a flush before every `BR_TABLE(N>2)`
+    jump table and blocked `abi_strategy.cpp`'s call record from pooling
+    at all (a record is not any instruction's own immediate, so it has no
+    bytecode tag to carry) — the same gap that forced `findResumeOffset`'s
+    5-round fixed-point search (§9) to exist. — **done**, in two stages
+    (`docs/assembler-restructuring.md` has the full plan and verification
+    record):
+    - **Stage 1**: `compiler/src/emitter.h` → `assembler.{h,cpp}`. One
+      `Assembler` (two constructors, detached/attached) now owns the
+      buffer, branch fixups (a new `Label`/`bind()` that generalizes the
+      pre-existing `endFixupChain` self-linking trick — resolving a
+      forward fixup always flushes the pool *first*, so a label's target
+      can never land on top of pool words a flush inserts), the literal
+      pool (rewritten to track stored `(site, value)` pairs instead of a
+      bytecode tag — no output scan, so the forced flush before
+      `BR_TABLE(N>2)`'s jump table is gone entirely), immediate-scheme
+      selection (`materializeImm32`, reachable everywhere now, closing
+      `shape.cpp`'s own `AccState::flush` blind spot), and — when
+      attached to a real `Runtime` — arena eviction/compaction and final
+      dispatch-table registration. `abi_strategy.cpp`'s call record is
+      now force-pooled (`materializeImm32Pooled`): a pooled site is always
+      exactly one halfword regardless of value, which makes the whole
+      call sequence's own length a compile-time constant and deletes
+      `findResumeOffset`'s fixed-point search outright. An attached
+      `Assembler` that cannot free enough room exits directly
+      (`Assembler::fail()` → `runtimeBail`) instead of latching a flag for
+      a caller to check later.
+
+      Two real bugs surfaced and were fixed while landing this, not just
+      documented: `growForAttached`'s eviction loop originally failed
+      immediately whenever it couldn't fully satisfy a *worst-case*
+      reservation, contradicting this codebase's own stated philosophy
+      that such reservations are loose over-estimates — this broke real
+      eviction on QEMU until fixed to evict-best-effort-then-stop, leaving
+      the genuine failure trigger at `emit()`'s own bounds check
+      (root-caused on the host first, via a throwaway probe using
+      `mmap(MAP_32BIT)` so a real `Runtime` and real `evict()` survive
+      `uint32_t` address truncation on a 64-bit host); and eviction now
+      compares against `Runtime::reserveFor`'s padded size, not the raw
+      byte count, closing the `allocate()`-overruns-`arenaEnd` gap
+      `reserveFor`'s own comment already warned about but nothing
+      enforced. `-ffixed-r8/r9/r10/r11` — asserted in comments here and in
+      `runtime.S` but absent from every Makefile — is now actually passed
+      to the QEMU build.
+    - **Stage 2**: purely structural. `runtime_host.cpp` split into
+      `enter_program.cpp` (layer 1: the three entry points,
+      `parseProgramHeader`, `requiredStackBytes`, `stackHasRoom`,
+      including a new `enterProgramWithHeader` collapsing what had been
+      three copies of the `runtimeStorage` VLA + `enterProgramCore` call)
+      and `dispatch_abi.{h,cpp}` (layer 2: the helper vector,
+      `trampolineAddr`, the ABI's own fixed-cost constants,
+      `runtimeBail`'s target definition, moved out of `compile_proc.cpp`
+      — renamed from `compile_proc_real.cpp`, the "real" qualifier having
+      distinguished it from a mock retired by item 22). Every stale file
+      reference (comments, `README.md`) swept to match.
+
+    `TRANSLATOR_ENTRY_WORST_CASE_BYTES` re-measured via `-fstack-usage`
+    against the new call chain, not guessed: 488, up from 400 —
+    `compileProc`'s own frame grew (it now holds the `Assembler` object
+    as a local, not a separate `RuntimeArenaRoom`), and the deeper of two
+    pre-`translateBody` chains is now the last-argument-fold scan's own
+    eager-flush path, not the prologue's own arena-growth call.
+    `test/host`'s 168 tests and `test/qemu`'s 9 both pass against the
+    final shape.
+24. **Three loose ends flagged (not fixed) by item 23** — **done**:
+    - `Runtime::arenaBase` was write-only (set in `init()`, read nowhere)
+      — deleted. `RUNTIME_DISPATCH_TABLE_OFFSET` drops from 44 to 40
+      accordingly; the `static_assert` pairing it against `Runtime`'s real
+      layout (`runtime_internal.h`) is what would have caught a
+      hand-arithmetic mistake here.
+    - Plain `enterProgram()` — no `stackLimit`, a fixed 512-byte `static`
+      arena baked into `enter_program.cpp`, a blind
+      `GENEROUS_TRANSLATOR_STACK_MARGIN` instead of a real budget check —
+      was an arbitrary special case among the three entry points item 23's
+      Stage 2 bullet still describes as three: deleted outright, along
+      with the constant and the array. A caller that wants a plain global
+      arena now declares one itself and calls `enterProgramSplit` — one
+      line, the same pattern `test/qemu/main.cpp`'s own
+      `SplitThreeDeepCallChainSucceeds` already used. `enter_program.cpp`
+      now has two entry points, not three; `test/qemu/main.cpp`'s fixture
+      loop and eviction/`RESOURCE_ERROR` scenarios (previously the four
+      heaviest `enterProgram()` callers) moved to a single
+      file-local `enterProgramWithSharedArena` helper wrapping
+      `enterProgramSplit` against one shared `static` buffer, the same
+      shape the deleted function had internally, just no longer hidden
+      inside the runtime.
+    - `abi_strategy.cpp`'s `abiEmitReturn` had a hand-written
+      `fitsImm8`-then-`MOVS`-else-`materializeImm32` branch at its deep-args
+      reclaim-byte-count site, duplicating logic `materializeImm32` already
+      performs internally (`imm32SynthCost` returns 1 for anything that
+      fits imm8, so `Assembler` already emits the same single `MOVS`) —
+      collapsed to one unconditional call.

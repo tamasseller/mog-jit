@@ -89,15 +89,7 @@ void abiEmitReturn(Assembler &a, bool savesLR, uint32_t initialSpilledCount)
     // concern at all.
     if(savesLR && initialSpilledCount > 0)
     {
-        uint32_t bytes = 4 * initialSpilledCount;
-        if(fitsImm8((int32_t)bytes))
-        {
-            a.emit(ArmV6M::movs(R(ENTRY_OFFSET_REG), ArmV6M::Imm<8>((uint16_t)bytes)));
-        }
-        else
-        {
-            a.materializeImm32(ENTRY_OFFSET_REG, bytes);
-        }
+        a.materializeImm32(ENTRY_OFFSET_REG, 4 * initialSpilledCount);
         a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
         a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(28))); // returnHelperFromStackReclaim, index 7
         a.emit(ArmV6M::bx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));

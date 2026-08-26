@@ -1,6 +1,7 @@
 // Runtime's arena bookkeeping, exercised on the host rather than only
-// through the real QEMU image (runtime/compile_proc_real.cpp is its only
-// other caller). What's worth testing cheaply here is the 4-byte
+// through the real QEMU image (runtime/compile_proc.cpp, via an attached
+// Assembler, is its only other caller). What's worth testing cheaply here
+// is the 4-byte
 // alignment invariant every procedure's PC-relative literal loads depend
 // on: an off-by-one in that padding would otherwise only surface as a
 // wrong value loaded on real hardware, after a compaction slide.
@@ -19,7 +20,7 @@
 
 using namespace jitc;
 
-// Normally runtime_host.cpp's own address of translatorTrampoline; any
+// Normally dispatch_abi.cpp's own address of translatorTrampoline; any
 // distinct non-zero value serves as the not-resident marker here.
 extern const uint32_t trampolineAddr = 0xDEADBEEFu;
 
@@ -126,7 +127,8 @@ TEST(RoomCheckAccountsForThePaddingAllocateWillConsume)
 {
     // A hasRoomFor(reserveFor(need)) that passes must be followed by an
     // allocate() that stays inside the arena — the invariant
-    // compile_proc_real.cpp's own eviction loop depends on.
+    // compiler/src/assembler.cpp's own growForAttached eviction loop
+    // depends on.
     RuntimeStorage<64> runtime;
     uint32_t allocations = 0;
     while(runtime->hasRoomFor(Runtime::reserveFor(6)))

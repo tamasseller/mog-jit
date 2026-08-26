@@ -1,5 +1,6 @@
-// The bytecode-procedure struct compileProc reads from (compile_proc_real.cpp's
-// realProcs table). body is the procedure's own raw wire bytes, not a
+// The bytecode-procedure struct compileProc (runtime/compile_proc.cpp)
+// builds from the whole-program directory's own ProcSlot (runtime_internal.h)
+// for every real call. body is the procedure's own raw wire bytes, not a
 // pre-decoded Instr[] — a real target never has an already-decoded
 // instruction array lying around for an arbitrary-length procedure body;
 // Instr[] literals only exist for authoring a fixture conveniently, via

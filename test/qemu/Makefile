@@ -15,8 +15,9 @@ OUTPUT = run.elf
 SOURCES += vectors.S
 
 SOURCES += ../../runtime/runtime.S
-SOURCES += ../../runtime/runtime_host.cpp
-SOURCES += ../../runtime/compile_proc_real.cpp
+SOURCES += ../../runtime/enter_program.cpp
+SOURCES += ../../runtime/dispatch_abi.cpp
+SOURCES += ../../runtime/compile_proc.cpp
 
 # The compiler itself
 SOURCES += ../../compiler/src/window.cpp

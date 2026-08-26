@@ -1,6 +1,7 @@
 // End-to-end proof: the real translator (translate_proc.h), reached
-// through the real dispatch/eviction runtime (runtime_host.cpp,
-// unmodified), actually compiles and runs every fixture (fixtures.cpp)
+// through the real dispatch/eviction runtime (enter_program.cpp/
+// dispatch_abi.cpp, unmodified), actually compiles and runs every fixture
+// (fixtures.cpp)
 // correctly on real QEMU — including LOOP/BR_TABLE/comparisons/unary ops,
 // terminator-closed blocks, a forced-long-branch case, actual
 // eviction+compaction under a small arena, both RESOURCE_ERROR sides (a
@@ -22,6 +23,67 @@
 
 using namespace jitc;
 
+// Shared helpers: every TEST below that doesn't anchor its own arena on
+// the C stack (enterProgramOnStack) needs somewhere to put compiled code,
+// and a real, checked stack-limit bound to pass alongside it — declared
+// once, up front, the way any caller of enterProgramSplit would, rather
+// than each call site inventing its own. maxCallDepth/totalDepth below
+// (encoded straight into each program's own envelope, runtime_host.h's
+// own doc comment) are hand-derived from each small program's own known
+// shape rather than computed here — this file has no whole-program static
+// analyzer of its own to call.
+extern "C" uint8_t __bss_end; /* vectors.S/linker.ld's own symbol — the one genuinely safe floor for anything placed on the C stack */
+
+static constexpr uint32_t GENEROUS_ARENA = 400;
+// A small, non-negative margin above __bss_end — not a raw subtraction
+// from the measured sp at the call site: this fixture corpus has a real
+// .bss footprint (scratch et al.), so "sp minus some generous-looking
+// constant" can land below __bss_end (inside .bss/.data instead of
+// genuinely free stack space) depending on how big that footprint is.
+// Anchoring above __bss_end instead is the one bound that's actually safe
+// regardless.
+static constexpr uint32_t GENEROUS_SLACK = 512;
+
+static uint32_t currentSp()
+{
+    register uint32_t sp asm("sp");
+    return sp;
+}
+
+static uint32_t stackLimitAboveBss()
+{
+    return (uint32_t)(uintptr_t)&__bss_end + GENEROUS_SLACK;
+}
+
+// The plain global arena every fixture (400 bytes, the default) and every
+// eviction/resource-error scenario below (all comfortably smaller) shares
+// — sequential TEST cases never run concurrently, so one buffer, sized
+// generously once, serves every enterProgramSplit call site in this file.
+static constexpr uint32_t SHARED_ARENA_CAPACITY = 512;
+static uint8_t sharedArena[SHARED_ARENA_CAPACITY];
+
+static ProgramResult enterProgramWithSharedArena(
+    uint32_t argIn, const uint8_t *programBytes, uint32_t programSize, uint32_t arenaSize)
+{
+    return enterProgramSplit(argIn, programBytes, programSize,
+        (uint32_t)(uintptr_t)sharedArena, arenaSize, stackLimitAboveBss(), /*interruptReserve=*/0);
+}
+
+static uint32_t makeProgram(uint32_t maxCallDepth, uint32_t totalDepth, const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCap)
+{
+    return encodeJitProgram(maxCallDepth, totalDepth, procs, procCount, out, outCap);
+}
+
+// One procedure's own raw body bytes (no whole-program envelope) — what
+// the eviction scenarios below feed straight to translateProc for their
+// own pre-measurement pass, unrelated to what they later feed
+// enterProgramWithSharedArena (makeProgram, above).
+static Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8_t *bytesOut, uint32_t bytesCap)
+{
+    uint32_t len = encodeBody(body, count, bytesOut, bytesCap);
+    return Proc{argCount, bytesOut, len};
+}
+
 TEST(HandTranscribedFixturesMatchExpectedResults)
 {
     bool allOk = true;
@@ -30,7 +92,7 @@ TEST(HandTranscribedFixturesMatchExpectedResults)
     {
         const Fixture &fx = fixtures[f];
 
-        ProgramResult r = enterProgram(fx.argIn, fx.program->bytes, fx.program->size, fx.arenaSize);
+        ProgramResult r = enterProgramWithSharedArena(fx.argIn, fx.program->bytes, fx.program->size, fx.arenaSize);
 
         bool ok = (r.trapped != 0) == fx.expectTrapped && r.value == fx.expectValue;
         allOk = allOk && ok;
@@ -61,48 +123,7 @@ TEST(HandTranscribedFixturesMatchExpectedResults)
 // enterProgramOnStack/enterProgramSplit — the layout-agnostic entry
 // points. Both reach compileProc through the exact same lazy dispatch path
 // the fixture loop above does — only the work area's own placement, and
-// the up-front stack-usage check ahead of it, differ. maxCallDepth/
-// totalDepth below (encoded straight into each program's own envelope,
-// runtime_host.h's own doc comment) are hand-derived from each small
-// program's own known shape rather than computed here — this file has no
-// whole-program static analyzer of its own to call.
-extern "C" uint8_t __bss_end; /* vectors.S/linker.ld's own symbol — the one genuinely safe floor for anything placed on the C stack */
-
-static constexpr uint32_t GENEROUS_ARENA = 400;
-// A small, non-negative margin above __bss_end — not a raw subtraction
-// from the measured sp at the call site: this fixture corpus has a real
-// .bss footprint (scratch et al.), so "sp minus some generous-looking
-// constant" can land below __bss_end (inside .bss/.data instead of
-// genuinely free stack space) depending on how big that footprint is.
-// Anchoring above __bss_end instead is the one bound that's actually safe
-// regardless.
-static constexpr uint32_t GENEROUS_SLACK = 512;
-
-static uint32_t currentSp()
-{
-    register uint32_t sp asm("sp");
-    return sp;
-}
-
-static uint32_t stackLimitAboveBss()
-{
-    return (uint32_t)(uintptr_t)&__bss_end + GENEROUS_SLACK;
-}
-
-static uint32_t makeProgram(uint32_t maxCallDepth, uint32_t totalDepth, const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCap)
-{
-    return encodeJitProgram(maxCallDepth, totalDepth, procs, procCount, out, outCap);
-}
-
-// One procedure's own raw body bytes (no whole-program envelope) — what
-// the eviction scenarios below feed straight to translateProc for their
-// own pre-measurement pass, unrelated to what they later feed
-// enterProgram (makeProgram, above).
-static Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8_t *bytesOut, uint32_t bytesCap)
-{
-    uint32_t len = encodeBody(body, count, bytesOut, bytesCap);
-    return Proc{argCount, bytesOut, len};
-}
+// the up-front stack-usage check ahead of it, differ.
 
 TEST(OnStackGenerousSucceeds)
 {
@@ -182,9 +203,9 @@ TEST(OnStackRejectsBeforeTouchingAnything)
 // by calling the real translateProc() once per procedure up front (a
 // throwaway measurement, discarded immediately) purely to size the arena
 // — the actual exercise then goes through the ordinary lazy
-// enterProgram/compileProc path exactly like every fixture above, reading
+// enterProgramSplit/compileProc path exactly like every fixture above, reading
 // each procedure's own body straight out of the real program bytes
-// (runtime_internal.h's ProcSlot), so compile_proc_real.cpp genuinely
+// (runtime_internal.h's ProcSlot), so compile_proc.cpp genuinely
 // retranslates from the same wire bytes whenever a procedure gets evicted
 // and later needed again (the same flash blob must reproduce the same
 // layout, or a saved resume offset would no longer point at the right
@@ -232,7 +253,7 @@ TEST(EvictionThreeDeepCallChain)
     ProcSource procSources[] = {{0, proc0Body, 3}, {1, proc1Body, 4}, {1, proc2Body, 3}};
     uint8_t progBytes[64];
     uint32_t progLen = makeProgram(0, 0, procSources, 3, progBytes, sizeof(progBytes));
-    ProgramResult r = enterProgram(0, progBytes, progLen, arenaSize);
+    ProgramResult r = enterProgramWithSharedArena(0, progBytes, progLen, arenaSize);
 
     if(r.trapped)
     {
@@ -265,7 +286,7 @@ TEST(EvictionCallerAndCalleeNeverCoresident)
     ProcSource procSources[] = {{0, proc0Body, 4}, {1, proc1Body, 3}};
     uint8_t progBytes[48];
     uint32_t progLen = makeProgram(0, 0, procSources, 2, progBytes, sizeof(progBytes));
-    ProgramResult r = enterProgram(0, progBytes, progLen, arenaSize);
+    ProgramResult r = enterProgramWithSharedArena(0, progBytes, progLen, arenaSize);
 
     if(r.trapped)
     {
@@ -305,7 +326,7 @@ TEST(EvictionSlidesAProcedureHoldingAPooledLiteral)
     ProcSource procSources[] = {{0, proc0Body, 4}, {1, proc1Body, 3}};
     uint8_t progBytes[48];
     uint32_t progLen = makeProgram(0, 0, procSources, 2, progBytes, sizeof(progBytes));
-    ProgramResult r = enterProgram(0, progBytes, progLen, arenaSize);
+    ProgramResult r = enterProgramWithSharedArena(0, progBytes, progLen, arenaSize);
 
     if(r.trapped)
     {
@@ -338,7 +359,7 @@ TEST(ResourceErrorSingleProcedureLargerThanArena)
     ProcSource procSources[] = {{0, body, 42}};
     uint8_t progBytes[256];
     uint32_t progLen = makeProgram(0, 0, procSources, 1, progBytes, sizeof(progBytes));
-    ProgramResult r = enterProgram(0, progBytes, progLen, arenaSize);
+    ProgramResult r = enterProgramWithSharedArena(0, progBytes, progLen, arenaSize);
 
     if(r.trapped)
     {
