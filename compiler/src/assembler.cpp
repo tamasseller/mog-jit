@@ -33,21 +33,54 @@ Assembler::Assembler(Runtime *rt, uint32_t procIdx, uint32_t lruTick)
       detachedStackFloor(0),
       runtime(rt), procIdx(procIdx), lruTick(lruTick) {}
 
+bool Assembler::growForAttached()
+{
+    if(runtime == nullptr)
+    {
+        return false; // detached: fixed capacity, nothing to grow — emit()'s own bounds check catches any shortfall
+    }
+
+    int victim = runtime->findEvictionVictim(lruTick);
+    if(victim < 0)
+    {
+        return false;
+    }
+
+    runtime->evict((uint32_t)victim, count * 2);
+
+    buf = (uint16_t *)(uintptr_t)runtime->arenaCursor;
+    capacity = (runtime->arenaEnd - runtime->arenaCursor) / 2;
+
+    return true;
+}
+
 uint32_t Assembler::emit(uint16_t word)
 {
     uint32_t at = pc();
-    if(count < capacity)
+
+    assert(count <= capacity);
+
+    if(count == capacity)
     {
-        buf[count++] = word;
+        const auto grown = this->growForAttached();
+        
+        if(!grown)
+        {
+            if(runtime != nullptr)
+            {
+                fail();
+            }
+            else
+            {
+                overflowedFlag = true;
+            }
+        }
     }
-    else if(runtime != nullptr)
-    {
-        fail(); // noreturn on the attached path
-    }
-    else
-    {
-        overflowedFlag = true;
-    }
+
+    assert(count < capacity);
+
+    buf[count++] = word;
+
     return at;
 }
 
@@ -259,11 +292,6 @@ void Assembler::flushPoolImpl(bool endOfProcedure)
         return;
     }
 
-    // poolDebt()'s own worst case (branch-around + pad + one pool word
-    // per unique value, an over-estimate before dedup) — a flush can
-    // dwarf any single instruction's own reserve() budget, so it needs
-    // its own arena-growth check.
-    growForAttached(poolDebt());
     if(overflowedFlag)
     {
         pendingCount = 0; // GCOV_EXCL_LINE — pc() has frozen; no offset here would mean anything
@@ -316,15 +344,6 @@ void Assembler::flushPoolImpl(bool endOfProcedure)
     pendingCount = 0;
 }
 
-// Flush while every site in the open chunk can still reach its own pool
-// word, or the chunk is about to grow past POOL_MAX_PENDING — bounds the
-// chunk as a whole rather than any single site, because which site is
-// worst depends on how they're spaced: a chunk spread over a lot of
-// output strands its *oldest* site, while densely packed placeholders
-// strand the *newest* one (each site's word advances 4 bytes while its
-// own Align(pc+4,4) base advances only 2). poolEntries lets a caller
-// (abi_strategy.cpp's force-pooled call record) guarantee room for sites
-// it's about to park without itself risking a flush mid-sequence.
 void Assembler::ensurePoolRoom(uint32_t poolEntries)
 {
     if(pendingCount == 0)
@@ -338,59 +357,6 @@ void Assembler::ensurePoolRoom(uint32_t poolEntries)
     {
         flushPoolImpl(false);
     }
-}
-
-// ── arena / budget ───────────────────────────────────────────────────────
-
-void Assembler::growForAttached(uint32_t neededBytes)
-{
-    if(runtime == nullptr)
-    {
-        return; // detached: fixed capacity, nothing to grow — emit()'s own bounds check catches any shortfall
-    }
-    uint32_t neededHalfwords = (neededBytes + 1) / 2;
-    if(capacity - count >= neededHalfwords)
-    {
-        return;
-    }
-
-    // neededHalfwords is always a worst-case upper bound (instrMaxBytes
-    // and friends), not a hard requirement — evicting everything resident
-    // and still coming up short is a normal outcome whenever the *real*
-    // emission turns out smaller than its own worst case, so this is
-    // best-effort: evict what's available, then stop. emit()'s own
-    // bounds check (-> fail()) is what catches a genuine shortfall, only
-    // if the real emission actually reaches it.
-    //
-    // Runtime::reserveFor, not the raw byte count: allocate() (finalize())
-    // will round the final size up to a whole word, so eviction has to
-    // clear room for that same padded size — otherwise a shortfall of a
-    // mere 1-2 bytes could let allocate() push arenaCursor past arenaEnd
-    // even though this check reported enough room.
-    uint32_t neededTotalBytes = Runtime::reserveFor(count * 2 + neededHalfwords * 2);
-    while(runtime->arenaEnd - runtime->arenaCursor < neededTotalBytes)
-    {
-        int victim = runtime->findEvictionVictim(lruTick);
-        if(victim < 0)
-        {
-            break;
-        }
-        // The in-progress emitter's own base is always exactly
-        // arenaCursor (nothing has bumped it — allocate() only ever runs
-        // once, on success), so evict()'s extended tail range, covering
-        // this Assembler's own already-written bytes too, keeps that
-        // invariant true on the other side.
-        runtime->evict((uint32_t)victim, count * 2);
-    }
-
-    buf = (uint16_t *)(uintptr_t)runtime->arenaCursor;
-    capacity = (runtime->arenaEnd - runtime->arenaCursor) / 2;
-}
-
-void Assembler::reserve(uint32_t maxBytes, uint32_t poolEntries)
-{
-    ensurePoolRoom(poolEntries);
-    growForAttached(maxBytes);
 }
 
 uint32_t Assembler::finalize()

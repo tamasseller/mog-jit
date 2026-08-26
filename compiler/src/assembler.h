@@ -133,25 +133,13 @@ public:
     // bytecode alone and so cannot see any of it.
     uint32_t poolDebt() const;
 
-    // ── budget / arena ──────────────────────────────────────────────────
-    // Ensure headroom for at least maxBytes more code and poolEntries
-    // more pool sites without either triggering arena exhaustion (an
-    // attached Assembler evicts/compacts as needed, exiting via fail() if
-    // even that isn't enough; a detached one just relies on emit()'s own
-    // bounds check) or a mid-emission pool flush that the caller wasn't
-    // expecting (abi_strategy.cpp's force-pooled call record is the one
-    // caller that genuinely needs poolEntries > 0; every ordinary
-    // instruction dispatch passes 0). Called once per bytecode
-    // instruction (instrMaxBytes(instr)) and once before the prologue
-    // stub, replacing the old translate_proc.cpp ensureRoom wrapper and
-    // guardLiteralPoolReach call together.
-    void reserve(uint32_t maxBytes, uint32_t poolEntries = 0);
-
     // End-of-procedure: flush the pool (no branch-around — nothing
     // executes past a terminator), and for an attached Assembler commit
     // the arena allocation and register the result with Runtime. Returns
     // the final halfword count.
     uint32_t finalize();
+
+    void ensurePoolRoom(uint32_t poolEntries);
 
 private:
     uint16_t *buf;
@@ -178,8 +166,7 @@ private:
     void parkPoolSite(uint32_t dstReg, uint32_t value);
     void patchPoolSite(uint32_t siteOffset, uint32_t word);
     void flushPoolImpl(bool endOfProcedure);
-    void ensurePoolRoom(uint32_t poolEntries);
-    void growForAttached(uint32_t neededBytes);
+    bool growForAttached();
 };
 
 } // namespace jitc

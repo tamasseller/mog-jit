@@ -52,12 +52,8 @@ static constexpr uint32_t CALL_SEQUENCE_BYTES = CALL_SEQUENCE_HALFWORDS * 2;
 
 void abiEmitCall(Assembler &a, uint32_t procIdx, uint32_t calleeIndex)
 {
-    // Guarantee both pool slots up front — reserve() may itself flush a
-    // still-open chunk (with its own branch-around), and that has to
-    // finish *before* preCallPc is read below, or k would end up
-    // measuring from the wrong position. After this, neither
-    // materializeImm32 call below can trigger a flush of its own.
-    a.reserve(CALL_SEQUENCE_BYTES, /*poolEntries=*/2);
+    a.ensurePoolRoom(2);
+    
     uint32_t preCallPc = a.pc();
 
     uint32_t k = (preCallPc - STUB_SIZE) + CALL_SEQUENCE_HALFWORDS * 2;

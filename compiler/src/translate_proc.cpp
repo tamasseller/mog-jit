@@ -179,7 +179,6 @@ static void translateBody(Ctx &ctx, Frame *frame)
         // table, so this one call covers every ordinary instruction's
         // emission (docs/design.md §11's mid-translation compaction) and
         // the literal pool's own reach guard together.
-        ctx.a.reserve(instrMaxBytes(instr));
 
         switch(instr.op)
         {
@@ -538,11 +537,6 @@ uint32_t translateProc(
     Ctx ctx{a, window, accState, proc.body, proc.bodyBytes,
         0, calleeArgCounts, calleeCount, procIdx, savesLR, initialSpilledCount};
 
-    // Prologue — the fixed dispatch-table prologue stub, plus push{lr} if
-    // this procedure's own body needs it protected. Not covered by the
-    // main loop's own per-instruction reserve() below, since it runs
-    // before that loop ever starts.
-    a.reserve(STUB_SIZE + 2); // +2: the optional push{lr}, one Thumb instruction
     abiEmitPrologue(a, savesLR);
 
     // Callee-side prologue: the last argument (if any) arrives in acc.
