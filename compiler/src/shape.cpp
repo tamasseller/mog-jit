@@ -1,30 +1,29 @@
 #include "shape.h"
-#include "emitter.h"
-#include "imm_synth.h"
+#include "assembler.h"
 #include "armv6.h"
 
 namespace jitc
 {
 
-void materializeShape(Emitter &e, const Shape &shape, uint32_t dstReg)
+void materializeShape(Assembler &a, const Shape &shape, uint32_t dstReg)
 {
     if(shape.isImm)
     {
-        emitSynthesizeImm32(e, dstReg, (uint32_t)shape.imm);
+        a.materializeImm32(dstReg, (uint32_t)shape.imm);
     }
     else if(shape.reg != dstReg)
     {
-        e.emit(ArmV6M::mov(ArmV6M::AnyReg((uint16_t)dstReg), ArmV6M::AnyReg((uint16_t)shape.reg)));
+        a.emit(ArmV6M::mov(ArmV6M::AnyReg((uint16_t)dstReg), ArmV6M::AnyReg((uint16_t)shape.reg)));
     }
 }
 
-uint32_t shapeToReg(Emitter &e, const Shape &shape, uint32_t scratchReg)
+uint32_t shapeToReg(Assembler &a, const Shape &shape, uint32_t scratchReg)
 {
     if(!shape.isImm)
     {
         return shape.reg;
     }
-    materializeShape(e, shape, scratchReg);
+    materializeShape(a, shape, scratchReg);
     return scratchReg;
 }
 

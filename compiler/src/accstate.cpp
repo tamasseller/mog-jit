@@ -1,5 +1,5 @@
 #include "accstate.h"
-#include "emitter.h"
+#include "assembler.h"
 #include "binops.h"
 
 #include <cassert>
@@ -13,14 +13,14 @@ Shape AccState::peek() const
     return kind == Kind::Pending ? shape : Shape::ofReg(reg);
 }
 
-void AccState::flush(Emitter &e, uint32_t dstReg)
+void AccState::flush(Assembler &e, uint32_t dstReg)
 {
     materializeShape(e, peek(), dstReg);
     kind = Kind::Clean;
     reg = dstReg;
 }
 
-void AccState::emitBinary(Emitter &e, Op op, Combo combo, const Shape *operand,
+void AccState::emitBinary(Assembler &e, Op op, Combo combo, const Shape *operand,
                           uint32_t dest, bool clobbersAcc)
 {
     emitBinaryOp(e, op, combo, peek(), operand, dest);

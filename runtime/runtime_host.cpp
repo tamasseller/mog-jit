@@ -46,27 +46,36 @@
 /* Fixed, one-time cost of getting from translatorTrampoline's own entry
  * down to translateBody's own first call. The recursion beyond that point
  * has no static whole-program worst case; that is policed live instead
- * (translateProc's stackFloor parameter).
+ * (Assembler::stackFloor(), read fresh by translateBody's own guard).
  *
- * Re-measured for the direct-arena compileProc (no more scratch buffer or
- * memcpy — calleeArgCounts is a VLA now, budgeted separately above), via
- * `-fstack-usage` against every function actually on this path before
- * translateBody's own first call: translatorTrampoline's own
- * push{r0,r1,r2} plus REALIGN_ENTER's worst-case reservation (24, asm,
- * unchanged from before); compileProc's own static frame (96 — the VLA
- * itself is excluded, being budgeted above); translate_proc.cpp's own
- * ensureRoom wrapper (8) and RuntimeArenaRoom::ensureRoom (56), called
- * once before abiEmitPrologue even runs (translateProc's own STUB_SIZE+2
- * check); translateProc's own frame (184, includes Ctx as a local;
- * translateBody's own recursive frames are a separate call, not folded in
- * here); abiEmitPrologue (16) and emitPrologueStub (16), summed rather
- * than assumed to inline into one another. 24+96+8+56+184+16+16 = 400.
+ * Re-measured for the Assembler-based compileProc (compiler/src/
+ * assembler.{h,cpp} — the arena-owning seam moved out of a separate
+ * ArenaRoom pointer into the Assembler itself, and the literal pool moved
+ * from translate_proc.cpp's own Ctx into the Assembler too), via
+ * `-fstack-usage` against every function actually on this path. Two
+ * candidate chains both run sequentially before translateBody's first
+ * call — prologue emission, then the last-argument-fold scan — so the
+ * worse of the two, not their sum, sets this constant:
+ *
+ * translatorTrampoline's own push{r0,r1,r2} plus REALIGN_ENTER's
+ * worst-case reservation (24, asm, unchanged from before); compileProc's
+ * own static frame (224 — up from 96: it now holds the Assembler object
+ * itself as a local rather than a separate RuntimeArenaRoom; the
+ * calleeArgCounts VLA is still excluded, budgeted separately above);
+ * translateProc's own frame (144, includes Ctx as a local; translateBody's
+ * own recursive frames are a separate call, not folded in here); then the
+ * deeper of — a.reserve(STUB_SIZE+2) (16) + Assembler::growForAttached
+ * (48), called once before abiEmitPrologue even runs, versus
+ * AccState::flush (32) + materializeShape (8) + Assembler::materializeImm32
+ * (16) + Assembler::emitSynthesizeImm32Into (40) = 96, reached if the
+ * last-argument-fold scan's own eager-flush path needs full synthesis —
+ * the second chain is deeper. 24+224+144+96 = 488.
  *
  * Not yet enforced at build time via a per-file `-Wstack-usage=`/
  * `-Werror=stack-usage=` pin — wiring that into this Makefile's own
  * ultimate-makefile-based object rules is a reasonable follow-up, not done
  * here. */
-#define TRANSLATOR_ENTRY_WORST_CASE_BYTES (24 + 96 + 8 + 56 + 184 + 16 + 16)
+#define TRANSLATOR_ENTRY_WORST_CASE_BYTES (24 + 224 + 144 + 96)
 
 static uint8_t arenaStorage[ARENA_CAPACITY];
 

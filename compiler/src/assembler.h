@@ -1,0 +1,221 @@
+// jit-armv6m/compiler — the assembler layer: code buffer, branch
+// placeholder/fixup, the literal pool (tracked by stored value, not
+// bytecode tag — flushPool() never re-decodes anything and never scans
+// its own output, so a BR_TABLE(N>2) jump table's raw halfwords are never
+// at risk of being misread as a pooled site), immediate-materialization
+// scheme selection, and — for a procedure attached to a real Runtime —
+// arena eviction/compaction and final dispatch-table registration. This
+// is the one seam between the environment-free core compiler
+// (translate_proc.cpp and everything it calls) and the runtime's own
+// dispatch/eviction machinery; nothing above this layer touches Runtime
+// directly.
+#ifndef JIT_ARMV6M_COMPILER_ASSEMBLER_H_
+#define JIT_ARMV6M_COMPILER_ASSEMBLER_H_
+
+#include <cstdint>
+#include "armv6.h"
+
+// Declared at global scope in runtime/runtime_internal.h, a plain
+// aggregate every caller builds by reinterpreting a raw byte buffer —
+// forward-declared here rather than pulled in by #include so a detached
+// Assembler's own clients (every host unit test, the QEMU pre-
+// measurement calls) stay exactly as Runtime-agnostic as before; only
+// assembler.cpp itself needs the real definition.
+class Runtime;
+
+namespace jitc
+{
+
+// A pending forward-branch target: a chain of not-yet-resolved branch
+// sites threaded through the branches' own encoded offsets (each new site
+// points at the previous chain head, or self-links as the chain's first
+// entry) — no side array needed, generalizing blocks.cpp's own
+// endFixupChain trick so every caller gets it. bind() is the only way to
+// resolve one, and it flushes the pool first — the ordering guarantee
+// that makes a label's target always land after any pool words a flush
+// might insert, never colliding with them.
+struct Label
+{
+    int32_t chain = -1;
+};
+
+class Assembler
+{
+public:
+    // Detached: a fixed caller-supplied buffer, no arena, no Runtime.
+    // Every host unit test and QEMU pre-measurement call uses this.
+    // stackFloor is returned by stackFloor() unchanged — the detached
+    // case has no live Runtime to derive it from, so a caller that cares
+    // (translateProc's own stack-nesting guard) supplies it directly.
+    explicit Assembler(uint16_t *buf, uint32_t capacityHalfwords, uint32_t stackFloor = 0);
+
+    // Attached: owns arena growth against a real Runtime and exits
+    // directly (never returns) if it cannot free enough room — the
+    // landing's own bailOut, folded in here rather than left for a caller
+    // to check after the fact. procIdx is this procedure's own
+    // dispatch-table index, needed by finalize() to register the
+    // compiled result and by abi_strategy.cpp's force-pooled call record.
+    // lruTick is the current r11 value, read once by the caller so this
+    // class never needs `register ... asm("r11")` itself — that keeps
+    // real inline asm out of the host build entirely.
+    Assembler(Runtime *runtime, uint32_t procIdx, uint32_t lruTick);
+
+    Assembler(const Assembler &) = delete;
+    Assembler &operator=(const Assembler &) = delete;
+
+    // ── raw buffer ──────────────────────────────────────────────────────
+    uint32_t pc() const { return count * 2; }
+    uint32_t halfwordCount() const { return count; }
+    uint32_t emit(uint16_t word);
+
+    // Detached only, meaningful: latched once emit() runs out of room or
+    // fail() is called. An attached Assembler never sets this — it exits
+    // directly instead (see fail()) — so this always reads false there.
+    bool overflowed() const { return overflowedFlag; }
+
+    // The live stack-recursion floor translateBody's own nesting guard
+    // checks against — for an attached Assembler this is
+    // Runtime::liveStackFloor(), read fresh every call since arenaCursor
+    // moves between compilations; for a detached one it's the fixed value
+    // given at construction.
+    uint32_t stackFloor() const;
+
+    // A translator-detected failure (arena exhausted beyond what
+    // reserve() could free, or the live stack-nesting guard tripped).
+    // Detached: latches overflowed() and returns normally. Attached:
+    // restores the caller's own saved sp and long-jumps to the landing
+    // with RESOURCE_ERROR — never returns. Every call site must still
+    // `return` right after calling this, exactly as if it always
+    // returned, since the detached case does.
+    void fail();
+
+    // ── branches ────────────────────────────────────────────────────────
+    // Raw placeholder/patch primitives — blocks.cpp's own Frame bookkeeping
+    // (TableInfo's raw halfword slots, the guard branch site openBrTable
+    // hands back to its caller) still reaches these directly; Label/bind()
+    // below is the flush-safe alternative for a fixup that resolves to
+    // "wherever we are once this construct closes."
+    uint32_t placeholderBranch();
+    uint32_t placeholderCondBranch(ArmV6M::Condition c);
+    void patchBranch(uint32_t siteOffset, uint32_t targetOffset);
+    uint32_t readBranchTarget(uint32_t siteOffset) const;
+
+    // Chain site onto label (self-linking it if label was empty) — the
+    // building block bind() below walks back through.
+    void branchTo(Label &label, ArmV6M::Condition c);
+    void branchTo(Label &label);
+
+    // Flush the pool (if one is open — safe to call on an empty Label),
+    // then resolve every branch chained onto label to right here. This is
+    // the one place a forward fixup may ever be resolved to "the current
+    // position" — doing it through here rather than a bare
+    // patchBranch(site, pc()) is what keeps a label's target from ever
+    // landing on top of pool words a flush inserts.
+    void bind(Label &label);
+
+    // Flush the pool (if one is open), same as bind() but with no label
+    // to resolve — blocks.cpp's raw jump-table-slot fixups (never
+    // branches, so nothing to chain onto a Label) still need "wherever
+    // we are, after any pending flush" before reading pc() for one of
+    // these.
+    void flushPool();
+
+    // ── raw halfword slots (BR_TABLE N>2 jump tables — never pool data) ──
+    void patchRawHalfword(uint32_t siteOffset, uint16_t value);
+
+    // ── immediates ──────────────────────────────────────────────────────
+    // Materialize value into dstReg: a pooled PC-relative load when that
+    // beats inline shift-and-add synthesis, otherwise the synthesis
+    // itself. Callable from anywhere — the pool no longer needs a
+    // bytecode pc to tag a site with, so this has no bytecode dependency
+    // at all, unlike the old materializeLargeImmediate.
+    void materializeImm32(uint32_t dstReg, uint32_t value);
+
+    // Force-pool value regardless of isPoolingEligible — always exactly
+    // one halfword at the call site (the 4-byte word lands at flush time,
+    // outside this sequence). abi_strategy.cpp's call record needs its
+    // own emitted length to be independent of its own value to close
+    // findResumeOffset's old fixed point; a pooled site is the only shape
+    // that's true for. The caller must have already reserve()'d at least
+    // one free pool slot (reserve(maxBytes, /*poolEntries=*/1)) — this
+    // never itself triggers a flush, which would shift the very offset
+    // being computed around it.
+    void materializeImm32Pooled(uint32_t dstReg, uint32_t value);
+
+    // How many halfwords materializeImm32 would emit for value if it
+    // synthesized inline rather than pooling — a pure function of value
+    // alone, needed by abi_strategy.cpp to size its own callee-index
+    // operand (which, unlike the call record, has no self-reference to
+    // its own encoded length and so never needed pooling in the first
+    // place).
+    static uint32_t imm32SynthCost(uint32_t value);
+
+    // Shortest synthesis worth replacing with a pooled load (2 bytes of
+    // instruction + a 4-byte pool word). At 3 the two tie on size, but a
+    // mid-procedure pool's branch-around is *executed*, costing a chunk
+    // of n sites 2n+3 cycles against 3n — a loss for small n. From 4 up,
+    // pooling wins on both size and cycles.
+    static constexpr uint32_t POOLING_MIN_LENGTH = 4;
+    static bool isPoolingEligible(uint32_t value);
+
+    // What the currently-open pool chunk still owes the output stream —
+    // one word per pending site (after dedup this may overcount slightly;
+    // always a safe over-estimate, never an under-estimate), plus the
+    // branch-around and worst-case pad its flush will emit. blocks.cpp's
+    // emitGuardedBranch needs this because its own span bound walks
+    // bytecode alone and so cannot see any of it.
+    uint32_t poolDebt() const;
+
+    // ── budget / arena ──────────────────────────────────────────────────
+    // Ensure headroom for at least maxBytes more code and poolEntries
+    // more pool sites without either triggering arena exhaustion (an
+    // attached Assembler evicts/compacts as needed, exiting via fail() if
+    // even that isn't enough; a detached one just relies on emit()'s own
+    // bounds check) or a mid-emission pool flush that the caller wasn't
+    // expecting (abi_strategy.cpp's force-pooled call record is the one
+    // caller that genuinely needs poolEntries > 0; every ordinary
+    // instruction dispatch passes 0). Called once per bytecode
+    // instruction (instrMaxBytes(instr)) and once before the prologue
+    // stub, replacing the old translate_proc.cpp ensureRoom wrapper and
+    // guardLiteralPoolReach call together.
+    void reserve(uint32_t maxBytes, uint32_t poolEntries = 0);
+
+    // End-of-procedure: flush the pool (no branch-around — nothing
+    // executes past a terminator), and for an attached Assembler commit
+    // the arena allocation and register the result with Runtime. Returns
+    // the final halfword count.
+    uint32_t finalize();
+
+private:
+    uint16_t *buf;
+    uint32_t capacity;
+    uint32_t count = 0;
+    bool overflowedFlag = false;
+    uint32_t detachedStackFloor;
+
+    Runtime *runtime = nullptr; // null: detached
+    uint32_t procIdx = 0;
+    uint32_t lruTick = 0;
+
+    // The pool's whole deferral state — stored (site, value) pairs, not a
+    // bytecode tag: flushPool() patches each site directly, with no scan
+    // of the output buffer at all. pendingSites[0] doubles as the chunk's
+    // own output-start for the reach guard — always the oldest pending
+    // site, since sites are appended in emission order.
+    static constexpr uint32_t POOL_MAX_PENDING = 16;
+    uint32_t pendingSites[POOL_MAX_PENDING];
+    uint32_t pendingValues[POOL_MAX_PENDING];
+    uint32_t pendingCount = 0;
+
+    void linkIntoChain(Label &label, uint32_t site);
+    void parkPoolSite(uint32_t dstReg, uint32_t value);
+    void patchPoolSite(uint32_t siteOffset, uint32_t word);
+    void emitSynthesizeImm32Into(uint32_t dstReg, uint32_t value);
+    void flushPoolImpl(bool endOfProcedure);
+    void ensurePoolRoom(uint32_t poolEntries);
+    void growForAttached(uint32_t neededBytes);
+};
+
+} // namespace jitc
+
+#endif // JIT_ARMV6M_COMPILER_ASSEMBLER_H_

@@ -1,5 +1,5 @@
 #include "unaryops.h"
-#include "emitter.h"
+#include "assembler.h"
 #include "registers.h"
 #include "armv6.h"
 
@@ -8,7 +8,7 @@ namespace jitc
 
 using R = ArmV6M::LoReg;
 
-void emitUnary(Emitter &e, Op op, uint32_t dest)
+void emitUnary(Assembler &e, Op op, uint32_t dest)
 {
     if(op == Op::NEG)
     {

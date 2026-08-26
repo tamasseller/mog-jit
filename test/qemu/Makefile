@@ -22,7 +22,7 @@ SOURCES += ../../runtime/compile_proc_real.cpp
 SOURCES += ../../compiler/src/window.cpp
 SOURCES += ../../compiler/src/accstate.cpp
 SOURCES += ../../compiler/src/binops.cpp
-SOURCES += ../../compiler/src/imm_synth.cpp
+SOURCES += ../../compiler/src/assembler.cpp
 SOURCES += ../../compiler/src/shape.cpp
 SOURCES += ../../compiler/src/abi_strategy.cpp
 SOURCES += ../../compiler/src/decode_instr.cpp
@@ -71,6 +71,15 @@ ASMFLAGS += -mcpu=cortex-m0 -mthumb
 # the invariants compiled *out*, not checked.
 CXXFLAGS += -mcpu=cortex-m0 -mthumb -Os -DNDEBUG
 CXXFLAGS += -std=gnu++17 -fno-exceptions -fno-rtti
+
+# runtime.S's own hand-written asm (and every `register ... asm("r8"/"r9"/
+# "r10"/"r11")` C++ site built alongside it — dispatch base, the Runtime
+# pointer, the helper-vector base, the LRU tick) all assume the compiler's
+# own register allocator never touches r8-r11 for anything else. That
+# assumption was previously undocumented in the build itself — asserted
+# only in comments (runtime.S, docs/design.md) — so nothing actually
+# enforced it.
+CXXFLAGS += -ffixed-r8 -ffixed-r9 -ffixed-r10 -ffixed-r11
 
 # 1test's TestHandle/TestOutput both have virtual destructors, so g++
 # registers their static instances for destruction at exit — with the

@@ -1,5 +1,5 @@
 #include "Test.h"
-#include "emitter.h"
+#include "assembler.h"
 #include "accstate.h"
 #include "shape.h"
 
@@ -15,7 +15,7 @@ TEST(startsCleanInAccReg)
 TEST(producerThenPeekReturnsPendingShapeUnmaterialized)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     AccState acc;
     acc.producer(Shape::ofImm(42));
     CHECK(e.halfwordCount() == 0); // producer alone never emits
@@ -27,7 +27,7 @@ TEST(producerThenPeekReturnsPendingShapeUnmaterialized)
 TEST(flushMaterializesPendingAndBecomesClean)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     AccState acc;
     acc.producer(Shape::ofImm(3));
     acc.flush(e, 5);
@@ -40,7 +40,7 @@ TEST(flushMaterializesPendingAndBecomesClean)
 TEST(flushOfAlreadyCleanSameRegisterIsANoOp)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     AccState acc; // starts Clean(ACC_REG)
     acc.flush(e, ACC_REG);
     CHECK(e.halfwordCount() == 0);
@@ -54,7 +54,7 @@ TEST(flushLiveOnPoisonedAccIsANoOp)
     // with nothing after to re-establish it. flushLive treats this as a
     // no-op, not an error — nothing downstream could read acc either way.
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     AccState acc;
     acc.poison();
     acc.flushLive(e, ACC_REG);
@@ -80,7 +80,7 @@ TEST(setCleanThenPoisonThenProducerSupersedes)
 TEST(emitBinaryPoisonsOnClobberingComboAndCleansOtherwise)
 {
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     AccState acc;
     acc.setClean(ACC_REG);
     Shape operand = Shape::ofImm(1);

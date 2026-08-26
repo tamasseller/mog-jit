@@ -60,7 +60,7 @@
 namespace jitc
 {
 
-class Emitter;
+class Assembler;
 class AccState;
 
 bool inWindow(uint32_t tos, uint32_t k);
@@ -90,12 +90,12 @@ public:
 
     // Push accState's current value onto the window: spill whatever it's
     // about to evict, materialize the value into its new home, bump tos.
-    void pushValue(Emitter &e, AccState &accState);
+    void pushValue(Assembler &e, AccState &accState);
 
     // Complete a pop whose value was already read out of topReg() — the
     // fill (if any) and the tos decrement, together. Must be called only
     // once every read of topReg() has already been emitted.
-    void finishPop(Emitter &e);
+    void finishPop(Assembler &e);
 
     // Byte offset from the current sp for slot k, valid only when k is
     // genuinely spilled (!inWindow(tos, k)). A savesLR procedure (one that
@@ -116,7 +116,7 @@ public:
     // own prologue ran (those sit below this procedure's own push{lr}).
     // abi_strategy.cpp's abiEmitReturn reclaims that remainder, after
     // retrieving the saved record.
-    void discardWindow(Emitter &e) const;
+    void discardWindow(Assembler &e) const;
 
 private:
     bool savesLR;
@@ -126,7 +126,7 @@ private:
 // CALL's own shuffle, first half — spills the caller's currently-resident
 // window into the leftover-locals mask (one plain PUSH) and the
 // stack-passed args (pushLargestKClosest). Doesn't move window.tos.
-void spillForCall(Emitter &e, Window &window, uint32_t stackArgs);
+void spillForCall(Assembler &e, Window &window, uint32_t stackArgs);
 
 // CALL's shuffle, second half — fills the callee's own canonical phase-0
 // window from what spillForCall just pushed. Capped at WINDOW_SIZE - 1, not
@@ -134,11 +134,11 @@ void spillForCall(Emitter &e, Window &window, uint32_t stackArgs);
 // through this function) always lands at physReg(argCount-1), which is the
 // same physical register as physReg(0) whenever stackArgs equals
 // WINDOW_SIZE exactly, so this cap must stay exact.
-void fillCalleeArgs(Emitter &e, uint32_t stackArgs);
+void fillCalleeArgs(Assembler &e, uint32_t stackArgs);
 
 // CALL's shuffle, final step — once the callee returns, reload whatever
 // spillForCall/fillCalleeArgs consumed. Mutates window.tos to targetTos.
-void reloadAfterCall(Emitter &e, Window &window, uint32_t targetTos);
+void reloadAfterCall(Assembler &e, Window &window, uint32_t targetTos);
 
 // blocks.h's own block-exit truncation: any TOS surplus above targetTos is
 // implicitly dropped at a BLOCK_END/loop back-edge — no bytecode-level pop
@@ -148,7 +148,7 @@ void reloadAfterCall(Emitter &e, Window &window, uint32_t targetTos);
 // outright; what's spilled at or below it is genuinely historical data,
 // reloaded via popRuns in the same larger-k-first order it was spilled in.
 // Mutates window.tos to targetTos directly.
-void restoreWindow(Emitter &e, Window &window, uint32_t targetTos);
+void restoreWindow(Assembler &e, Window &window, uint32_t targetTos);
 
 } // namespace jitc
 

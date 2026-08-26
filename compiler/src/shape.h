@@ -9,7 +9,7 @@
 namespace jitc
 {
 
-class Emitter;
+class Assembler;
 
 struct Shape
 {
@@ -30,11 +30,11 @@ struct Shape
 
 /** Turn any Shape into a concrete value sitting in dstReg — a no-op when
  *  shape is already dstReg itself. */
-void materializeShape(Emitter &e, const Shape &shape, uint32_t dstReg);
+void materializeShape(Assembler &a, const Shape &shape, uint32_t dstReg);
 
 /** A Shape as a register, materializing into scratchReg only if it isn't
  *  one already. */
-uint32_t shapeToReg(Emitter &e, const Shape &shape, uint32_t scratchReg);
+uint32_t shapeToReg(Assembler &a, const Shape &shape, uint32_t scratchReg);
 
 } // namespace jitc
 

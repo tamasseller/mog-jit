@@ -1,7 +1,7 @@
 // Expected halfwords are cross-checked against arm-none-eabi-as, not
 // re-derived from the same formulas under test.
 #include "Test.h"
-#include "emitter.h"
+#include "assembler.h"
 #include "window.h"
 #include "accstate.h"
 #include "shape.h"
@@ -47,7 +47,7 @@ TEST(spillOffsetGetsSavesLRAdjustmentOnlyForOriginalOutOfWindowArgs)
     // spilled strictly after the prologue's own push{lr}, so this
     // procedure's own view of sp is already self-consistent for it.
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     AccState acc;
     acc.producer(Shape::ofImm(99));
     nonLeaf.pushValue(e, acc); // tos: 5 -> 6, evicts k=1 to the real stack
@@ -58,7 +58,7 @@ TEST(spillOffsetGetsSavesLRAdjustmentOnlyForOriginalOutOfWindowArgs)
 TEST(pushValueEvictsAtWindowBoundary)
 {
     uint16_t buf[16];
-    Emitter e(buf, 16);
+    Assembler e(buf, 16);
     Window w(0);
     AccState acc;
     int values[] = {10, 20, 30, 40, 50};
@@ -81,7 +81,7 @@ TEST(pushValueEvictsAtWindowBoundary)
 TEST(finishPopReloadsWhatPushEvicted)
 {
     uint16_t buf[16];
-    Emitter e(buf, 16);
+    Assembler e(buf, 16);
     Window w(0);
     AccState acc;
     for(int v : {10, 20, 30, 40, 50})
@@ -100,7 +100,7 @@ TEST(finishPopReloadsWhatPushEvicted)
 TEST(discardWindowIsOneBareSpAdjustment)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Window w(6); // 2 slots spilled (tos=6, WINDOW_SIZE=4), leaf
     w.discardWindow(e);
     CHECK(e.halfwordCount() == 1);
@@ -115,7 +115,7 @@ TEST(discardWindowForSavesLRReclaimsOnlySelfSpilledLocals)
     // abiEmitReturn (not discardWindow) reclaims after retrieving the
     // saved record.
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Window w(5, /*savesLR=*/true); // tos=5, spilledCount=1, all of it "original"
     w.discardWindow(e);
     CHECK(e.halfwordCount() == 0); // nothing self-spilled — nothing to reclaim here
@@ -129,7 +129,7 @@ TEST(callShuffleWithStackArgsExceedingWindowSize)
     // wrong cap here would silently reassign which value lands in which
     // register.
     uint16_t buf1[8];
-    Emitter e1(buf1, 8);
+    Assembler e1(buf1, 8);
     Window w(6);
     spillForCall(e1, w, 6);
     CHECK(e1.halfwordCount() == 2);
@@ -137,14 +137,14 @@ TEST(callShuffleWithStackArgsExceedingWindowSize)
     CHECK(buf1[1] == 0xB4C0); // PUSH {r6, r7}  (post-wrap run, k=4,5)
 
     uint16_t buf2[8];
-    Emitter e2(buf2, 8);
+    Assembler e2(buf2, 8);
     fillCalleeArgs(e2, 6);
     CHECK(e2.halfwordCount() == 2);
     CHECK(buf2[0] == 0xBCC0); // POP {r6, r7}  (larger-k run first)
     CHECK(buf2[1] == 0xBC10); // POP {r4}      (k=3's own lone run)
 
     uint16_t buf3[8];
-    Emitter e3(buf3, 8);
+    Assembler e3(buf3, 8);
     reloadAfterCall(e3, w, 0); // targetTos = tos(6) - stackArgs(6) = 0
     CHECK(e3.halfwordCount() == 0); // nothing left over to restore
     CHECK(w.tos == 0);
@@ -158,7 +158,7 @@ TEST(callShuffleWithLeftoverLocalsAboveTheStackArgs)
     // bottom) fires to preserve them, distinct from pushLargestKClosest's
     // own per-argument pushes just below.
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     Window w(5);
     spillForCall(e, w, 2);
     CHECK(e.halfwordCount() == 3);

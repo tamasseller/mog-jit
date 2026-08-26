@@ -1,5 +1,4 @@
 #include "blocks.h"
-#include "emitter.h"
 #include "window.h"
 #include "accstate.h"
 #include "decode_instr.h"
@@ -67,20 +66,20 @@ SpanResult maxSpanBytes(const uint8_t *bytes, uint32_t bytesLen, uint32_t from, 
     return {total, pc};
 }
 
-uint32_t emitGuardedBranch(Emitter &e, Cond condition, const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount, uint32_t pendingPoolBytes)
+void emitGuardedBranch(Assembler &a, Label &label, Cond condition, const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount)
 {
-    if(maxSpanBytes(bytes, bytesLen, from, blockCount).bytes + pendingPoolBytes <= SAFE_COND_BRANCH_SPAN)
+    if(maxSpanBytes(bytes, bytesLen, from, blockCount).bytes + a.poolDebt() <= SAFE_COND_BRANCH_SPAN)
     {
-        return e.placeholderCondBranch(condition);
+        a.branchTo(label, condition);
+        return;
     }
 
-    uint32_t skip = e.placeholderCondBranch(ArmV6M::inverse(condition));
-    uint32_t site = e.placeholderBranch();
-    e.patchBranch(skip, skip + 4); // "not taken" (condition true) — fall through to the long branch right after
-    return site;
+    uint32_t skip = a.placeholderCondBranch(ArmV6M::inverse(condition));
+    a.branchTo(label); // the long unconditional branch, chained onto label
+    a.patchBranch(skip, skip + 4); // "not taken" (condition true) — fall through to the long branch right after
 }
 
-Frame openBrTable(Emitter &e, Window &window, AccState &accState, uint32_t n, Cond condition, bool fused, const uint8_t *bytes, uint32_t bytesLen, uint32_t pc, uint32_t pendingPoolBytes)
+Frame openBrTable(Assembler &a, Window &window, AccState &accState, uint32_t n, Cond condition, bool fused, const uint8_t *bytes, uint32_t bytesLen, uint32_t pc)
 {
     assert(n == 1 || n == 2); // GCOV_EXCL_LINE — only if/if-else are supported; N>2 goes through openBrTableJump
 
@@ -88,20 +87,21 @@ Frame openBrTable(Emitter &e, Window &window, AccState &accState, uint32_t n, Co
     frame.kind = FrameKind::Case;
     frame.entryTos = window.tos;
     frame.remaining = n;
-    frame.nextCaseFixup = -1;
     frame.table.present = false;
-    frame.endFixupChain = -1;
     frame.fusedBoolean = fused;
 
-    uint32_t site = emitGuardedBranch(e, condition, bytes, bytesLen, pc, 1, pendingPoolBytes); // guards exactly case[0]'s own body
+    // guards exactly case[0]'s own body — n==1 (bare if) has no case[1]
+    // to skip to, so the guard chains onto endFixupChain directly
+    // (self-linking as its sole entry, resolved the moment this frame's
+    // one case closes); n==2 chains onto nextCaseFixup instead, resolved
+    // the moment case[0] closes below.
     if(n == 1)
     {
-        e.patchBranch(site, site); // no case[1] to skip to — sole chain entry, self-linked to terminate
-        frame.endFixupChain = (int32_t)site;
+        emitGuardedBranch(a, frame.endFixupChain, condition, bytes, bytesLen, pc, 1);
     }
     else
     {
-        frame.nextCaseFixup = (int32_t)site; // target is "start of case[1]", resolved the moment case[0] closes below
+        emitGuardedBranch(a, frame.nextCaseFixup, condition, bytes, bytesLen, pc, 1);
     }
     // case[0] (about to be translated by the caller) runs exactly when the
     // fused comparison was false — no register holds that result (the
@@ -115,31 +115,29 @@ Frame openBrTable(Emitter &e, Window &window, AccState &accState, uint32_t n, Co
     return frame;
 }
 
-Frame openBrTableJump(Emitter &e, Window &window, uint32_t n, AccState &accState)
+Frame openBrTableJump(Assembler &a, Window &window, uint32_t n, AccState &accState)
 {
-    accState.flush(e, ACC_REG);
-    emitSynthesizeImm32(e, SCRATCH_REG, n);
+    accState.flush(a, ACC_REG);
+    a.materializeImm32(SCRATCH_REG, n);
     // brTableJumpHelper, index 6 (docs/design.md §11's reserved slots) —
     // BLX, not BX: lr needs to end up pointing at the table emitted right
     // after this, exactly as it would after a local BL.
-    e.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
-    e.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(24)));
-    e.emit(ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
+    a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
+    a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(24)));
+    a.emit(ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
 
-    uint32_t base = e.pc(); // == lr, once the BLX above actually executes
+    uint32_t base = a.pc(); // == lr, once the BLX above actually executes
     for(uint32_t i = 0; i <= n; i++)
     {
-        e.emit(0); // n+1 slots, contiguous from base
+        a.emit(0); // n+1 slots, contiguous from base
     }
-    e.patchLiteral(base, (uint16_t)(e.pc() - base)); // case 0 starts right here — no fixup needed
+    a.patchRawHalfword(base, (uint16_t)(a.pc() - base)); // case 0 starts right here — no fixup needed
 
     Frame frame{};
     frame.kind = FrameKind::Case;
     frame.entryTos = window.tos;
     frame.remaining = n;
-    frame.nextCaseFixup = -1;
     frame.table = TableInfo{true, base, base + 2, base + 2 * n};
-    frame.endFixupChain = -1;
     // Never fused (BR_TABLE N>2 is a genuine multi-way value, not a
     // boolean) — and unlike openBrTable's case[0], nothing needs seeding
     // here either: the flush above leaves ACC_REG holding the real
@@ -150,14 +148,13 @@ Frame openBrTableJump(Emitter &e, Window &window, uint32_t n, AccState &accState
     return frame;
 }
 
-Frame openLoop(Emitter &e, Window &window, AccState &accState)
+Frame openLoop(Assembler &a, Window &window, AccState &accState)
 {
-    accState.flushLive(e, ACC_REG);
+    accState.flushLive(a, ACC_REG);
     Frame frame{};
     frame.kind = FrameKind::LoopCond;
     frame.entryTos = window.tos;
-    frame.loopStart = e.pc();
-    frame.exitFixup = -1;
+    frame.loopStart = a.pc();
     return frame;
 }
 
@@ -171,23 +168,21 @@ Frame openLoop(Emitter &e, Window &window, AccState &accState)
  *  (closeBlockEnd) has to actively branch past its own sibling cases'
  *  code; a case that ends via its own RETURN/TRAP (closeCaseViaTerminator)
  *  has already left the procedure entirely by the time this runs. */
-static bool resolveCaseClose(Emitter &e, Frame &frame, bool emitSkipToEnd)
+static bool resolveCaseClose(Assembler &a, Frame &frame, bool emitSkipToEnd)
 {
     frame.remaining -= 1;
     if(frame.remaining > 0 && emitSkipToEnd)
     {
-        uint32_t site = e.placeholderBranch();
-        e.patchBranch(site, frame.endFixupChain == -1 ? site : (uint32_t)frame.endFixupChain);
-        frame.endFixupChain = (int32_t)site;
+        a.branchTo(frame.endFixupChain);
     }
-    if(frame.nextCaseFixup != -1)
+    if(frame.nextCaseFixup.chain != -1)
     {
-        e.patchBranch((uint32_t)frame.nextCaseFixup, e.pc());
-        frame.nextCaseFixup = -1;
+        a.bind(frame.nextCaseFixup);
     }
     else if(frame.table.present && frame.table.nextFixupSlot != frame.table.endSlot)
     {
-        e.patchLiteral(frame.table.nextFixupSlot, (uint16_t)(e.pc() - frame.table.base));
+        a.flushPool();
+        a.patchRawHalfword(frame.table.nextFixupSlot, (uint16_t)(a.pc() - frame.table.base));
         frame.table.nextFixupSlot += 2;
     }
     if(frame.remaining > 0)
@@ -195,44 +190,39 @@ static bool resolveCaseClose(Emitter &e, Frame &frame, bool emitSkipToEnd)
         return true; // stay on this frame — now translating the next case
     }
 
-    for(int32_t site = frame.endFixupChain; site != -1;)
-    {
-        uint32_t prevSite = e.readBranchTarget((uint32_t)site);
-        e.patchBranch((uint32_t)site, e.pc());
-        site = (prevSite == (uint32_t)site) ? -1 : (int32_t)prevSite;
-    }
+    a.bind(frame.endFixupChain);
     if(frame.table.present)
     {
-        e.patchLiteral(frame.table.endSlot, (uint16_t)(e.pc() - frame.table.base));
+        a.patchRawHalfword(frame.table.endSlot, (uint16_t)(a.pc() - frame.table.base));
     }
     return false;
 }
 
-bool closeCaseViaTerminator(Emitter &e, Window &window, AccState &accState, Frame &frame)
+bool closeCaseViaTerminator(Assembler &a, Window &window, AccState &accState, Frame &frame)
 {
     assert(frame.kind == FrameKind::Case); // GCOV_EXCL_LINE — translate_proc.cpp's own caller already dispatches on kind
     window.tos = frame.entryTos;
     accState.setClean(ACC_REG);
-    return resolveCaseClose(e, frame, false);
+    return resolveCaseClose(a, frame, false);
 }
 
-void closeLoopBodyViaTerminator(Emitter &e, Window &window, AccState &accState, Frame &frame)
+void closeLoopBodyViaTerminator(Assembler &a, Window &window, AccState &accState, Frame &frame)
 {
     assert(frame.kind == FrameKind::LoopBody); // GCOV_EXCL_LINE — see closeCaseViaTerminator's own comment
-    e.patchBranch((uint32_t)frame.exitFixup, e.pc());
+    a.bind(frame.exitFixup);
     window.tos = frame.entryTos;
     accState.setClean(ACC_REG);
 }
 
-bool closeBlockEnd(Emitter &e, Window &window, AccState &accState, Frame &frame,
+bool closeBlockEnd(Assembler &a, Window &window, AccState &accState, Frame &frame,
     bool hasLoopExitCondition, Cond loopExitCondition, bool fusedLoopExit,
-    const uint8_t *bytes, uint32_t bytesLen, uint32_t pc, uint32_t pendingPoolBytes)
+    const uint8_t *bytes, uint32_t bytesLen, uint32_t pc)
 {
     if(frame.kind == FrameKind::Case)
     {
-        restoreWindow(e, window, frame.entryTos);
-        accState.flushLive(e, ACC_REG);
-        bool stillOpen = resolveCaseClose(e, frame, true);
+        restoreWindow(a, window, frame.entryTos);
+        accState.flushLive(a, ACC_REG);
+        bool stillOpen = resolveCaseClose(a, frame, true);
         // case[1] (about to be translated, if this frame has one) runs
         // exactly when the fused comparison was true — mirrors
         // openBrTable's own case[0] seeding.
@@ -245,11 +235,10 @@ bool closeBlockEnd(Emitter &e, Window &window, AccState &accState, Frame &frame,
 
     if(frame.kind == FrameKind::LoopCond)
     {
-        restoreWindow(e, window, frame.entryTos);
+        restoreWindow(a, window, frame.entryTos);
         assert(hasLoopExitCondition); // GCOV_EXCL_LINE — LOOP condition block closed with no fused comparison to branch on
-        uint32_t exitFixup = emitGuardedBranch(e, loopExitCondition, bytes, bytesLen, pc + 1, 1, pendingPoolBytes);
+        emitGuardedBranch(a, frame.exitFixup, loopExitCondition, bytes, bytesLen, pc + 1, 1);
         frame.kind = FrameKind::LoopBody;
-        frame.exitFixup = (int32_t)exitFixup;
         // entryTos/loopStart already carried over from the LoopCond frame.
         // The body about to be translated runs exactly when the fused
         // comparison was true — same seeding as openBrTable's case[1],
@@ -265,11 +254,14 @@ bool closeBlockEnd(Emitter &e, Window &window, AccState &accState, Frame &frame,
 
     // LoopBody: unconditional back-edge, then the earlier exit branch
     // resolves to right after it — both targets were knowable without
-    // ever looking past this point.
-    restoreWindow(e, window, frame.entryTos);
-    accState.flushLive(e, ACC_REG);
-    e.emit(ArmV6M::b(ArmV6M::Ioff<1, 11>((int16_t)((int32_t)frame.loopStart - (int32_t)(e.pc() + 4)))));
-    e.patchBranch((uint32_t)frame.exitFixup, e.pc());
+    // ever looking past this point. Nothing falls through past the
+    // back-edge (it's unconditional), so bind()'s own pool flush here is
+    // always safe: the exit branch is the only thing that ever reaches
+    // this address.
+    restoreWindow(a, window, frame.entryTos);
+    accState.flushLive(a, ACC_REG);
+    a.emit(ArmV6M::b(ArmV6M::Ioff<1, 11>((int16_t)((int32_t)frame.loopStart - (int32_t)(a.pc() + 4)))));
+    a.bind(frame.exitFixup);
     return false;
 }
 
@@ -283,7 +275,7 @@ static constexpr Cond MIRRORED_CONDITION[10] = {
     Cond::EQ, Cond::NE, Cond::GT, Cond::GE, Cond::LT, Cond::LE, Cond::HI, Cond::HS, Cond::LO, Cond::LS,
 };
 
-Cond emitComparison(Emitter &e, AccState &accState, Op op, const Shape *operand)
+Cond emitComparison(Assembler &a, AccState &accState, Op op, const Shape *operand)
 {
     assert(isComparisonOp(op)); // GCOV_EXCL_LINE — translate_proc.cpp's own caller already checked
     uint32_t idx = (uint32_t)op - (uint32_t)Op::EQ;
@@ -295,48 +287,50 @@ Cond emitComparison(Emitter &e, AccState &accState, Op op, const Shape *operand)
 
     if(left.isImm && !operand->isImm && fitsImm8(left.imm))
     {
-        e.emit(ArmV6M::cmp(R((uint16_t)operand->reg), ArmV6M::Imm<8>((uint16_t)left.imm)));
+        a.emit(ArmV6M::cmp(R((uint16_t)operand->reg), ArmV6M::Imm<8>((uint16_t)left.imm)));
         return MIRRORED_CONDITION[idx];
     }
 
     if(left.isImm)
     {
-        materializeShape(e, left, ACC_REG);
+        materializeShape(a, left, ACC_REG);
         left = Shape::ofReg(ACC_REG);
     }
 
     if(!operand->isImm)
     {
-        e.emit(ArmV6M::cmp(R((uint16_t)left.reg), R((uint16_t)operand->reg)));
+        a.emit(ArmV6M::cmp(R((uint16_t)left.reg), R((uint16_t)operand->reg)));
     }
     else if(fitsImm8(operand->imm))
     {
-        e.emit(ArmV6M::cmp(R((uint16_t)left.reg), ArmV6M::Imm<8>((uint16_t)operand->imm)));
+        a.emit(ArmV6M::cmp(R((uint16_t)left.reg), ArmV6M::Imm<8>((uint16_t)operand->imm)));
     }
     else
     {
-        materializeShape(e, *operand, SCRATCH_REG);
-        e.emit(ArmV6M::cmp(R((uint16_t)left.reg), R((uint16_t)SCRATCH_REG)));
+        materializeShape(a, *operand, SCRATCH_REG);
+        a.emit(ArmV6M::cmp(R((uint16_t)left.reg), R((uint16_t)SCRATCH_REG)));
     }
     return condition;
 }
 
-Cond testAccNonzero(Emitter &e, AccState &accState)
+Cond testAccNonzero(Assembler &a, AccState &accState)
 {
-    accState.flush(e, ACC_REG);
-    e.emit(ArmV6M::cmp(R(ACC_REG), ArmV6M::Imm<8>(0)));
+    accState.flush(a, ACC_REG);
+    a.emit(ArmV6M::cmp(R(ACC_REG), ArmV6M::Imm<8>(0)));
     return Cond::NE;
 }
 
-void materializeComparison(Emitter &e, AccState &accState, Op op, const Shape *operand, uint32_t dest)
+void materializeComparison(Assembler &a, AccState &accState, Op op, const Shape *operand, uint32_t dest)
 {
-    Cond trueCondition = emitComparison(e, accState, op, operand);
-    uint32_t falseSite = e.placeholderCondBranch(ArmV6M::inverse(trueCondition));
-    e.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(1)));
-    uint32_t endSite = e.placeholderBranch();
-    e.patchBranch(falseSite, e.pc());
-    e.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(0)));
-    e.patchBranch(endSite, e.pc());
+    Cond trueCondition = emitComparison(a, accState, op, operand);
+    Label falseLabel;
+    a.branchTo(falseLabel, ArmV6M::inverse(trueCondition));
+    a.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(1)));
+    Label endLabel;
+    a.branchTo(endLabel);
+    a.bind(falseLabel);
+    a.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(0)));
+    a.bind(endLabel);
 }
 
 } // namespace jitc

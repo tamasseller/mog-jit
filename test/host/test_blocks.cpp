@@ -6,7 +6,7 @@
 // the test happens to exercise the exact path that would expose it.
 #include "Test.h"
 #include "blocks.h"
-#include "emitter.h"
+#include "assembler.h"
 #include "window.h"
 #include "accstate.h"
 #include "encode_instr.h"
@@ -28,10 +28,11 @@ TEST(EmitGuardedBranchUsesShortFormWhenSpanFitsInRange)
     uint32_t len = encode(body, 1, bytes, sizeof(bytes));
 
     uint16_t buf[8];
-    Emitter e(buf, 8);
-    uint32_t site = emitGuardedBranch(e, Cond::EQ, bytes, len, 0, 1, 0);
+    Assembler e(buf, 8);
+    Label label;
+    emitGuardedBranch(e, label, Cond::EQ, bytes, len, 0, 1);
     CHECK(e.halfwordCount() == 1); // bare conditional branch, no long form
-    CHECK(site == 0);
+    CHECK(label.chain == 0);
     CHECK(ArmV6M::isCondBranch(buf[0]));
 }
 
@@ -49,8 +50,9 @@ TEST(EmitGuardedBranchUsesLongFormWhenSpanExceedsRange)
     uint32_t len = encode(body, 16, bytes, sizeof(bytes));
 
     uint16_t buf[8];
-    Emitter e(buf, 8);
-    uint32_t site = emitGuardedBranch(e, Cond::EQ, bytes, len, 0, 1, 0);
+    Assembler e(buf, 8);
+    Label label;
+    emitGuardedBranch(e, label, Cond::EQ, bytes, len, 0, 1);
     CHECK(e.halfwordCount() == 2); // condBranch(inverse) + long b
     CHECK(ArmV6M::isCondBranch(buf[0]));
     uint16_t rawOff;
@@ -59,7 +61,7 @@ TEST(EmitGuardedBranchUsesLongFormWhenSpanExceedsRange)
     // "not taken" (condition true) falls through to the long branch right
     // after it — a zero-distance skip, encoded as offset 0.
     CHECK(rawOff == 0);
-    CHECK(site == 2); // the long b's own site, right after the guard
+    CHECK(label.chain == 2); // the long b's own site, right after the guard
 }
 
 TEST(MaxSpanBytesRecursesThroughANestedLoop)
@@ -135,29 +137,29 @@ TEST(OpenBrTableIfWithNoElseSelfLinksEndFixupChain)
     uint32_t len = encode(program, 2, bytes, sizeof(bytes));
 
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     Window window(0);
     AccState accState;
-    Frame frame = openBrTable(e, window, accState, 1, Cond::NE, false, bytes, len, 0, 0);
+    Frame frame = openBrTable(e, window, accState, 1, Cond::NE, false, bytes, len, 0);
     CHECK(frame.kind == FrameKind::Case);
     CHECK(frame.remaining == 1);
-    CHECK(frame.nextCaseFixup == -1); // no case[1] — never populated
-    CHECK(frame.endFixupChain >= 0);
-    uint32_t guardSite = (uint32_t)frame.endFixupChain;
+    CHECK(frame.nextCaseFixup.chain == -1); // no case[1] — never populated
+    CHECK(frame.endFixupChain.chain >= 0);
+    uint32_t guardSite = (uint32_t)frame.endFixupChain.chain;
     CHECK(guardSite == 0); // the guard is the construct's own first instruction
     uint16_t rawOff;
     CHECK(ArmV6M::getCondBranchOffset(buf[guardSite / 2], rawOff));
     CHECK(ArmV6M::signExtend(rawOff, 8) == -2); // self-linked: target == its own site
 
-    // Close the sole case — resolveCaseClose's endFixupChain walk
-    // (blocks.cpp) reads this self-linked site back via
-    // Emitter::readBranchTarget, which must recognize it as the
+    // Close the sole case — closeBlockEnd's endFixupChain resolution
+    // (Assembler::bind) reads this self-linked site back via
+    // Assembler::readBranchTarget, which must recognize it as the
     // *conditional*-branch shape (this construct's only guard never goes
     // through resolveCaseClose's placeholderBranch() call, unlike
     // OpenBrTableIfElseFusion's two-case chain link below, which
     // readBranchTarget sees as unconditional instead).
     e.emit(ArmV6M::mvns(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ACC_REG)));
-    bool stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 1, 0);
+    bool stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 1);
     CHECK(!stillOpen);
     CHECK(ArmV6M::getCondBranchOffset(buf[guardSite / 2], rawOff)); // patched, still a cond branch
     int32_t delta = ArmV6M::signExtend(rawOff, 8) << 1;
@@ -176,18 +178,18 @@ TEST(OpenBrTableIfElseFusionPatchesNextCaseFixupToCase1Start)
     uint32_t len = encode(program, 4, bytes, sizeof(bytes));
 
     uint16_t buf[16];
-    Emitter e(buf, 16);
+    Assembler e(buf, 16);
     Window window(0);
     AccState accState;
-    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, false, bytes, len, 0, 0);
+    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, false, bytes, len, 0);
     CHECK(frame.kind == FrameKind::Case);
     CHECK(frame.remaining == 2);
-    CHECK(frame.nextCaseFixup >= 0); // not case 1 (n==1 self-links instead)
-    uint32_t guardSite = (uint32_t)frame.nextCaseFixup;
+    CHECK(frame.nextCaseFixup.chain >= 0); // not case 1 (n==1 self-links instead)
+    uint32_t guardSite = (uint32_t)frame.nextCaseFixup.chain;
 
     // case 0's body: NOT (dest = ACC_REG, matching translate_proc.cpp's dispatch).
     e.emit(ArmV6M::mvns(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ACC_REG)));
-    bool stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 1, 0);
+    bool stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 1);
     CHECK(stillOpen); // case 1 still to come
     CHECK(frame.remaining == 1);
 
@@ -201,9 +203,9 @@ TEST(OpenBrTableIfElseFusionPatchesNextCaseFixupToCase1Start)
 
     // case 1's body, then the construct's last close.
     e.emit(ArmV6M::mvns(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ACC_REG)));
-    int32_t skipSite = frame.endFixupChain; // case 0's own "skip to end" branch, still pending
+    int32_t skipSite = frame.endFixupChain.chain; // case 0's own "skip to end" branch, still pending
     CHECK(skipSite >= 0);
-    stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 3, 0);
+    stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 3);
     CHECK(!stillOpen);
 
     // case 0's skip-to-end branch now resolves to the construct's real
@@ -227,11 +229,11 @@ TEST(OpenBrTableSeedsAccStateWithTheFusedFalseConstant)
     uint32_t len = encode(body, 1, bytes, sizeof(bytes));
 
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     Window window(0);
     AccState accState;
     accState.setClean(5); // a distinguishable "stale" value, never 0/1
-    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, /*fused=*/true, bytes, len, 0, 0);
+    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, /*fused=*/true, bytes, len, 0);
     CHECK(frame.fusedBoolean);
     Shape s = accState.peek();
     CHECK(s.isImm && s.imm == 0);
@@ -246,11 +248,11 @@ TEST(OpenBrTableLeavesAccStateAloneWhenNotFused)
     uint32_t len = encode(body, 1, bytes, sizeof(bytes));
 
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     Window window(0);
     AccState accState;
     accState.setClean(5);
-    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, /*fused=*/false, bytes, len, 0, 0);
+    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, /*fused=*/false, bytes, len, 0);
     CHECK(!frame.fusedBoolean);
     Shape s = accState.peek();
     CHECK(!s.isImm && s.reg == 5);
@@ -263,13 +265,13 @@ TEST(CloseBlockEndSeedsAccStateWithTheFusedTrueConstantEnteringCase1)
     uint32_t len = encode(program, 4, bytes, sizeof(bytes));
 
     uint16_t buf[16];
-    Emitter e(buf, 16);
+    Assembler e(buf, 16);
     Window window(0);
     AccState accState;
-    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, /*fused=*/true, bytes, len, 0, 0);
+    Frame frame = openBrTable(e, window, accState, 2, Cond::NE, /*fused=*/true, bytes, len, 0);
     e.emit(ArmV6M::mvns(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ACC_REG))); // case 0's (dummy) body
     accState.setClean(5); // simulate case 0's body leaving some other value pending
-    bool stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 1, 0);
+    bool stillOpen = closeBlockEnd(e, window, accState, frame, false, Cond::EQ, false, bytes, len, 1);
     CHECK(stillOpen); // case 1 still to come
     Shape s = accState.peek();
     CHECK(s.isImm && s.imm == 1);
@@ -282,12 +284,12 @@ TEST(CloseBlockEndSeedsLoopBodyWithTheFusedTrueConstant)
     uint32_t len = encode(program, 2, bytes, sizeof(bytes));
 
     uint16_t buf[16];
-    Emitter e(buf, 16);
+    Assembler e(buf, 16);
     Window window(0);
     AccState accState;
     Frame frame = openLoop(e, window, accState);
     accState.setClean(5); // simulate the condition sub-block's body leaving some other value pending
-    bool stillOpen = closeBlockEnd(e, window, accState, frame, true, Cond::NE, /*fusedLoopExit=*/true, bytes, len, 0, 0);
+    bool stillOpen = closeBlockEnd(e, window, accState, frame, true, Cond::NE, /*fusedLoopExit=*/true, bytes, len, 0);
     CHECK(stillOpen);
     CHECK(frame.kind == FrameKind::LoopBody);
     Shape s = accState.peek();
@@ -301,12 +303,12 @@ TEST(CloseBlockEndLeavesLoopBodyAccStateAloneWhenNotFused)
     uint32_t len = encode(program, 2, bytes, sizeof(bytes));
 
     uint16_t buf[16];
-    Emitter e(buf, 16);
+    Assembler e(buf, 16);
     Window window(0);
     AccState accState;
     Frame frame = openLoop(e, window, accState);
     accState.setClean(5);
-    bool stillOpen = closeBlockEnd(e, window, accState, frame, true, Cond::NE, /*fusedLoopExit=*/false, bytes, len, 0, 0);
+    bool stillOpen = closeBlockEnd(e, window, accState, frame, true, Cond::NE, /*fusedLoopExit=*/false, bytes, len, 0);
     CHECK(stillOpen);
     Shape s = accState.peek();
     CHECK(!s.isImm && s.reg == 5);
@@ -315,7 +317,7 @@ TEST(CloseBlockEndLeavesLoopBodyAccStateAloneWhenNotFused)
 TEST(CloseCaseViaTerminatorOnNonLastCaseKeepsFrameOpenAndResetsBookkeeping)
 {
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     Window window(0);
     window.tos = 3; // simulate a PUSH the case's (never-emitted-here) body did
 
@@ -323,9 +325,8 @@ TEST(CloseCaseViaTerminatorOnNonLastCaseKeepsFrameOpenAndResetsBookkeeping)
     frame.kind = FrameKind::Case;
     frame.entryTos = 0;
     frame.remaining = 2;
-    frame.nextCaseFixup = 0; // pretend a guard branch is sitting at offset 0
+    frame.nextCaseFixup.chain = 0; // pretend a guard branch is sitting at offset 0
     frame.table.present = false;
-    frame.endFixupChain = -1;
 
     AccState accState;
     accState.poison(); // must not matter — closeCaseViaTerminator resets to Clean unconditionally
@@ -340,7 +341,7 @@ TEST(CloseCaseViaTerminatorOnNonLastCaseKeepsFrameOpenAndResetsBookkeeping)
 TEST(CloseCaseViaTerminatorOnLastCaseResolvesEndFixupChain)
 {
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     uint32_t chainSite = e.placeholderBranch(); // a pending "skip to end" from an earlier, normally-closed case
 
     Window window(0);
@@ -348,9 +349,8 @@ TEST(CloseCaseViaTerminatorOnLastCaseResolvesEndFixupChain)
     frame.kind = FrameKind::Case;
     frame.entryTos = 0;
     frame.remaining = 1;
-    frame.nextCaseFixup = -1;
     frame.table.present = false;
-    frame.endFixupChain = (int32_t)chainSite;
+    frame.endFixupChain.chain = (int32_t)chainSite;
 
     AccState accState;
     bool stillOpen = closeCaseViaTerminator(e, window, accState, frame);
@@ -367,7 +367,7 @@ TEST(CloseCaseViaTerminatorOnLastCaseResolvesEndFixupChain)
 TEST(CloseLoopBodyViaTerminatorPatchesExitFixupAndResetsBookkeeping)
 {
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     uint32_t exitSite = e.placeholderCondBranch(Cond::EQ);
 
     Window window(0);
@@ -376,7 +376,7 @@ TEST(CloseLoopBodyViaTerminatorPatchesExitFixupAndResetsBookkeeping)
     frame.kind = FrameKind::LoopBody;
     frame.entryTos = 2;
     frame.loopStart = 0;
-    frame.exitFixup = (int32_t)exitSite;
+    frame.exitFixup.chain = (int32_t)exitSite;
 
     AccState accState;
     closeLoopBodyViaTerminator(e, window, accState, frame);
@@ -391,7 +391,7 @@ TEST(CloseLoopBodyViaTerminatorPatchesExitFixupAndResetsBookkeeping)
 TEST(EmitComparisonDirectConditionForRegRegCmp)
 {
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     AccState accState;
     accState.setClean(1); // acc already in r1, not ACC_REG
     Shape operand = Shape::ofReg(5);
@@ -407,7 +407,7 @@ TEST(EmitComparisonMirroredConditionWhenAccIsAFittingImmediate)
     // optimization: `operand CMP #acc` with the mirrored condition,
     // avoiding materializing acc into a register first.
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     AccState accState;
     accState.producer(Shape::ofImm(10));
     Shape operand = Shape::ofReg(3);
@@ -426,7 +426,7 @@ TEST(EmitComparisonSkipsMirroredShortcutWhenPendingAccImmTooLargeForImm8)
     // pending value. Falls through to the ordinary materialize-acc path,
     // direct condition preserved (not mirrored).
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     AccState accState;
     accState.producer(Shape::ofImm(1000));
     Shape operand = Shape::ofReg(3);
@@ -448,7 +448,7 @@ TEST(EmitComparisonMaterializesLargeImmediateOperandIntoScratch)
     // (acc isn't itself an immediate here, so the mirrored-condition
     // shortcut above doesn't apply).
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     AccState accState;
     accState.setClean(1);
     Shape operand = Shape::ofImm(1000);
@@ -464,7 +464,7 @@ TEST(EmitComparisonMaterializesLargeImmediateOperandIntoScratch)
 TEST(MaterializeComparisonEmitsFiveInstructionIdiom)
 {
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     AccState accState;
     accState.setClean(0);
     Shape operand = Shape::ofImm(4);

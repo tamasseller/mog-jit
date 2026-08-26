@@ -1,5 +1,5 @@
 #include "window.h"
-#include "emitter.h"
+#include "assembler.h"
 #include "accstate.h"
 #include "shape.h"
 #include "armv6.h"
@@ -103,7 +103,7 @@ static RegRuns windowRuns(uint32_t bottom, uint32_t count)
 // Push k = bottom .. bottom+count-1 such that the largest k ends up closest
 // to the resulting sp: push the pre-wrap run first, the post-wrap run
 // second.
-static void pushLargestKClosest(Emitter &e, uint32_t bottom, uint32_t count)
+static void pushLargestKClosest(Assembler &e, uint32_t bottom, uint32_t count)
 {
     RegRuns rr = windowRuns(bottom, count);
     for(uint32_t i = 0; i < rr.runCount; i++)
@@ -115,7 +115,7 @@ static void pushLargestKClosest(Emitter &e, uint32_t bottom, uint32_t count)
 // Pop k = bottom .. bottom+count-1 — genuinely historical spilled data — via
 // at most two batched POPs, runs consumed in reverse (larger-k,
 // closer-to-sp run first).
-static void popRuns(Emitter &e, uint32_t bottom, uint32_t count)
+static void popRuns(Assembler &e, uint32_t bottom, uint32_t count)
 {
     RegRuns rr = windowRuns(bottom, count);
     for(uint32_t i = rr.runCount; i > 0; i--)
@@ -138,7 +138,7 @@ uint32_t Window::spillOffset(uint32_t k) const
     return (savesLR && k < initialSpilledCount) ? raw + 4 : raw;
 }
 
-void Window::discardWindow(Emitter &e) const
+void Window::discardWindow(Assembler &e) const
 {
     uint32_t spilled = spilledCount(tos) - (savesLR ? initialSpilledCount : 0);
     if(spilled > 0)
@@ -147,7 +147,7 @@ void Window::discardWindow(Emitter &e) const
     }
 }
 
-void Window::pushValue(Emitter &e, AccState &accState)
+void Window::pushValue(Assembler &e, AccState &accState)
 {
     bool pushEvicts = tos >= WINDOW_SIZE;
     uint32_t evictedByPush = tos - WINDOW_SIZE;
@@ -159,7 +159,7 @@ void Window::pushValue(Emitter &e, AccState &accState)
     tos += 1;
 }
 
-void Window::finishPop(Emitter &e)
+void Window::finishPop(Assembler &e)
 {
     bool popUncovers = (tos - 1) >= WINDOW_SIZE;
     uint32_t uncoveredByPop = tos - 1 - WINDOW_SIZE;
@@ -170,7 +170,7 @@ void Window::finishPop(Emitter &e)
     tos -= 1;
 }
 
-void spillForCall(Emitter &e, Window &window, uint32_t stackArgs)
+void spillForCall(Assembler &e, Window &window, uint32_t stackArgs)
 {
     uint32_t w = std::min(window.tos, WINDOW_SIZE);
     uint32_t m = std::min(stackArgs, w);
@@ -184,7 +184,7 @@ void spillForCall(Emitter &e, Window &window, uint32_t stackArgs)
     pushLargestKClosest(e, base, m);
 }
 
-void fillCalleeArgs(Emitter &e, uint32_t stackArgs)
+void fillCalleeArgs(Assembler &e, uint32_t stackArgs)
 {
     uint32_t m = std::min(stackArgs, WINDOW_SIZE - 1);
     if(m == 0)
@@ -194,7 +194,7 @@ void fillCalleeArgs(Emitter &e, uint32_t stackArgs)
     popRuns(e, stackArgs - m, m);
 }
 
-void restoreWindow(Emitter &e, Window &window, uint32_t targetTos)
+void restoreWindow(Assembler &e, Window &window, uint32_t targetTos)
 {
     uint32_t spilledNow = spilledCount(window.tos);
     uint32_t spilledTarget = spilledCount(targetTos);
@@ -209,7 +209,7 @@ void restoreWindow(Emitter &e, Window &window, uint32_t targetTos)
     window.tos = targetTos;
 }
 
-void reloadAfterCall(Emitter &e, Window &window, uint32_t targetTos)
+void reloadAfterCall(Assembler &e, Window &window, uint32_t targetTos)
 {
     uint32_t w = std::min(window.tos, WINDOW_SIZE);
     uint32_t bottom = window.tos - w;

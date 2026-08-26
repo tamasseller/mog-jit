@@ -13,13 +13,13 @@
 namespace jitc
 {
 
-class Emitter;
+class Assembler;
 
 /** Emit one unary op. operand must already be materialized into ACC_REG
  *  (the caller's job — a unary op's native encoding never takes an
  *  immediate form, so there's nothing to fold, only something to flush
  *  first). dest is ACC_REG or a destination-fold target. */
-void emitUnary(Emitter &e, Op op, uint32_t dest);
+void emitUnary(Assembler &e, Op op, uint32_t dest);
 
 } // namespace jitc
 

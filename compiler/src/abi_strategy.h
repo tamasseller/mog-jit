@@ -9,7 +9,7 @@
 namespace jitc
 {
 
-class Emitter;
+class Assembler;
 
 constexpr uint32_t STUB_SIZE = 12; // bytes — 6 halfwords; test_abi_strategy.cpp asserts this against emitPrologueStub()'s own emitted length
 
@@ -17,26 +17,30 @@ constexpr uint32_t STUB_SIZE = 12; // bytes — 6 halfwords; test_abi_strategy.c
  *  that runtime.S's translatorTrampoline and callHelper/returnHelper* all
  *  resume into byte-for-byte as-is. A live ABI boundary, not open for
  *  revision here. */
-void emitPrologueStub(Emitter &e);
+void emitPrologueStub(Assembler &a);
 
 /** The fixed stub above, followed by push{lr} if this procedure needs it
  *  protected — i.e. it makes at least one nested CALL of its own, which
  *  would otherwise clobber the incoming call/return record before this
  *  procedure's own RETURN can retrieve it (the record travels in lr now,
  *  not on the stack — runtime.S's callHelper). */
-void abiEmitPrologue(Emitter &e, bool savesLR);
+void abiEmitPrologue(Assembler &a, bool savesLR);
 
 /** Packs procIdx and offsetPlus1 into the call/return record word —
  *  procIdx in the low 16 bits, offsetPlus1 in the high 16. */
 uint32_t packRecord(uint32_t procIdx, uint32_t offsetPlus1);
 
 /** procIdx is this procedure's own dispatch-table index (packRecord's own
- *  argument). The resume offset k is found by a 5-round fixed-point search
- *  (only the converged form is actually emitted). Unaffected by
- *  abiEmitPrologue's own conditional push{lr}: e.pc() already reflects it,
- *  the same as any other emitted instruction — STUB_SIZE only ever
- *  measures from right after the fixed stub. */
-void abiEmitCall(Emitter &e, uint32_t procIdx, uint32_t calleeIndex);
+ *  argument). The resume offset k is closed-form, not a fixed-point
+ *  search: the record is force-pooled (Assembler::materializeImm32Pooled)
+ *  specifically so its own emitted length can never depend on the value
+ *  it encodes (a pooled site is always exactly one halfword; the 4-byte
+ *  word lands at flush time, outside this sequence) — the resume offset
+ *  it encodes could otherwise never be computed without already knowing
+ *  it. Unaffected by abiEmitPrologue's own conditional push{lr}: a.pc()
+ *  already reflects it, the same as any other emitted instruction —
+ *  STUB_SIZE only ever measures from right after the fixed stub. */
+void abiEmitCall(Assembler &a, uint32_t procIdx, uint32_t calleeIndex);
 
 /** savesLR and initialSpilledCount (= max(0, argCount - WINDOW_SIZE))
  *  together select which of runtime.S's four dispatch targets this
@@ -47,7 +51,7 @@ void abiEmitCall(Emitter &e, uint32_t procIdx, uint32_t calleeIndex);
  *  pop, plus an `add sp, sp, r2` for the out-of-window arguments sitting
  *  below the pushed record. r2 is loaded here with the one thing no
  *  parameterless routine can know: this procedure's own byte count. */
-void abiEmitReturn(Emitter &e, bool savesLR, uint32_t initialSpilledCount);
+void abiEmitReturn(Assembler &a, bool savesLR, uint32_t initialSpilledCount);
 
 } // namespace jitc
 

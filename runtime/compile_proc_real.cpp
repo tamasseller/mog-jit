@@ -5,70 +5,19 @@
  * fixture-supplied stand-in. Reuses runtime_internal.h's Runtime/ProcSlot
  * and runtime_host.h's ProgramResult unmodified.
  *
- * Translates directly into the arena at the current arenaCursor — no
- * scratch buffer, no final memcpy. RuntimeArenaRoom lets the translator
- * grow that headroom mid-pass by evicting/compacting other resident
- * procedures (docs/design.md §11's "one compaction extension"), so a
- * procedure's own real size is bounded only by the real arena, not by an
- * arbitrary scratch capacity picked ahead of time.
+ * Assembler (compiler/src/assembler.h) is now the only seam between this
+ * and Runtime: an attached Assembler owns arena growth/eviction/
+ * compaction and final dispatch-table registration internally
+ * (translateProc's own Assembler::finalize() call), and exits directly to
+ * RESOURCE_ERROR (Assembler::fail() -> runtimeBail, below) if even
+ * evicting everything resident couldn't free enough room — this file no
+ * longer needs its own scratch buffer, ArenaRoom implementor, or post-hoc
+ * overflow check.
  */
 #include <stdint.h>
 #include "runtime_internal.h"
 #include "translate_proc.h"
-#include "arena_room.h"
-#include "emitter.h"
-
-/* The one seam between the Runtime-agnostic translator and Runtime's own
- * arena/eviction machinery — a plain stack local per compileProc call,
- * never heap-allocated (arena_room.h's own header comment has why it
- * carries no virtual destructor). */
-class RuntimeArenaRoom : public jitc::ArenaRoom
-{
-public:
-    explicit RuntimeArenaRoom(Runtime *runtime) : runtime(runtime)
-    {
-    }
-
-    void ensureRoom(jitc::Emitter &e, uint32_t neededHalfwords) override
-    {
-        if(e.remainingHalfwords() >= neededHalfwords)
-        {
-            return;
-        }
-
-        register uint32_t now asm("r11");
-        uint32_t neededBytes = e.halfwordCount() * 2 + neededHalfwords * 2;
-        while(runtime->arenaEnd - runtime->arenaCursor < neededBytes)
-        {
-            int victim = runtime->findEvictionVictim(now);
-            if(victim < 0)
-            {
-                return; // can't free any more — Emitter::overflowed() catches the eventual shortfall
-            }
-            // The in-progress emitter's own base is always exactly
-            // arenaCursor (nothing has bumped it — Runtime::allocate()
-            // only ever runs once, on success), so evict()'s extended
-            // tail range, covering e's own already-written bytes too,
-            // keeps that invariant true on the other side.
-            runtime->evict((uint32_t)victim, e.halfwordCount() * 2);
-        }
-
-        e.rebase((uint16_t *)(uintptr_t)runtime->arenaCursor, (runtime->arenaEnd - runtime->arenaCursor) / 2);
-    }
-
-private:
-    Runtime *runtime;
-};
-
-static void __attribute__((noreturn)) bailOut(Runtime *runtime, uint32_t trapCode)
-{
-    register uint32_t trapCodeReg asm("r0") = trapCode;
-    register uint32_t tagReg asm("r2") = LANDING_TRAP;
-    register uint32_t landingReg asm("r3") = runtime->sentinelLandingAddress();
-    register uint32_t savedSpReg asm("r1") = runtime->savedSp;
-    asm volatile("mov sp, r1\n\tbx r3" : : "r"(trapCodeReg), "r"(savedSpReg), "r"(tagReg), "r"(landingReg));
-    __builtin_unreachable();
-}
+#include "assembler.h"
 
 extern "C" void compileProc(uint32_t idx, Runtime *runtime)
 {
@@ -88,21 +37,34 @@ extern "C" void compileProc(uint32_t idx, Runtime *runtime)
         calleeArgCounts[i] = runtime->slot(i).argCount();
     }
 
-    RuntimeArenaRoom room(runtime);
+    register uint32_t lruTick asm("r11");
+    jitc::Assembler assembler(runtime, idx, lruTick);
 
-    /* Read fresh every call — arenaCursor (folded into liveStackFloor() for
-     * enterProgramOnStack) moves between different procedures'
-     * compilations, so this can't be cached anywhere once and reused. */
-    jitc::TranslateResult result = jitc::translateProc(
-        proc, idx, calleeArgCounts, runtime->procCount,
-        (uint16_t *)(uintptr_t)runtime->arenaCursor, (runtime->arenaEnd - runtime->arenaCursor) / 2,
-        runtime->liveStackFloor(), &savesLR, &room);
-    if(result.overflowed)
-    {
-        bailOut(runtime, RESOURCE_ERROR_CODE);
-    }
+    /* translateProc finalizes assembler itself as its last step —
+     * flushing any still-open pool chunk and, since assembler is
+     * attached, committing the arena allocation and calling
+     * runtime->markCompiled(idx, ...) — so there is nothing left for this
+     * function to do afterward. Failure (arena exhaustion beyond what
+     * Assembler::reserve() could free by evicting, or the live
+     * stack-nesting guard tripping) never returns here at all: it
+     * unwinds straight through runtimeBail below. */
+    jitc::translateProc(proc, idx, calleeArgCounts, runtime->procCount, assembler, &savesLR);
+}
 
-    uint32_t need = result.halfwordCount * 2;
-    uint32_t dest = runtime->allocate(need);
-    runtime->markCompiled(idx, dest);
+/* Assembler::fail()'s own direct exit on an attached Assembler — restores
+ * the caller's own saved sp and transfers to the sentinel landing, tagged
+ * LANDING_TRAP, unwinding the entire excursion including the trampoline's
+ * own pushed frame. Never returns. This is the old bailOut, moved
+ * verbatim and renamed to the extern "C" name runtime_internal.h
+ * declares — reached from inside Assembler now (compiler/src/
+ * assembler.cpp's fail()) instead of from this file's own post-hoc
+ * overflow check, which no longer exists. */
+extern "C" void runtimeBail(Runtime *runtime, uint32_t trapCode)
+{
+    register uint32_t trapCodeReg asm("r0") = trapCode;
+    register uint32_t tagReg asm("r2") = LANDING_TRAP;
+    register uint32_t landingReg asm("r3") = runtime->sentinelLandingAddress();
+    register uint32_t savedSpReg asm("r1") = runtime->savedSp;
+    asm volatile("mov sp, r1\n\tbx r3" : : "r"(trapCodeReg), "r"(savedSpReg), "r"(tagReg), "r"(landingReg));
+    __builtin_unreachable();
 }

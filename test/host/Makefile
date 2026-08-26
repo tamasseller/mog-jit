@@ -3,11 +3,10 @@ OUTPUT = jit-armv6m-host-tests
 # Test code
 SOURCES += test_armv6_encoding.cpp
 SOURCES += test_window.cpp
-SOURCES += test_emitter.cpp
+SOURCES += test_assembler.cpp
 SOURCES += test_runtime_arena.cpp
 SOURCES += test_accstate.cpp
 SOURCES += test_binops.cpp
-SOURCES += test_imm_synth.cpp
 SOURCES += test_abi_strategy.cpp
 SOURCES += test_translate_proc.cpp
 SOURCES += test_decode_encode.cpp
@@ -17,6 +16,7 @@ SOURCES += test_proc_scan.cpp
 
 # Test support
 SOURCES += main.cpp
+SOURCES += host_runtime_support.cpp
 SOURCES += ../../compiler/src/encode_instr.cpp
 
 # The compiler itself (armv6.h is header-only — test_armv6_encoding.cpp
@@ -24,7 +24,7 @@ SOURCES += ../../compiler/src/encode_instr.cpp
 SOURCES += ../../compiler/src/window.cpp
 SOURCES += ../../compiler/src/accstate.cpp
 SOURCES += ../../compiler/src/binops.cpp
-SOURCES += ../../compiler/src/imm_synth.cpp
+SOURCES += ../../compiler/src/assembler.cpp
 SOURCES += ../../compiler/src/shape.cpp
 SOURCES += ../../compiler/src/abi_strategy.cpp
 SOURCES += ../../compiler/src/decode_instr.cpp

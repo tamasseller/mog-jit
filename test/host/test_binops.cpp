@@ -1,7 +1,7 @@
 // Expected halfwords below are cross-checked against arm-none-eabi-as, a
 // tool independent of the encoding logic under test.
 #include "Test.h"
-#include "emitter.h"
+#include "assembler.h"
 #include "binops.h"
 #include "registers.h"
 
@@ -23,7 +23,7 @@ TEST(ClassifyBinOp)
 TEST(AddRegPlusReg)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofReg(2);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, &operand, 0);
@@ -37,7 +37,7 @@ TEST(SubRegMinusReg)
     // exercised by the other SUB tests here (they all have at least one
     // side be a compile-time immediate).
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofReg(3);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, &operand, 0);
@@ -48,7 +48,7 @@ TEST(SubRegMinusReg)
 TEST(RsubRegMinusReg)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofReg(3);
     emitBinaryOp(e, Op::RSUB, Combo::REG_ACC, acc, &operand, 0); // dest = operand - acc = r3 - r1
@@ -59,7 +59,7 @@ TEST(RsubRegMinusReg)
 TEST(RsubZeroImmDegeneratesToNeg)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(1); // acc currently in r1
     Shape operand = Shape::ofImm(0); // RSUB #0 -> negation
     emitBinaryOp(e, Op::RSUB, Combo::IMM_ACC, acc, &operand, 0);
@@ -70,7 +70,7 @@ TEST(RsubZeroImmDegeneratesToNeg)
 TEST(AddImmFitsImm3)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofImm(5);
     emitBinaryOp(e, Op::ADD, Combo::IMM_ACC, acc, &operand, 0);
@@ -81,7 +81,7 @@ TEST(AddImmFitsImm3)
 TEST(SubImmFitsImm8OnlyWhenDestEqualsN)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(0); // dest == n == ACC_REG
     Shape operand = Shape::ofImm(200); // doesn't fit imm3, fits imm8
     emitBinaryOp(e, Op::SUB, Combo::IMM_ACC, acc, &operand, 0);
@@ -92,18 +92,18 @@ TEST(SubImmFitsImm8OnlyWhenDestEqualsN)
 TEST(ShiftImm)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofImm(3);
     emitBinaryOp(e, Op::SHL, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 1);
     CHECK(buf[0] == 0x00C8); // LSLS r0, r1, #3
 
-    Emitter e2(buf, 4);
+    Assembler e2(buf, 4);
     emitBinaryOp(e2, Op::SHR, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(buf[0] == 0x08C8); // LSRS r0, r1, #3
 
-    Emitter e3(buf, 4);
+    Assembler e3(buf, 4);
     emitBinaryOp(e3, Op::ASR, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(buf[0] == 0x10C8); // ASRS r0, r1, #3
 }
@@ -115,7 +115,7 @@ TEST(ShiftImmMaterializesAPendingImmediateAccumulatorFirst)
     // materialize-into-SCRATCH_REG branch, which the other ShiftImm test
     // above never reaches (it always uses a register accShape).
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofImm(5);
     Shape operand = Shape::ofImm(3);
     emitBinaryOp(e, Op::SHL, Combo::IMM_ACC, acc, &operand, 0);
@@ -127,7 +127,7 @@ TEST(ShiftImmMaterializesAPendingImmediateAccumulatorFirst)
 TEST(TwoOpInPlaceMaterializesAccFirstAndMovesOutIfDestDiffers)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(1); // not ACC_REG — must be materialized into ACC_REG first
     Shape operand = Shape::ofReg(5);
     emitBinaryOp(e, Op::AND, Combo::REG_ACC, acc, &operand, 4); // dest=4, != ACC_REG
@@ -140,7 +140,7 @@ TEST(TwoOpInPlaceMaterializesAccFirstAndMovesOutIfDestDiffers)
 TEST(TwoOpInPlaceSkipsMoveOutWhenDestIsAccReg)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(0); // already ACC_REG — no materialize move either
     Shape operand = Shape::ofReg(5);
     emitBinaryOp(e, Op::AND, Combo::REG_ACC, acc, &operand, 0);
@@ -151,7 +151,7 @@ TEST(TwoOpInPlaceSkipsMoveOutWhenDestIsAccReg)
 TEST(AddImmFitsImm8OnlyWhenDestEqualsN)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(0); // dest == n == ACC_REG
     Shape operand = Shape::ofImm(200); // doesn't fit imm3, fits imm8
     emitBinaryOp(e, Op::ADD, Combo::IMM_ACC, acc, &operand, 0);
@@ -166,7 +166,7 @@ TEST(AddImmFallsBackToMaterializeWhenDestDiffersAndImmTooLarge)
     // all the way through to addOrSubWithImm's materialize-into-
     // SCRATCH_REG tail.
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofImm(10);
     emitBinaryOp(e, Op::ADD, Combo::IMM_ACC, acc, &operand, 0);
@@ -183,7 +183,7 @@ TEST(AddRegAccWithOversizedImmediateOperandSkipsTheDestEqualsNCheck)
     // (distinct from AddImmFallsBackToMaterializeWhenDestDiffersAndImmTooLarge
     // above, where fitsImm8 was true and dest!=n was what failed).
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofImm(1000);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, &operand, 0);
@@ -201,7 +201,7 @@ TEST(AddPeekPeekUsesDestAsRhsForOrdinaryArithmeticToo)
     // exercise — operand==nullptr reaches emitAddSubRsub itself, not just
     // emitBinaryOp's TwoOpInPlace branch.
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(1);
     emitBinaryOp(e, Op::ADD, Combo::PEEK_PEEK, acc, nullptr, 5);
     CHECK(e.halfwordCount() == 1);
@@ -213,7 +213,7 @@ TEST(AddAccImmRhsRegFoldsIntoOrdinaryRegPlusImm)
     // acc pending-imm(5), rhs reg(2): dest = rhs.reg + acc.imm — the
     // ADD/SUB row's register-plus-immediate fold, operands swapped.
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofImm(5);
     Shape operand = Shape::ofReg(2);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, &operand, 0);
@@ -232,7 +232,7 @@ TEST(AddBothImmMaterializesAccIntoDestNotScratchToAvoidAliasingWithK)
     // must materialize into `dest` itself instead, which is never
     // SCRATCH_REG for this call shape.
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofImm(3);
     Shape operand = Shape::ofImm(4);
     emitBinaryOp(e, Op::ADD, Combo::IMM_ACC, acc, &operand, 0);
@@ -248,7 +248,7 @@ TEST(SubRegAccWithOversizedImmediateOperandSkipsTheDestEqualsNCheck)
     // imm3/imm8, so addOrSubWithImm's fitsImm8(k) check short-circuits
     // false on its own.
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofImm(1000);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, &operand, 0);
@@ -265,7 +265,7 @@ TEST(SubAccImmRhsRegUsesRsubImmAsLeftWithNonzeroK)
     // so emitRsubImmAsLeft's own materialize path (not the k==0/NEG
     // shortcut the other RSUB-zero test already covers).
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofImm(20);
     Shape operand = Shape::ofReg(3);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, &operand, 0);
@@ -277,7 +277,7 @@ TEST(SubAccImmRhsRegUsesRsubImmAsLeftWithNonzeroK)
 TEST(SubBothImmMaterializesAccIntoDest)
 {
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofImm(10);
     Shape operand = Shape::ofImm(3);
     emitBinaryOp(e, Op::SUB, Combo::IMM_ACC, acc, &operand, 0);
@@ -292,7 +292,7 @@ TEST(RsubAccImmRhsRegFoldsIntoOrdinaryRegMinusImm)
     // acc.imm, an ordinary register-minus-immediate, not the
     // immediate-as-left-operand case.
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofImm(4);
     Shape operand = Shape::ofReg(3);
     emitBinaryOp(e, Op::RSUB, Combo::REG_ACC, acc, &operand, 0);
@@ -308,7 +308,7 @@ TEST(RsubRhsImmAccRegUsesRsubImmAsLeftWithNonzeroK)
     // physReg() never returns SCRATCH_REG=2): dest = rhs.imm - acc.reg,
     // k != 0.
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(5);
     Shape operand = Shape::ofImm(7);
     emitBinaryOp(e, Op::RSUB, Combo::IMM_ACC, acc, &operand, 0);
@@ -322,7 +322,7 @@ TEST(RsubBothImmMaterializesAccIntoDestNotScratchToAvoidAliasingWithK)
     // Same aliasing hazard as AddBothImm..., mirrored for RSUB (rhs - acc
     // instead of acc + k): dest = 2 - 9 = -7, not 0.
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofImm(9);
     Shape operand = Shape::ofImm(2);
     emitBinaryOp(e, Op::RSUB, Combo::IMM_ACC, acc, &operand, 0);
@@ -342,7 +342,7 @@ TEST(AddAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
     // would clobber that just-reloaded value, so addOrSubWithImm copies n
     // out to dest first whenever n == SCRATCH_REG.
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     Shape acc = Shape::ofImm(100);
     Shape operand = Shape::ofReg(SCRATCH_REG);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, &operand, 0);
@@ -355,7 +355,7 @@ TEST(AddAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
 TEST(SubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
 {
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     Shape acc = Shape::ofImm(100);
     Shape operand = Shape::ofReg(SCRATCH_REG);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, &operand, 0);
@@ -368,7 +368,7 @@ TEST(SubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
 TEST(RsubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
 {
     uint16_t buf[8];
-    Emitter e(buf, 8);
+    Assembler e(buf, 8);
     Shape acc = Shape::ofImm(50);
     Shape operand = Shape::ofReg(SCRATCH_REG);
     emitBinaryOp(e, Op::RSUB, Combo::REG_ACC, acc, &operand, 0);
@@ -395,7 +395,7 @@ TEST(TwoOpInPlaceNativeCoversEveryOpcode)
     for(auto &c : cases)
     {
         uint16_t buf[4];
-        Emitter e(buf, 4);
+        Assembler e(buf, 4);
         Shape acc = Shape::ofReg(0);
         Shape operand = Shape::ofReg(5);
         emitBinaryOp(e, c.op, Combo::REG_ACC, acc, &operand, 0);
@@ -411,7 +411,7 @@ TEST(TwoOpInPlacePeekPeekUsesDestAsRhs)
     // safe to read as Rm before it's overwritten as Rdn's move-out
     // target.
     uint16_t buf[4];
-    Emitter e(buf, 4);
+    Assembler e(buf, 4);
     Shape acc = Shape::ofReg(1); // not ACC_REG — must be materialized first
     emitBinaryOp(e, Op::AND, Combo::PEEK_PEEK, acc, nullptr, 5);
     CHECK(e.halfwordCount() == 3);

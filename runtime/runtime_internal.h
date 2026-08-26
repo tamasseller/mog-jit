@@ -14,6 +14,21 @@
 #define LANDING_TRAP 1u /* enterDispatch's boot-record tag for a trapped return; 0 means success */
 #define RESOURCE_ERROR_CODE 0x52455343u /* "RESC", arbitrary/distinct */
 
+class Runtime;
+
+/* An attached Assembler's own direct exit when it cannot free enough
+ * arena room even after evicting everything resident (compiler/src/
+ * assembler.h's fail()) — restores the caller's own saved sp and
+ * transfers to the landing with code, never returning. The target
+ * definition (runtime/compile_proc.cpp) is the old bailOut moved
+ * verbatim: mov sp, savedSp; bx to the sentinel landing address, tagged
+ * LANDING_TRAP. A host build has no such landing to jump to, so it
+ * supplies its own longjmp-based definition instead (test/host's own
+ * support file) — the same escape 1test's own CHECK() already unwinds
+ * through, and the same pattern test_runtime_arena.cpp already uses to
+ * satisfy trampolineAddr for a Runtime built outside the real runtime. */
+extern "C" [[noreturn]] void runtimeBail(Runtime *runtime, uint32_t code);
+
 /* One procedure's whole entry: the runtime's own mutable dispatch state
  * (codePtr/lastUsed, exactly what runtime.S's hand-written asm touches)
  * plus the static facts a whole-program first pass (Runtime::init, below)
@@ -318,14 +333,15 @@ public:
      * needs no other patching), frees its arena space, and marks it
      * not-resident.
      *
-     * inProgressLenBytes is the caller's own in-progress emitter's current
-     * halfwordCount()*2 — always 0 for a plain post-hoc eviction (no
-     * in-progress translation in play), which is exactly compaction as
-     * §8 first described it. The in-progress region's own base is always
-     * exactly arenaCursor (nothing has bumped it — allocate() only ever
-     * runs once, on success), so this single memmove, extended to also
-     * cover it, keeps that invariant true on the other side: the caller
-     * rereads arenaCursor afterward and rebases its Emitter there. */
+     * inProgressLenBytes is the caller's own in-progress Assembler's
+     * current halfwordCount()*2 — always 0 for a plain post-hoc eviction
+     * (no in-progress translation in play), which is exactly compaction
+     * as §8 first described it. The in-progress region's own base is
+     * always exactly arenaCursor (nothing has bumped it — allocate() only
+     * ever runs once, on success), so this single memmove, extended to
+     * also cover it, keeps that invariant true on the other side: the
+     * caller (compiler/src/assembler.cpp's growForAttached) rereads
+     * arenaCursor afterward and rebases itself there. */
     void evict(uint32_t idx, uint32_t inProgressLenBytes = 0)
     {
         uint32_t victimAddr = slot(idx).codePtr & ~1u;

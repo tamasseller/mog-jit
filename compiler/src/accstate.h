@@ -13,29 +13,34 @@
 namespace jitc
 {
 
-class Emitter;
+class Assembler;
 
 class AccState
 {
-public:
-    AccState()
-        : kind(Kind::Clean), reg(ACC_REG)
+    enum class Kind : uint8_t
     {
-    }
+        Clean,
+        Pending,
+        Poisoned
+    };
 
-    // Read the current value as a foldable operand, without discharging
-    // it. Asserts if poisoned.
+    Kind kind;
+    Shape shape{};
+    uint32_t reg;
+
+public:
+    AccState(): kind(Kind::Clean), reg(ACC_REG) {}
+
     Shape peek() const;
 
-    // Force materialization into dstReg (the "flush" transition).
-    void flush(Emitter &e, uint32_t dstReg);
+    void flush(Assembler &e, uint32_t dstReg);
 
     // flush(), but safe at a control-flow merge point (blocks.h's
     // closeBlockEnd/closeCaseViaTerminator/closeLoopBodyViaTerminator) —
     // Poisoned isn't an error here, it's a no-op, since the acc-clobbering
     // convention already forbids anything downstream from reading it
     // regardless of which path arrived.
-    void flushLive(Emitter &e, uint32_t dstReg)
+    void flushLive(Assembler &e, uint32_t dstReg)
     {
         if(kind != Kind::Poisoned)
         {
@@ -67,19 +72,8 @@ public:
     // Emit one arithmetic binary op and update this state to match. operand is
     // nullptr for PEEK_PEEK (its right-hand operand is dest itself).
     // clobbersAcc is true exactly for REG_REG/PEEK_PEEK.
-    void emitBinary(Emitter &e, Op op, Combo combo, const Shape *operand,
+    void emitBinary(Assembler &e, Op op, Combo combo, const Shape *operand,
                     uint32_t dest, bool clobbersAcc);
-
-private:
-    enum class Kind : uint8_t
-    {
-        Clean,
-        Pending,
-        Poisoned
-    };
-    Kind kind;
-    Shape shape{};
-    uint32_t reg;
 };
 
 } // namespace jitc

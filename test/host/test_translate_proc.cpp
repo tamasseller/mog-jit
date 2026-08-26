@@ -2,7 +2,7 @@
 // acc-passed") end to end and checks the entire emitted halfword array
 // against literals hand-derived from the ARMv6-M encoding tables and
 // cross-checked against arm-none-eabi-as — proves the whole pipeline
-// (bytecode -> Emitter/Window/AccState/binops/abi_strategy) composes
+// (bytecode -> Assembler/Window/AccState/binops/abi_strategy) composes
 // correctly without QEMU.
 #include "Test.h"
 #include "translate_proc.h"
@@ -80,24 +80,30 @@ TEST(TranslateProc0EntryProcedure)
     // push{lr}, and RETURN dispatches through returnHelperFromStack
     // (index 2, offset 8). argCount=0 keeps initialSpilledCount at 0 —
     // the ordinary non-leaf case, not the inline-pop-and-reclaim one.
+    // The call record is now force-pooled (abi_strategy.cpp's
+    // abiEmitCall) — one placeholder halfword at the call site, the real
+    // packed value landing in the pool word this procedure's own
+    // end-of-procedure flush emits.
     uint16_t buf[32];
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, kProc0Body, 3, bodyBytes, sizeof(bodyBytes));
-    TranslateResult r = translateProc(proc, /*procIdx=*/0, kArgCounts, 2, buf, 32);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, /*procIdx=*/0, kArgCounts, 2, a);
 
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 18);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 18);
 
     const uint16_t expected[] = {
         0x465B, 0x604B, 0x3301, 0x469B, 0x447A, 0x4710, // prologue stub
         0xB500,                                          // PUSH {lr}  (savesLR — proc0 makes a CALL)
         0x2025,                                          // MOVS r0, #37  (CONST 37, stays pending until CALL flushes it)
-        0x2113, 0x0209, 0x0209,                           // record synth: MOVS r1,#0x13; LSLS r1,r1,#8 (x2)
+        0x4903,                                          // LDR r1,[pc,#12] — the call record, force-pooled
         0x2201,                                            // MOVS r2, #1  (calleeIndex=1, fits imm8)
         0x4653, 0x681B, 0x4718,                            // MOV r3,r10; LDR r3,[r3,#0]; BX r3  (callHelper)
         0x4653, 0x689B, 0x4718,                            // MOV r3,r10; LDR r3,[r3,#8]; BX r3  (returnHelperFromStack, index 2)
+        0x0000, 0x000F,                                    // pool word: packRecord(procIdx=0, k+1=15)
     };
-    for(uint32_t i = 0; i < r.halfwordCount; i++)
+    for(uint32_t i = 0; i < halfwordCount; i++)
     {
         CHECK(buf[i] == expected[i]);
     }
@@ -109,21 +115,23 @@ TEST(TranslateProc1Callee)
     // argument) is body[0]'s own LOAD, so the callee prologue elides
     // both the unconditional flush into physReg(0) and that LOAD — the
     // argument stays PENDING in ACC_REG instead of round-tripping
-    // through r7.
+    // through r7. No CALL here, so entirely unaffected by the call
+    // record's own pooling change.
     uint16_t buf[32];
     uint8_t bodyBytes[16];
     Proc proc = makeProc(1, kProc1Body, 3, bodyBytes, sizeof(bodyBytes));
-    TranslateResult r = translateProc(proc, /*procIdx=*/1, kArgCounts, 2, buf, 32);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, /*procIdx=*/1, kArgCounts, 2, a);
 
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 10);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 10);
 
     const uint16_t expected[] = {
         0x465B, 0x604B, 0x3301, 0x469B, 0x447A, 0x4710, // prologue stub
         0x1D40,                                            // ADDS r0, r0, #5  (LOAD(0)+opImm(ADD,5): LOAD elided, folded straight into acc)
         0x4653, 0x685B, 0x4718,                             // returnHelper tail
     };
-    for(uint32_t i = 0; i < r.halfwordCount; i++)
+    for(uint32_t i = 0; i < halfwordCount; i++)
     {
         CHECK(buf[i] == expected[i]);
     }
@@ -134,8 +142,9 @@ TEST(OverflowIsReportedRatherThanOverrunningTheBuffer)
     uint16_t buf[4]; // too small for even the 6-halfword prologue alone
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, kProc0Body, 3, bodyBytes, sizeof(bodyBytes));
-    TranslateResult r = translateProc(proc, 0, kArgCounts, 2, buf, 4);
-    CHECK(r.overflowed);
+    Assembler a(buf, 4);
+    translateProc(proc, 0, kArgCounts, 2, a);
+    CHECK(a.overflowed());
 }
 
 // The tests below exercise LOOP/BR_TABLE/comparisons-as-values/unary ops/
@@ -165,9 +174,10 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 17);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 17);
 }
 
 TEST(BrTableJumpTableHelperViaFullPipeline)
@@ -187,9 +197,10 @@ TEST(BrTableJumpTableHelperViaFullPipeline)
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[64];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 64);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 24);
+    Assembler a(buf, 64);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 24);
 }
 
 TEST(ComparisonFusesIntoBrTableGuard)
@@ -204,9 +215,10 @@ TEST(ComparisonFusesIntoBrTableGuard)
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 15);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 15);
 }
 
 TEST(ComparisonMaterializesAsOrdinaryValue)
@@ -218,9 +230,10 @@ TEST(ComparisonMaterializesAsOrdinaryValue)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 15);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 15);
 }
 
 TEST(NegViaFullPipeline)
@@ -230,9 +243,10 @@ TEST(NegViaFullPipeline)
     uint8_t bodyBytes[8];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 11);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 11);
 }
 
 TEST(ClzHelperViaFullPipeline)
@@ -246,9 +260,10 @@ TEST(ClzHelperViaFullPipeline)
     uint8_t bodyBytes[8];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 14);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 14);
 }
 
 TEST(LastArgumentFoldFallsBackToEagerFlushWhenReferencedTwice)
@@ -261,9 +276,10 @@ TEST(LastArgumentFoldFallsBackToEagerFlushWhenReferencedTwice)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 11);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 11);
 }
 
 TEST(CaseClosesViaTerminatorThroughFullPipeline)
@@ -282,9 +298,10 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 17);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 17);
 }
 
 // The tests below cover the remaining paths in translate_proc.cpp's main
@@ -304,9 +321,10 @@ TEST(PopThroughFullPipeline)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 11);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 11);
 }
 
 TEST(TrapAtTopLevel)
@@ -316,12 +334,13 @@ TEST(TrapAtTopLevel)
     uint8_t bodyBytes[8];
     Proc proc = makeProc(0, body, 1, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
     // The 0x80000003 sentinel takes 5 synthesis halfwords, so it pools
     // instead: one LDR plus a word at the end. pc lands word-aligned
     // here, so no pad halfword.
-    CHECK(r.halfwordCount == 12);
+    CHECK(halfwordCount == 12);
     CHECK(buf[6] == 0x4801);  // LDR r0,[pc,#4] — Align(12+4,4)=16, +4 -> byte 20
     CHECK(buf[10] == 0x0003); // and the pooled word is the *sentinel*,
     CHECK(buf[11] == 0x8000); // not TRAP's own raw decoded imm
@@ -332,7 +351,11 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
     // Same shape as CaseClosesViaTerminatorThroughFullPipeline above, but
     // with TRAP as the terminator instead of RETURN — closeFrameForTerminator's
     // "frame != nullptr" guard around TRAP is a distinct source line from
-    // RETURN's identically-shaped guard.
+    // RETURN's identically-shaped guard. trapInstr(9)'s sentinel pools
+    // (synthesis cost 5), and case0's own terminator close resolves
+    // case1's start via Assembler::bind — which flushes that pending
+    // pool entry right there (branch-around + word, already
+    // word-aligned), *before* case1 (a plain CONST(2)) ever runs.
     const Instr body[] = {
         CONST(5), opImm(Op::GT_U, 3), brTable(2),
             CONST(1), trapInstr(9),
@@ -343,16 +366,14 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    // trapInstr(9)'s sentinel pools too. Its site sits at byte 18, an odd
-    // multiple of 2, so its base rounds *down* to 20 — and the pool needs
-    // a NOP pad to reach a word boundary.
-    CHECK(r.halfwordCount == 20);
-    CHECK(buf[9] == 0x4804);  // LDR r0,[pc,#16] — Align(18+4,4)=20, +16 -> byte 36
-    CHECK(buf[17] == 0xBF00); // pad, after the last real instruction
-    CHECK(buf[18] == 0x0009);
-    CHECK(buf[19] == 0x8000);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 20);
+    CHECK(buf[9] == 0x4802);  // LDR r0,[pc,#8] -- the TRAP sentinel, pooled
+    CHECK(buf[13] == 0xE001); // the flush's own branch-around, past the pool word
+    CHECK(buf[14] == 0x0009);
+    CHECK(buf[15] == 0x8000);
 }
 
 TEST(LoadFromOutOfWindowSlot)
@@ -365,9 +386,10 @@ TEST(LoadFromOutOfWindowSlot)
     uint8_t bodyBytes[8];
     Proc proc = makeProc(5, body, 2, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 11);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 11);
 }
 
 TEST(StoreStandaloneInWindowWhenNotPrecededByAFoldableProducer)
@@ -381,9 +403,10 @@ TEST(StoreStandaloneInWindowWhenNotPrecededByAFoldableProducer)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 14);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 14);
 }
 
 TEST(StoreStandaloneOutOfWindowAndLastArgFoldRefCountZero)
@@ -402,9 +425,10 @@ TEST(StoreStandaloneOutOfWindowAndLastArgFoldRefCountZero)
     uint8_t bodyBytes[8];
     Proc proc = makeProc(5, body, 3, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 12);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 12);
 }
 
 TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
@@ -417,10 +441,11 @@ TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
     uint8_t bodyBytes[8];
     Proc proc = makeProc(0, body, 2, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 12);
-    CHECK(literalSiteCount(buf, r.halfwordCount) == 0);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 12);
+    CHECK(literalSiteCount(buf, halfwordCount) == 0);
 }
 
 TEST(ConstFoldsDirectlyIntoAFollowingStore)
@@ -430,9 +455,10 @@ TEST(ConstFoldsDirectlyIntoAFollowingStore)
     uint8_t bodyBytes[8];
     Proc proc = makeProc(1, body, 3, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 12);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 12);
 }
 
 TEST(RegRegOutOfWindowWritesBackToStackAfterComputing)
@@ -447,9 +473,10 @@ TEST(RegRegOutOfWindowWritesBackToStackAfterComputing)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(5, body, 3, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 14);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 14);
 }
 
 TEST(RegRegInWindowWritesBackToItsOwnRegister)
@@ -459,9 +486,10 @@ TEST(RegRegInWindowWritesBackToItsOwnRegister)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 12);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 12);
 }
 
 TEST(PopAccStackComboThroughFullPipeline)
@@ -471,9 +499,10 @@ TEST(PopAccStackComboThroughFullPipeline)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 11);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 11);
 }
 
 TEST(PeekPeekStackComboThroughFullPipeline)
@@ -483,9 +512,10 @@ TEST(PeekPeekStackComboThroughFullPipeline)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 14);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 14);
 }
 
 TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
@@ -508,9 +538,10 @@ TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 18);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 18);
 }
 
 TEST(RevbitsHelperViaFullPipeline)
@@ -522,9 +553,10 @@ TEST(RevbitsHelperViaFullPipeline)
     uint8_t bodyBytes[8];
     Proc proc = makeProc(0, body, 3, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 14);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 14);
 }
 
 TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
@@ -544,9 +576,10 @@ TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
     uint8_t bodyBytes[32];
     Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[64];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 64);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 28);
+    Assembler a(buf, 64);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 28);
 }
 
 TEST(LoopConditionClosesViaAnExplicitFusedComparison)
@@ -569,9 +602,10 @@ TEST(LoopConditionClosesViaAnExplicitFusedComparison)
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 16);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 16);
 }
 
 TEST(ComparisonMaterializedResultFoldsDirectlyIntoAFollowingStore)
@@ -585,9 +619,10 @@ TEST(ComparisonMaterializedResultFoldsDirectlyIntoAFollowingStore)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 17);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 17);
 }
 
 TEST(LastArgumentFoldEagerlyFlushesWhenBodyStartReferenceIsNotALoad)
@@ -602,9 +637,10 @@ TEST(LastArgumentFoldEagerlyFlushesWhenBodyStartReferenceIsNotALoad)
     uint8_t bodyBytes[8];
     Proc proc = makeProc(2, body, 2, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 11);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 11);
 }
 
 static uint32_t currentSp()
@@ -637,8 +673,9 @@ TEST(DeeplyNestedButWellFormedBlocksSucceedWithNoStackFloor)
     uint8_t bodyBytes[512];
     Proc proc = makeProc(0, body, 2 * kDepth + 1, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[512];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 512);
-    CHECK(!r.overflowed);
+    Assembler a(buf, 512);
+    translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
 }
 
 TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
@@ -650,18 +687,21 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     // levels of real nesting exhaust N bytes of stack": this host build
     // is -O0, nothing like the real target's -Os, so any such number
     // wouldn't transfer — this instead proves the mechanism itself (the
-    // comparison, and TranslateResult::overflowed propagating out) fires
-    // correctly whenever the floor genuinely can't be satisfied, which is
-    // exactly the property a genuinely deep recursion needs to trigger for
-    // real, on real hardware.
+    // comparison, and Assembler::fail() latching overflowed() on a
+    // detached Assembler) fires correctly whenever the floor genuinely
+    // can't be satisfied, which is exactly the property a genuinely deep
+    // recursion needs to trigger for real, on real hardware (where an
+    // attached Assembler's own fail() unwinds straight to
+    // RESOURCE_ERROR instead of returning).
     const Instr body[] = {bare(Op::RETURN)};
     uint32_t argCounts[] = {0};
     uint8_t bodyBytes[8];
     Proc proc = makeProc(0, body, 1, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[16];
     uint32_t floor = currentSp();
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 16, floor);
-    CHECK(r.overflowed);
+    Assembler a(buf, 16, floor);
+    translateProc(proc, 0, argCounts, 1, a);
+    CHECK(a.overflowed());
 }
 
 // ── Literal pooling ─────────────────────────────────────────────────────
@@ -678,10 +718,11 @@ TEST(LargeConstAndLargeOperandBothPoolIntoOneChunk)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, body, 3, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
 
-    CHECK(!r.overflowed);
-    CHECK(r.halfwordCount == 16); // 24 unpooled: 7 + 7 synthesis halfwords
+    CHECK(!a.overflowed());
+    CHECK(halfwordCount == 16); // 24 unpooled: 7 + 7 synthesis halfwords
 
     const uint16_t expected[] = {
         0x465B, 0x604B, 0x3301, 0x469B, 0x447A, 0x4710, // prologue stub
@@ -692,7 +733,7 @@ TEST(LargeConstAndLargeOperandBothPoolIntoOneChunk)
         0x5678, 0x1234,                                  // pool: 0x12345678
         0xDEF0, 0x0ABC,                                  // pool: 0x0ABCDEF0
     };
-    for(uint32_t i = 0; i < r.halfwordCount; i++)
+    for(uint32_t i = 0; i < halfwordCount; i++)
     {
         CHECK(buf[i] == expected[i]);
     }
@@ -707,17 +748,19 @@ TEST(ShiftAmountNeverPoolsEvenWhenHardToSynthesize)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(1, body, 3, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
-    CHECK(!r.overflowed);
-    CHECK(literalSiteCount(buf, r.halfwordCount) == 0);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    CHECK(!a.overflowed());
+    CHECK(literalSiteCount(buf, halfwordCount) == 0);
 }
 
 TEST(PooledLoadInsideGuardedRegionStillResolves)
 {
-    // One pooled site in each arm of an if/else. The chunk spans the whole
-    // construct and flushes at the end of the procedure, so
-    // emitGuardedBranch has to have priced the pool debt into its own
-    // short-vs-long branch choice.
+    // One pooled site in each arm of an if/else. Each arm's own chunk
+    // flushes as soon as its own case's forward fixup is resolved
+    // (Assembler::bind's own flush-before-resolve ordering) rather than
+    // both surviving in one chunk to the end of the procedure — but
+    // either way both values must still decode correctly.
     const Instr body[] = {
         CONST(5), opImm(Op::GT_U, 3), brTable(2),
             CONST(0x12345678), bare(Op::BLOCK_END),
@@ -728,24 +771,29 @@ TEST(PooledLoadInsideGuardedRegionStillResolves)
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 32);
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
 
-    CHECK(!r.overflowed);
-    CHECK(literalSiteCount(buf, r.halfwordCount) == 2);
+    CHECK(!a.overflowed());
+    CHECK(literalSiteCount(buf, halfwordCount) == 2);
 
     uint32_t value = 0;
-    CHECK(loadedWord(buf, r.halfwordCount, nthLiteralSite(buf, r.halfwordCount, 0), value));
+    CHECK(loadedWord(buf, halfwordCount, nthLiteralSite(buf, halfwordCount, 0), value));
     CHECK(value == 0x12345678);
-    CHECK(loadedWord(buf, r.halfwordCount, nthLiteralSite(buf, r.halfwordCount, 1), value));
+    CHECK(loadedWord(buf, halfwordCount, nthLiteralSite(buf, halfwordCount, 1), value));
     CHECK(value == 0x0ABCDEF0);
 }
 
-TEST(BrTableJumpForcesAFlushBeforeItsOwnTable)
+TEST(PooledLoadSurvivesAcrossABrTableJumpTableUnflushed)
 {
-    // BR_TABLE N>2 emits raw halfwords that can look exactly like a parked
-    // literal load, so the chunk must close before the table is laid down
-    // — otherwise a later flush's scan would sweep table slots up as
-    // though they were pending sites.
+    // Unlike the old bytecode-tag-based pool, this one tracks each
+    // pending site by its own stored (site, value) pair rather than
+    // scanning the output for anything that merely looks like a literal
+    // load — so BR_TABLE(N>2)'s own raw jump-table halfwords are never at
+    // risk of being misread, and a chunk opened before one needs no
+    // forced flush to stay safe. The one CONST here survives, unflushed,
+    // all the way to the end-of-procedure flush, landing *after* the
+    // jump table rather than before it.
     const Instr body[] = {
         CONST(0x12345678), brTable(3),
             CONST(1), bare(Op::BLOCK_END),
@@ -757,47 +805,51 @@ TEST(BrTableJumpForcesAFlushBeforeItsOwnTable)
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[64];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 64);
+    Assembler a(buf, 64);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
 
-    CHECK(!r.overflowed);
-    // The pool is flushed early, so its word lands before the jump table
-    // rather than after it: a low offset, not one reaching past the table.
-    uint32_t site = nthLiteralSite(buf, r.halfwordCount, 0);
-    CHECK(site * 2 == 14);
+    CHECK(!a.overflowed());
+    CHECK(literalSiteCount(buf, halfwordCount) == 1);
+
     uint32_t value = 0;
-    CHECK(loadedWord(buf, r.halfwordCount, site, value));
+    uint32_t site = nthLiteralSite(buf, halfwordCount, 0);
+    CHECK(loadedWord(buf, halfwordCount, site, value));
     CHECK(value == 0x12345678);
-    CHECK(buf[9] == 0xBF00); // pad, after the flush's own branch-around at byte 16
 }
 
-TEST(BytecodeDistanceOverflowFlushesMidProcedure)
+TEST(OutputReachDistanceForcesAMidProcedureFlush)
 {
-    // 300 single-byte instructions between two pooled sites push the
-    // second one's bytecode delta past the 8-bit tag, forcing a flush and
-    // a fresh chunk. Both loads must still reach their own word.
-    Instr body[304];
+    // 500 single-halfword NOT instructions between two pooled sites push
+    // the first one's own forward reach past its 1020-byte limit,
+    // forcing a flush and a fresh chunk (the reach guard is now the
+    // *only* mid-procedure flush trigger — the old bytecode-distance tag
+    // this test originally forced no longer exists, since a pooled site
+    // carries its own output position directly instead of a bytecode
+    // delta to re-decode). Both loads must still reach their own word.
+    Instr body[504];
     uint32_t n = 0;
     body[n++] = CONST(0x12345678);
-    for(uint32_t i = 0; i < 300; i++)
+    for(uint32_t i = 0; i < 500; i++)
     {
         body[n++] = bare(Op::NOT);
     }
     body[n++] = opImm(Op::ADD, 0x0ABCDEF0);
     body[n++] = bare(Op::RETURN);
 
-    uint8_t bodyBytes[512];
+    uint8_t bodyBytes[1024];
     uint32_t argCounts[] = {0};
     Proc proc = makeProc(0, body, n, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[512];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 512);
+    uint16_t buf[1024];
+    Assembler a(buf, 1024);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
 
-    CHECK(!r.overflowed);
-    CHECK(literalSiteCount(buf, r.halfwordCount) == 2);
+    CHECK(!a.overflowed());
+    CHECK(literalSiteCount(buf, halfwordCount) == 2);
 
     uint32_t value = 0;
-    CHECK(loadedWord(buf, r.halfwordCount, nthLiteralSite(buf, r.halfwordCount, 0), value));
+    CHECK(loadedWord(buf, halfwordCount, nthLiteralSite(buf, halfwordCount, 0), value));
     CHECK(value == 0x12345678);
-    CHECK(loadedWord(buf, r.halfwordCount, nthLiteralSite(buf, r.halfwordCount, 1), value));
+    CHECK(loadedWord(buf, halfwordCount, nthLiteralSite(buf, halfwordCount, 1), value));
     CHECK(value == 0x0ABCDEF0);
 }
 
@@ -805,7 +857,12 @@ TEST(OutputReachOverflowFlushesBeforeGoingOutOfRange)
 {
     // CALL emits far more output per bytecode byte than anything else, so
     // a long run of them exhausts the load's 1020-byte forward reach well
-    // before the bytecode tag overflows — the other flush trigger.
+    // before it would otherwise. Each CALL's own force-pooled record
+    // (abi_strategy.cpp) also contends for pool room now, so this only
+    // checks that the original CONST's own pooled value is still
+    // reachable and decodes correctly — not an exact site count, which
+    // now depends on how many call records also happened to still be
+    // pending when it flushed.
     Instr body[128];
     uint32_t n = 0;
     body[n++] = CONST(0x12345678);
@@ -818,20 +875,20 @@ TEST(OutputReachOverflowFlushesBeforeGoingOutOfRange)
     uint8_t bodyBytes[512];
     uint32_t argCounts[] = {0};
     Proc proc = makeProc(0, body, n, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[2048];
-    TranslateResult r = translateProc(proc, 0, argCounts, 1, buf, 2048);
+    uint16_t buf[4096];
+    Assembler a(buf, 4096);
+    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
 
-    CHECK(!r.overflowed);
-    CHECK(literalSiteCount(buf, r.halfwordCount) == 1);
+    CHECK(!a.overflowed());
 
-    uint32_t site = nthLiteralSite(buf, r.halfwordCount, 0);
+    uint32_t site = nthLiteralSite(buf, halfwordCount, 0);
+    CHECK(site < halfwordCount);
     uint32_t value = 0;
-    CHECK(loadedWord(buf, r.halfwordCount, site, value));
+    CHECK(loadedWord(buf, halfwordCount, site, value));
     CHECK(value == 0x12345678);
 
-    // Flushed early, so the word sits far short of the end of the output.
+    // Flushed within reach, wherever it ended up.
     uint16_t off;
     CHECK(ArmV6M::getLiteralOffset(buf[site], off));
     CHECK(off * 4u <= 1020);
-    CHECK(r.halfwordCount * 2 > 1020); // the run really did outgrow one chunk's reach
 }

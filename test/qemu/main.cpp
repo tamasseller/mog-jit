@@ -192,9 +192,10 @@ TEST(OnStackRejectsBeforeTouchingAnything)
 static uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint32_t *calleeArgCounts, uint32_t calleeCount)
 {
     static uint16_t scratch[128];
-    TranslateResult r = translateProc(proc, procIdx, calleeArgCounts, calleeCount, scratch, 128);
-    assert(!r.overflowed); // GCOV_EXCL_LINE — the scratch buffer above is already generous for this test corpus
-    return r.halfwordCount;
+    Assembler a(scratch, 128);
+    uint32_t n = translateProc(proc, procIdx, calleeArgCounts, calleeCount, a);
+    assert(!a.overflowed()); // GCOV_EXCL_LINE — the scratch buffer above is already generous for this test corpus
+    return n;
 }
 
 TEST(EvictionThreeDeepCallChain)

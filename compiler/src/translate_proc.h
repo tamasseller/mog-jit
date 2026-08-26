@@ -1,41 +1,40 @@
 // The top-level per-procedure driver — decodes one procedure's wire bytes
 // and emits Thumb code for it via abi_strategy.h's real-ABI sequences.
+// Everything below reaches the outside world through Assembler itself,
+// never through Runtime directly — this is the "core compiler logic" layer
+// (docs/design.md's 3c), kept free of the environment's own oddities so
+// it stays testable against a plain detached Assembler with no Runtime
+// in play at all, exactly as every host unit test and QEMU pre-
+// measurement call already does.
 #ifndef JIT_ARMV6M_COMPILER_TRANSLATE_PROC_H_
 #define JIT_ARMV6M_COMPILER_TRANSLATE_PROC_H_
 
 #include <cstdint>
 #include "proc.h"
-#include "arena_room.h"
+#include "assembler.h"
 
 namespace jitc
 {
-
-struct TranslateResult
-{
-    uint32_t halfwordCount;
-    // outCapacityHalfwords was exceeded, or this procedure's own
-    // LOOP/BR_TABLE nesting recursion pushed the live stack pointer past
-    // stackFloor (translateProc's stackFloor parameter below) — checked
-    // live against the actual stack pointer, not a fixed depth count.
-    // Either way, compileProc's own caller (compile_proc_real.cpp) treats
-    // this bit as "bail out with RESOURCE_ERROR."
-    bool overflowed;
-};
 
 // The per-procedure forward pass. procIdx is this procedure's own
 // dispatch-table index (abiEmitCall's own packRecord argument).
 // calleeArgCounts[i] is procedure i's own argCount — this function only
 // ever reads calleeArgCounts[instr.calleeIndex].
 //
-// stackFloor is the lowest address the translator's own LOOP/BR_TABLE
-// recursion (translateBody, one native call per nesting level) may safely
-// reach, checked live against the actual stack pointer on every recursive
-// call. Defaults to 0 (no limit) for callers with no real embedded stack
-// budget in play — every host unit test constructs a Proc directly with no
-// Runtime/stack-safety concept, so they get pure translation-correctness
-// checking, unchanged. The one real caller that matters,
-// compile_proc_real.cpp, always passes Runtime::liveStackFloor()'s own
-// live value instead.
+// a is the only seam into anything Runtime-owned (arena growth, the live
+// stack-nesting floor, final registration) — an attached Assembler
+// (compiler/src/assembler.h) carries all of that; a detached one (every
+// host test, the QEMU pre-measurement calls) has none of it, and gets
+// pure translation-correctness checking instead. Either way this
+// function finalizes a itself as its last step (flushing any still-open
+// pool chunk, and — for an attached Assembler — committing the arena
+// allocation and registering the result with Runtime) and returns the
+// final halfword count; a caller never needs a separate a.finalize()
+// call of its own. A translator-detected failure (arena exhaustion
+// beyond what Assembler::reserve() could free, or the live stack-nesting
+// guard tripping) calls a.fail(): on a detached Assembler this returns
+// normally with overflowed() now true; on an attached one it never
+// returns at all, unwinding straight to RESOURCE_ERROR.
 //
 // savesLROverride, if non-null, is the whole-program directory's own
 // precomputed answer (runtime/runtime_internal.h's ProcSlot) to "does this
@@ -44,22 +43,12 @@ struct TranslateResult
 // a one-off host-test/pre-measurement call, but wasteful to redo on every
 // recompile once a directory already has the answer. Null (every existing
 // caller, unchanged) falls back to that scan.
-//
-// room, if non-null, lets the translator grow outBuf's own headroom
-// mid-pass by evicting/compacting other resident procedures
-// (arena_room.h, docs/design.md §11) — the one seam into Runtime-owned
-// state this otherwise fully Runtime-agnostic function has. Null (every
-// existing caller, unchanged) means outBuf's capacity is fixed for the
-// whole pass, exactly as today: TranslateResult::overflowed reports
-// exhaustion the same way either way.
-TranslateResult translateProc(
+uint32_t translateProc(
     const Proc &proc,
     uint32_t procIdx,
     const uint32_t *calleeArgCounts, uint32_t calleeCount,
-    uint16_t *outBuf, uint32_t outCapacityHalfwords,
-    uint32_t stackFloor = 0,
-    const bool *savesLROverride = nullptr,
-    ArenaRoom *room = nullptr);
+    Assembler &a,
+    const bool *savesLROverride = nullptr);
 
 /** Whether proc's own body ever reaches an op needing lr protected before
  *  anything can clobber it: a nested CALL, blocks.h's own openBrTableJump

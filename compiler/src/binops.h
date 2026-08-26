@@ -12,7 +12,7 @@
 namespace jitc
 {
 
-class Emitter;
+class Assembler;
 
 enum class BinOpKind : uint8_t
 {
@@ -27,7 +27,7 @@ BinOpKind classifyBinOp(Op op, Combo combo);
  *  is combo's own right-hand side (nullptr means PEEK_PEEK, whose operand
  *  is dest itself); dest says where the result must end up. */
 void emitBinaryOp(
-    Emitter &e, Op op, Combo combo,
+    Assembler &e, Op op, Combo combo,
     const Shape &accShape, const Shape *operand, uint32_t dest);
 
 } // namespace jitc

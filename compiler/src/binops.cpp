@@ -1,5 +1,5 @@
 #include "binops.h"
-#include "emitter.h"
+#include "assembler.h"
 #include "registers.h"
 #include "imm_synth.h"
 #include "armv6.h"
@@ -34,7 +34,7 @@ BinOpKind classifyBinOp(Op op, Combo combo)
  *  after would silently clobber that just-reloaded value before the final
  *  op ever reads it, computing `k op k` instead of `n op k` — copy n into
  *  dest first so it survives k's own materialization. */
-static void addOrSubWithImm(Emitter &e, bool sub, uint32_t dest, uint32_t n, int32_t k)
+static void addOrSubWithImm(Assembler &e, bool sub, uint32_t dest, uint32_t n, int32_t k)
 {
     if(fitsImm3(k))
     {
@@ -61,7 +61,7 @@ static void addOrSubWithImm(Emitter &e, bool sub, uint32_t dest, uint32_t n, int
 /** Rd = k - n — immediate minus register, which has no direct native
  *  form: k===0 degenerates to NEG; otherwise materialize k into scratch.
  *  Same n == SCRATCH_REG hazard as addOrSubWithImm above, same fix. */
-static void emitRsubImmAsLeft(Emitter &e, uint32_t dest, int32_t k, uint32_t n)
+static void emitRsubImmAsLeft(Assembler &e, uint32_t dest, int32_t k, uint32_t n)
 {
     if(k == 0)
     {
@@ -80,7 +80,7 @@ static void emitRsubImmAsLeft(Emitter &e, uint32_t dest, int32_t k, uint32_t n)
 /** ADD/SUB/RSUB, covering every (accShape, operandShape) combination —
  *  operand===nullptr means PEEK_PEEK, whose right-hand operand is dest
  *  itself. */
-static void emitAddSubRsub(Emitter &e, Op op, uint32_t dest, const Shape &accShape, const Shape *operand)
+static void emitAddSubRsub(Assembler &e, Op op, uint32_t dest, const Shape &accShape, const Shape *operand)
 {
     Shape rhs = operand ? *operand : Shape::ofReg(dest);
 
@@ -198,7 +198,7 @@ static uint16_t twoOpInPlaceNative(Op op, uint32_t dn, uint32_t m)
 }
 
 void emitBinaryOp(
-    Emitter &e, Op op, Combo combo,
+    Assembler &e, Op op, Combo combo,
     const Shape &accShape, const Shape *operand, uint32_t dest)
 {
     BinOpKind kind = classifyBinOp(op, combo);
