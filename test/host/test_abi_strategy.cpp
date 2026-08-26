@@ -35,12 +35,12 @@ TEST(prologueStubExactEncoding)
     Assembler e(buf, 8);
     emitPrologueStub(e);
     CHECK(e.halfwordCount() == 6);
-    CHECK(buf[0] == 0x465B); // MOV r3, r11
-    CHECK(buf[1] == 0x604B); // STR r3, [r1, #4]
-    CHECK(buf[2] == 0x3301); // ADDS r3, #1
-    CHECK(buf[3] == 0x469B); // MOV r11, r3
-    CHECK(buf[4] == 0x447A); // ADD r2, r2, pc
-    CHECK(buf[5] == 0x4710); // BX r2
+    CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(11))); // MOV r3, r11
+    CHECK(buf[1] == ArmV6M::str(ArmV6M::LoReg(3), ArmV6M::LoReg(1), ArmV6M::Uoff<2, 5>(4))); // STR r3, [r1, #4]
+    CHECK(buf[2] == ArmV6M::adds(ArmV6M::LoReg(3), ArmV6M::Imm<8>(1))); // ADDS r3, #1
+    CHECK(buf[3] == ArmV6M::mov(ArmV6M::AnyReg(11), ArmV6M::AnyReg(3))); // MOV r11, r3
+    CHECK(buf[4] == ArmV6M::add(ArmV6M::AnyReg(2), ArmV6M::AnyReg(15))); // ADD r2, r2, pc
+    CHECK(buf[5] == ArmV6M::bx(ArmV6M::AnyReg(2))); // BX r2
 }
 
 TEST(packRecord)
@@ -71,10 +71,10 @@ TEST(abiEmitCallFitsImm8CalleeIndexIsAFixedFiveHalfwordSequence)
     uint32_t n = e.halfwordCount() - before;
     CHECK(n == 5);
     CHECK(ArmV6M::isLiteralAccess(buf[before + 0])); // the record's own pooled site
-    CHECK(buf[before + 1] == 0x2201); // MOVS r2, #1      (calleeIndex, fits imm8)
-    CHECK(buf[before + 2] == 0x4653); // MOV r3, r10
-    CHECK(buf[before + 3] == 0x681B); // LDR r3, [r3, #0] (callHelper)
-    CHECK(buf[before + 4] == 0x4718); // BX r3
+    CHECK(buf[before + 1] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(1))); // MOVS r2, #1      (calleeIndex, fits imm8)
+    CHECK(buf[before + 2] == ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10))); // MOV r3, r10
+    CHECK(buf[before + 3] == ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(0))); // LDR r3, [r3, #0] (callHelper)
+    CHECK(buf[before + 4] == ArmV6M::bx(ArmV6M::AnyReg(3))); // BX r3
 
     // k has a closed form now: (preCallPc - STUB_SIZE) + 5*2 = 0 + 10 =
     // 10, so the pooled record packs procIdx=0 with offsetPlus1=11 --
@@ -100,9 +100,9 @@ TEST(abiEmitCallForcePoolsACalleeIndexNotFittingImm8Too)
     CHECK(!e.overflowed());
     CHECK(ArmV6M::isLiteralAccess(buf[before + 0])); // record
     CHECK(ArmV6M::isLiteralAccess(buf[before + 1])); // calleeIndex, also pooled
-    CHECK(buf[before + 2] == 0x4653); // MOV r3, r10
-    CHECK(buf[before + 3] == 0x681B); // LDR r3, [r3, #0] (callHelper)
-    CHECK(buf[before + 4] == 0x4718); // BX r3
+    CHECK(buf[before + 2] == ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10))); // MOV r3, r10
+    CHECK(buf[before + 3] == ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(0))); // LDR r3, [r3, #0] (callHelper)
+    CHECK(buf[before + 4] == ArmV6M::bx(ArmV6M::AnyReg(3))); // BX r3
 
     e.finalize();
     CHECK(loadedWord(buf, before + 0) == packRecord(2, 11));
@@ -115,9 +115,9 @@ TEST(abiEmitReturnLeafDispatchesToReturnHelperFromLr)
     Assembler e(buf, 4);
     abiEmitReturn(e, /*savesLR=*/false, /*initialSpilledCount=*/0);
     CHECK(e.halfwordCount() == 3);
-    CHECK(buf[0] == 0x4653); // MOV r3, r10
-    CHECK(buf[1] == 0x685B); // LDR r3, [r3, #4] (returnHelperFromLr, index 1)
-    CHECK(buf[2] == 0x4718); // BX r3
+    CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10))); // MOV r3, r10
+    CHECK(buf[1] == ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(4))); // LDR r3, [r3, #4] (returnHelperFromLr, index 1)
+    CHECK(buf[2] == ArmV6M::bx(ArmV6M::AnyReg(3))); // BX r3
 }
 
 TEST(abiEmitReturnOrdinaryNonLeafDispatchesToReturnHelperFromStack)
@@ -128,9 +128,9 @@ TEST(abiEmitReturnOrdinaryNonLeafDispatchesToReturnHelperFromStack)
     Assembler e(buf, 4);
     abiEmitReturn(e, /*savesLR=*/true, /*initialSpilledCount=*/0);
     CHECK(e.halfwordCount() == 3);
-    CHECK(buf[0] == 0x4653); // MOV r3, r10
-    CHECK(buf[1] == 0x689B); // LDR r3, [r3, #8] (returnHelperFromStack, index 2)
-    CHECK(buf[2] == 0x4718); // BX r3
+    CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10))); // MOV r3, r10
+    CHECK(buf[1] == ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(8))); // LDR r3, [r3, #8] (returnHelperFromStack, index 2)
+    CHECK(buf[2] == ArmV6M::bx(ArmV6M::AnyReg(3))); // BX r3
 }
 
 TEST(abiEmitReturnDeepArgsNonLeafDispatchesToReturnHelperFromStackReclaim)
@@ -144,10 +144,10 @@ TEST(abiEmitReturnDeepArgsNonLeafDispatchesToReturnHelperFromStackReclaim)
     Assembler e(buf, 8);
     abiEmitReturn(e, /*savesLR=*/true, /*initialSpilledCount=*/3);
     CHECK(e.halfwordCount() == 4);
-    CHECK(buf[0] == 0x220C); // MOVS r2, #12  (4 * initialSpilledCount)
-    CHECK(buf[1] == 0x4653); // MOV r3, r10
-    CHECK(buf[2] == 0x69DB); // LDR r3, [r3, #28] (returnHelperFromStackReclaim, index 7)
-    CHECK(buf[3] == 0x4718); // BX r3
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(12))); // MOVS r2, #12  (4 * initialSpilledCount)
+    CHECK(buf[1] == ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10))); // MOV r3, r10
+    CHECK(buf[2] == ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(28))); // LDR r3, [r3, #28] (returnHelperFromStackReclaim, index 7)
+    CHECK(buf[3] == ArmV6M::bx(ArmV6M::AnyReg(3))); // BX r3
 }
 
 TEST(abiEmitReturnDeepArgsNonLeafSynthesizesLargeReclaimByteCount)
@@ -167,9 +167,9 @@ TEST(abiEmitReturnDeepArgsNonLeafSynthesizesLargeReclaimByteCount)
     CHECK(!e.overflowed());
     uint32_t n = e.halfwordCount();
     CHECK(n == 2 + 3); // MOVS + LSLS (400 = 25 << 4), then MOV/LDR/BX
-    CHECK(buf[n - 3] == 0x4653); // MOV r3, r10
-    CHECK(buf[n - 2] == 0x69DB); // LDR r3, [r3, #28] (returnHelperFromStackReclaim, index 7)
-    CHECK(buf[n - 1] == 0x4718); // BX r3
+    CHECK(buf[n - 3] == ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10))); // MOV r3, r10
+    CHECK(buf[n - 2] == ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(28))); // LDR r3, [r3, #28] (returnHelperFromStackReclaim, index 7)
+    CHECK(buf[n - 1] == ArmV6M::bx(ArmV6M::AnyReg(3))); // BX r3
 }
 
 TEST(abiEmitPrologueAddsPushLrOnlyWhenSavesLR)
@@ -183,5 +183,5 @@ TEST(abiEmitPrologueAddsPushLrOnlyWhenSavesLR)
     Assembler e2(buf2, 8);
     abiEmitPrologue(e2, /*savesLR=*/true);
     CHECK(e2.halfwordCount() == 7);
-    CHECK(buf2[6] == 0xB500); // PUSH {lr}
+    CHECK(buf2[6] == ArmV6M::pushWithLr(ArmV6M::LoRegs{0})); // PUSH {lr}
 }

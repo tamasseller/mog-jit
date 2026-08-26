@@ -26,7 +26,7 @@ TEST(materializeImm32SynthesizesWhenBelowPoolingThreshold)
     Assembler a(buf, 8);
     a.materializeImm32(3, 0);
     CHECK(a.halfwordCount() == 1);
-    CHECK(buf[0] == 0x2300); // MOVS r3, #0
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(3), ArmV6M::Imm<8>(0))); // MOVS r3, #0
 }
 
 TEST(materializeImm32SynthesizesASingleByteValue)
@@ -35,7 +35,7 @@ TEST(materializeImm32SynthesizesASingleByteValue)
     Assembler a(buf, 8);
     a.materializeImm32(0, 37);
     CHECK(a.halfwordCount() == 1);
-    CHECK(buf[0] == 0x2025); // MOVS r0, #37
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(37))); // MOVS r0, #37
 }
 
 TEST(materializeImm32PoolsAValueWhoseUnshiftedPatternJustMissesImm8)
@@ -72,8 +72,8 @@ TEST(FinalizeFlushesWithNoBranchAroundAndPadsToAWordBoundary)
 
     uint32_t total = a.finalize();
     CHECK(total == 4); // LDR(1) + pad NOP(1) + pool word(2)
-    CHECK(buf[0] == 0x4800); // LDR r0,[pc,#0] -- Align(0+4,4)=4, +0
-    CHECK(buf[1] == 0xBF00); // pad, to reach the word boundary
+    CHECK(buf[0] == ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(0))); // LDR r0,[pc,#0] -- Align(0+4,4)=4, +0
+    CHECK(buf[1] == ArmV6M::nop()); // pad, to reach the word boundary
     CHECK(buf[2] == 0x5678);
     CHECK(buf[3] == 0x1234);
 }

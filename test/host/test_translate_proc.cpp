@@ -94,13 +94,17 @@ TEST(TranslateProc0EntryProcedure)
     CHECK(halfwordCount == 18);
 
     const uint16_t expected[] = {
-        0x465B, 0x604B, 0x3301, 0x469B, 0x447A, 0x4710, // prologue stub
-        0xB500,                                          // PUSH {lr}  (savesLR — proc0 makes a CALL)
-        0x2025,                                          // MOVS r0, #37  (CONST 37, stays pending until CALL flushes it)
-        0x4903,                                          // LDR r1,[pc,#12] — the call record, force-pooled
-        0x2201,                                            // MOVS r2, #1  (calleeIndex=1, fits imm8)
-        0x4653, 0x681B, 0x4718,                            // MOV r3,r10; LDR r3,[r3,#0]; BX r3  (callHelper)
-        0x4653, 0x689B, 0x4718,                            // MOV r3,r10; LDR r3,[r3,#8]; BX r3  (returnHelperFromStack, index 2)
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(11)), ArmV6M::str(ArmV6M::LoReg(3), ArmV6M::LoReg(1), ArmV6M::Uoff<2, 5>(4)),
+        ArmV6M::adds(ArmV6M::LoReg(3), ArmV6M::Imm<8>(1)), ArmV6M::mov(ArmV6M::AnyReg(11), ArmV6M::AnyReg(3)),
+        ArmV6M::add(ArmV6M::AnyReg(2), ArmV6M::AnyReg(15)), ArmV6M::bx(ArmV6M::AnyReg(2)), // prologue stub
+        ArmV6M::pushWithLr(ArmV6M::LoRegs{0}),           // PUSH {lr}  (savesLR — proc0 makes a CALL)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(37)), // MOVS r0, #37  (CONST 37, stays pending until CALL flushes it)
+        ArmV6M::ldrPc(ArmV6M::LoReg(1), ArmV6M::Uoff<2, 8>(12)), // LDR r1,[pc,#12] — the call record, force-pooled
+        ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(1)), // MOVS r2, #1  (calleeIndex=1, fits imm8)
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(0)),
+        ArmV6M::bx(ArmV6M::AnyReg(3)),                     // MOV r3,r10; LDR r3,[r3,#0]; BX r3  (callHelper)
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(8)),
+        ArmV6M::bx(ArmV6M::AnyReg(3)),                     // MOV r3,r10; LDR r3,[r3,#8]; BX r3  (returnHelperFromStack, index 2)
         0x0000, 0x000F,                                    // pool word: packRecord(procIdx=0, k+1=15)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -127,9 +131,12 @@ TEST(TranslateProc1Callee)
     CHECK(halfwordCount == 10);
 
     const uint16_t expected[] = {
-        0x465B, 0x604B, 0x3301, 0x469B, 0x447A, 0x4710, // prologue stub
-        0x1D40,                                            // ADDS r0, r0, #5  (LOAD(0)+opImm(ADD,5): LOAD elided, folded straight into acc)
-        0x4653, 0x685B, 0x4718,                             // returnHelper tail
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(11)), ArmV6M::str(ArmV6M::LoReg(3), ArmV6M::LoReg(1), ArmV6M::Uoff<2, 5>(4)),
+        ArmV6M::adds(ArmV6M::LoReg(3), ArmV6M::Imm<8>(1)), ArmV6M::mov(ArmV6M::AnyReg(11), ArmV6M::AnyReg(3)),
+        ArmV6M::add(ArmV6M::AnyReg(2), ArmV6M::AnyReg(15)), ArmV6M::bx(ArmV6M::AnyReg(2)), // prologue stub
+        ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(0), ArmV6M::Imm<3>(5)), // ADDS r0, r0, #5  (LOAD(0)+opImm(ADD,5): LOAD elided, folded straight into acc)
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(4)),
+        ArmV6M::bx(ArmV6M::AnyReg(3)),                      // returnHelper tail
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
@@ -341,7 +348,7 @@ TEST(TrapAtTopLevel)
     // instead: one LDR plus a word at the end. pc lands word-aligned
     // here, so no pad halfword.
     CHECK(halfwordCount == 12);
-    CHECK(buf[6] == 0x4801);  // LDR r0,[pc,#4] — Align(12+4,4)=16, +4 -> byte 20
+    CHECK(buf[6] == ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(4)));  // LDR r0,[pc,#4] — Align(12+4,4)=16, +4 -> byte 20
     CHECK(buf[10] == 0x0003); // and the pooled word is the *sentinel*,
     CHECK(buf[11] == 0x8000); // not TRAP's own raw decoded imm
 }
@@ -370,8 +377,8 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(!a.overflowed());
     CHECK(halfwordCount == 20);
-    CHECK(buf[9] == 0x4802);  // LDR r0,[pc,#8] -- the TRAP sentinel, pooled
-    CHECK(buf[13] == 0xE001); // the flush's own branch-around, past the pool word
+    CHECK(buf[9] == ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(8)));  // LDR r0,[pc,#8] -- the TRAP sentinel, pooled
+    CHECK(buf[13] == ArmV6M::b(ArmV6M::Ioff<1, 11>(2))); // the flush's own branch-around, past the pool word
     CHECK(buf[14] == 0x0009);
     CHECK(buf[15] == 0x8000);
 }
@@ -725,11 +732,14 @@ TEST(LargeConstAndLargeOperandBothPoolIntoOneChunk)
     CHECK(halfwordCount == 16); // 24 unpooled: 7 + 7 synthesis halfwords
 
     const uint16_t expected[] = {
-        0x465B, 0x604B, 0x3301, 0x469B, 0x447A, 0x4710, // prologue stub
-        0x4802,                                          // LDR r0,[pc,#8]   -> byte 24
-        0x4A03,                                          // LDR r2,[pc,#12]  -> byte 28
-        0x1880,                                          // ADDS r0,r0,r2 — operand came from the pool
-        0x4653, 0x685B, 0x4718,                          // return sequence
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(11)), ArmV6M::str(ArmV6M::LoReg(3), ArmV6M::LoReg(1), ArmV6M::Uoff<2, 5>(4)),
+        ArmV6M::adds(ArmV6M::LoReg(3), ArmV6M::Imm<8>(1)), ArmV6M::mov(ArmV6M::AnyReg(11), ArmV6M::AnyReg(3)),
+        ArmV6M::add(ArmV6M::AnyReg(2), ArmV6M::AnyReg(15)), ArmV6M::bx(ArmV6M::AnyReg(2)), // prologue stub
+        ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(8)),  // LDR r0,[pc,#8]   -> byte 24
+        ArmV6M::ldrPc(ArmV6M::LoReg(2), ArmV6M::Uoff<2, 8>(12)), // LDR r2,[pc,#12]  -> byte 28
+        ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(0), ArmV6M::LoReg(2)), // ADDS r0,r0,r2 — operand came from the pool
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(4)),
+        ArmV6M::bx(ArmV6M::AnyReg(3)),                    // return sequence
         0x5678, 0x1234,                                  // pool: 0x12345678
         0xDEF0, 0x0ABC,                                  // pool: 0x0ABCDEF0
     };

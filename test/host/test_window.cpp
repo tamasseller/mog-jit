@@ -5,6 +5,7 @@
 #include "window.h"
 #include "accstate.h"
 #include "shape.h"
+#include "armv6.h"
 
 #include <initializer_list>
 
@@ -69,12 +70,12 @@ TEST(pushValueEvictsAtWindowBoundary)
     }
 
     CHECK(e.halfwordCount() == 6);
-    CHECK(buf[0] == 0x270A); // MOVS r7, #10  (k=0 -> physReg(0)=r7)
-    CHECK(buf[1] == 0x2614); // MOVS r6, #20  (k=1 -> r6)
-    CHECK(buf[2] == 0x251E); // MOVS r5, #30  (k=2 -> r5)
-    CHECK(buf[3] == 0x2428); // MOVS r4, #40  (k=3 -> r4, window now full)
-    CHECK(buf[4] == 0xB480); // PUSH {r7}     (k=4 evicts k=0's r7)
-    CHECK(buf[5] == 0x2732); // MOVS r7, #50  (k=4 lands back on r7)
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(10))); // MOVS r7, #10  (k=0 -> physReg(0)=r7)
+    CHECK(buf[1] == ArmV6M::movs(ArmV6M::LoReg(6), ArmV6M::Imm<8>(20))); // MOVS r6, #20  (k=1 -> r6)
+    CHECK(buf[2] == ArmV6M::movs(ArmV6M::LoReg(5), ArmV6M::Imm<8>(30))); // MOVS r5, #30  (k=2 -> r5)
+    CHECK(buf[3] == ArmV6M::movs(ArmV6M::LoReg(4), ArmV6M::Imm<8>(40))); // MOVS r4, #40  (k=3 -> r4, window now full)
+    CHECK(buf[4] == ArmV6M::push(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(7)))); // PUSH {r7}     (k=4 evicts k=0's r7)
+    CHECK(buf[5] == ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(50))); // MOVS r7, #50  (k=4 lands back on r7)
     CHECK(w.tos == 5);
 }
 
@@ -93,7 +94,7 @@ TEST(finishPopReloadsWhatPushEvicted)
 
     w.finishPop(e); // pops the top slot (tos=5 -> 4); must reload k=0's spilled r7
     CHECK(e.halfwordCount() == before + 1);
-    CHECK(buf[before] == 0xBC80); // POP {r7}
+    CHECK(buf[before] == ArmV6M::pop(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(7)))); // POP {r7}
     CHECK(w.tos == 4);
 }
 
@@ -104,7 +105,7 @@ TEST(discardWindowIsOneBareSpAdjustment)
     Window w(6); // 2 slots spilled (tos=6, WINDOW_SIZE=4), leaf
     w.discardWindow(e);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0xB002); // ADD sp, #8
+    CHECK(buf[0] == ArmV6M::incrSp(ArmV6M::Uoff<2, 7>(8))); // ADD sp, #8
 }
 
 TEST(discardWindowForSavesLRReclaimsOnlySelfSpilledLocals)
@@ -133,15 +134,15 @@ TEST(callShuffleWithStackArgsExceedingWindowSize)
     Window w(6);
     spillForCall(e1, w, 6);
     CHECK(e1.halfwordCount() == 2);
-    CHECK(buf1[0] == 0xB430); // PUSH {r4, r5}  (pre-wrap run, k=2,3)
-    CHECK(buf1[1] == 0xB4C0); // PUSH {r6, r7}  (post-wrap run, k=4,5)
+    CHECK(buf1[0] == ArmV6M::push(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(4)).add(ArmV6M::LoReg(5)))); // PUSH {r4, r5}  (pre-wrap run, k=2,3)
+    CHECK(buf1[1] == ArmV6M::push(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(6)).add(ArmV6M::LoReg(7)))); // PUSH {r6, r7}  (post-wrap run, k=4,5)
 
     uint16_t buf2[8];
     Assembler e2(buf2, 8);
     fillCalleeArgs(e2, 6);
     CHECK(e2.halfwordCount() == 2);
-    CHECK(buf2[0] == 0xBCC0); // POP {r6, r7}  (larger-k run first)
-    CHECK(buf2[1] == 0xBC10); // POP {r4}      (k=3's own lone run)
+    CHECK(buf2[0] == ArmV6M::pop(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(6)).add(ArmV6M::LoReg(7)))); // POP {r6, r7}  (larger-k run first)
+    CHECK(buf2[1] == ArmV6M::pop(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(4)))); // POP {r4}      (k=3's own lone run)
 
     uint16_t buf3[8];
     Assembler e3(buf3, 8);
@@ -162,7 +163,7 @@ TEST(callShuffleWithLeftoverLocalsAboveTheStackArgs)
     Window w(5);
     spillForCall(e, w, 2);
     CHECK(e.halfwordCount() == 3);
-    CHECK(buf[0] == 0xB460); // PUSH {r5, r6}  (leftover locals k=1,2, one bulk push)
-    CHECK(buf[1] == 0xB410); // PUSH {r4}      (stack arg k=3)
-    CHECK(buf[2] == 0xB480); // PUSH {r7}      (stack arg k=4, closest to sp)
+    CHECK(buf[0] == ArmV6M::push(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(5)).add(ArmV6M::LoReg(6)))); // PUSH {r5, r6}  (leftover locals k=1,2, one bulk push)
+    CHECK(buf[1] == ArmV6M::push(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(4)))); // PUSH {r4}      (stack arg k=3)
+    CHECK(buf[2] == ArmV6M::push(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(7)))); // PUSH {r7}      (stack arg k=4, closest to sp)
 }

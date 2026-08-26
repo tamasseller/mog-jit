@@ -4,6 +4,7 @@
 #include "assembler.h"
 #include "binops.h"
 #include "registers.h"
+#include "armv6.h"
 
 using namespace jitc;
 
@@ -28,7 +29,7 @@ TEST(AddRegPlusReg)
     Shape operand = Shape::ofReg(2);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0x1888); // ADDS r0, r1, r2
+    CHECK(buf[0] == ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::LoReg(2))); // ADDS r0, r1, r2
 }
 
 TEST(SubRegMinusReg)
@@ -42,7 +43,7 @@ TEST(SubRegMinusReg)
     Shape operand = Shape::ofReg(3);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0x1AC8); // SUBS r0, r1, r3
+    CHECK(buf[0] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::LoReg(3))); // SUBS r0, r1, r3
 }
 
 TEST(RsubRegMinusReg)
@@ -53,7 +54,7 @@ TEST(RsubRegMinusReg)
     Shape operand = Shape::ofReg(3);
     emitBinaryOp(e, Op::RSUB, Combo::REG_ACC, acc, &operand, 0); // dest = operand - acc = r3 - r1
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0x1A58); // SUBS r0, r3, r1
+    CHECK(buf[0] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(3), ArmV6M::LoReg(1))); // SUBS r0, r3, r1
 }
 
 TEST(RsubZeroImmDegeneratesToNeg)
@@ -64,7 +65,7 @@ TEST(RsubZeroImmDegeneratesToNeg)
     Shape operand = Shape::ofImm(0); // RSUB #0 -> negation
     emitBinaryOp(e, Op::RSUB, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0x4248); // NEGS r0, r1
+    CHECK(buf[0] == ArmV6M::negs(ArmV6M::LoReg(0), ArmV6M::LoReg(1))); // NEGS r0, r1
 }
 
 TEST(AddImmFitsImm3)
@@ -75,7 +76,7 @@ TEST(AddImmFitsImm3)
     Shape operand = Shape::ofImm(5);
     emitBinaryOp(e, Op::ADD, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0x1D48); // ADDS r0, r1, #5
+    CHECK(buf[0] == ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::Imm<3>(5))); // ADDS r0, r1, #5
 }
 
 TEST(SubImmFitsImm8OnlyWhenDestEqualsN)
@@ -86,7 +87,7 @@ TEST(SubImmFitsImm8OnlyWhenDestEqualsN)
     Shape operand = Shape::ofImm(200); // doesn't fit imm3, fits imm8
     emitBinaryOp(e, Op::SUB, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0x38C8); // SUBS r0, #200
+    CHECK(buf[0] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(200))); // SUBS r0, #200
 }
 
 TEST(ShiftImm)
@@ -97,15 +98,15 @@ TEST(ShiftImm)
     Shape operand = Shape::ofImm(3);
     emitBinaryOp(e, Op::SHL, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0x00C8); // LSLS r0, r1, #3
+    CHECK(buf[0] == ArmV6M::lsls(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::Imm<5>(3))); // LSLS r0, r1, #3
 
     Assembler e2(buf, 4);
     emitBinaryOp(e2, Op::SHR, Combo::IMM_ACC, acc, &operand, 0);
-    CHECK(buf[0] == 0x08C8); // LSRS r0, r1, #3
+    CHECK(buf[0] == ArmV6M::lsrs(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::Imm<5>(3))); // LSRS r0, r1, #3
 
     Assembler e3(buf, 4);
     emitBinaryOp(e3, Op::ASR, Combo::IMM_ACC, acc, &operand, 0);
-    CHECK(buf[0] == 0x10C8); // ASRS r0, r1, #3
+    CHECK(buf[0] == ArmV6M::asrs(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::Imm<5>(3))); // ASRS r0, r1, #3
 }
 
 TEST(ShiftImmMaterializesAPendingImmediateAccumulatorFirst)
@@ -120,8 +121,8 @@ TEST(ShiftImmMaterializesAPendingImmediateAccumulatorFirst)
     Shape operand = Shape::ofImm(3);
     emitBinaryOp(e, Op::SHL, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 2);
-    CHECK(buf[0] == 0x2205); // MOVS r2, #5   (materialize acc into SCRATCH_REG)
-    CHECK(buf[1] == 0x00D0); // LSLS r0, r2, #3  (= 5 << 3 = 40)
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(5))); // MOVS r2, #5   (materialize acc into SCRATCH_REG)
+    CHECK(buf[1] == ArmV6M::lsls(ArmV6M::LoReg(0), ArmV6M::LoReg(2), ArmV6M::Imm<5>(3))); // LSLS r0, r2, #3  (= 5 << 3 = 40)
 }
 
 TEST(TwoOpInPlaceMaterializesAccFirstAndMovesOutIfDestDiffers)
@@ -132,9 +133,9 @@ TEST(TwoOpInPlaceMaterializesAccFirstAndMovesOutIfDestDiffers)
     Shape operand = Shape::ofReg(5);
     emitBinaryOp(e, Op::AND, Combo::REG_ACC, acc, &operand, 4); // dest=4, != ACC_REG
     CHECK(e.halfwordCount() == 3);
-    CHECK(buf[0] == 0x4608); // MOV r0, r1  (materialize acc into ACC_REG)
-    CHECK(buf[1] == 0x4028); // ANDS r0, r5
-    CHECK(buf[2] == 0x4604); // MOV r4, r0  (move result out to dest)
+    CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(1))); // MOV r0, r1  (materialize acc into ACC_REG)
+    CHECK(buf[1] == ArmV6M::ands(ArmV6M::LoReg(0), ArmV6M::LoReg(5))); // ANDS r0, r5
+    CHECK(buf[2] == ArmV6M::mov(ArmV6M::AnyReg(4), ArmV6M::AnyReg(0))); // MOV r4, r0  (move result out to dest)
 }
 
 TEST(TwoOpInPlaceSkipsMoveOutWhenDestIsAccReg)
@@ -145,7 +146,7 @@ TEST(TwoOpInPlaceSkipsMoveOutWhenDestIsAccReg)
     Shape operand = Shape::ofReg(5);
     emitBinaryOp(e, Op::AND, Combo::REG_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0x4028); // ANDS r0, r5
+    CHECK(buf[0] == ArmV6M::ands(ArmV6M::LoReg(0), ArmV6M::LoReg(5))); // ANDS r0, r5
 }
 
 TEST(AddImmFitsImm8OnlyWhenDestEqualsN)
@@ -156,7 +157,7 @@ TEST(AddImmFitsImm8OnlyWhenDestEqualsN)
     Shape operand = Shape::ofImm(200); // doesn't fit imm3, fits imm8
     emitBinaryOp(e, Op::ADD, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0x30C8); // ADDS r0, #200
+    CHECK(buf[0] == ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::Imm<8>(200))); // ADDS r0, #200
 }
 
 TEST(AddImmFallsBackToMaterializeWhenDestDiffersAndImmTooLarge)
@@ -171,8 +172,8 @@ TEST(AddImmFallsBackToMaterializeWhenDestDiffersAndImmTooLarge)
     Shape operand = Shape::ofImm(10);
     emitBinaryOp(e, Op::ADD, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 2);
-    CHECK(buf[0] == 0x220A); // MOVS r2, #10
-    CHECK(buf[1] == 0x1888); // ADDS r0, r1, r2
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(10))); // MOVS r2, #10
+    CHECK(buf[1] == ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::LoReg(2))); // ADDS r0, r1, r2
 }
 
 TEST(AddRegAccWithOversizedImmediateOperandSkipsTheDestEqualsNCheck)
@@ -190,9 +191,9 @@ TEST(AddRegAccWithOversizedImmediateOperandSkipsTheDestEqualsNCheck)
     Shape operand = Shape::ofImm(1000);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 3);
-    CHECK(buf[0] == 0x227D); // MOVS r2, #0x7D (125)
-    CHECK(buf[1] == 0x00D2); // LSLS r2, r2, #3   (r2 = 125 << 3 = 1000)
-    CHECK(buf[2] == 0x1888); // ADDS r0, r1, r2
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(125))); // MOVS r2, #0x7D (125)
+    CHECK(buf[1] == ArmV6M::lsls(ArmV6M::LoReg(2), ArmV6M::LoReg(2), ArmV6M::Imm<5>(3))); // LSLS r2, r2, #3   (r2 = 125 << 3 = 1000)
+    CHECK(buf[2] == ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::LoReg(2))); // ADDS r0, r1, r2
 }
 
 TEST(AddPeekPeekUsesDestAsRhsForOrdinaryArithmeticToo)
@@ -206,7 +207,7 @@ TEST(AddPeekPeekUsesDestAsRhsForOrdinaryArithmeticToo)
     Shape acc = Shape::ofReg(1);
     emitBinaryOp(e, Op::ADD, Combo::PEEK_PEEK, acc, nullptr, 5);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0x194D); // ADDS r5, r1, r5
+    CHECK(buf[0] == ArmV6M::adds(ArmV6M::LoReg(5), ArmV6M::LoReg(1), ArmV6M::LoReg(5))); // ADDS r5, r1, r5
 }
 
 TEST(AddAccImmRhsRegFoldsIntoOrdinaryRegPlusImm)
@@ -219,7 +220,7 @@ TEST(AddAccImmRhsRegFoldsIntoOrdinaryRegPlusImm)
     Shape operand = Shape::ofReg(2);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0x1D50); // ADDS r0, r2, #5
+    CHECK(buf[0] == ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(2), ArmV6M::Imm<3>(5))); // ADDS r0, r2, #5
 }
 
 TEST(AddBothImmMaterializesAccIntoDestNotScratchToAvoidAliasingWithK)
@@ -238,8 +239,8 @@ TEST(AddBothImmMaterializesAccIntoDestNotScratchToAvoidAliasingWithK)
     Shape operand = Shape::ofImm(4);
     emitBinaryOp(e, Op::ADD, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 2);
-    CHECK(buf[0] == 0x2003); // MOVS r0, #3
-    CHECK(buf[1] == 0x1D00); // ADDS r0, r0, #4  (= 3 + 4 = 7)
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(3))); // MOVS r0, #3
+    CHECK(buf[1] == ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(0), ArmV6M::Imm<3>(4))); // ADDS r0, r0, #4  (= 3 + 4 = 7)
 }
 
 TEST(SubRegAccWithOversizedImmediateOperandSkipsTheDestEqualsNCheck)
@@ -255,9 +256,9 @@ TEST(SubRegAccWithOversizedImmediateOperandSkipsTheDestEqualsNCheck)
     Shape operand = Shape::ofImm(1000);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 3);
-    CHECK(buf[0] == 0x227D); // MOVS r2, #0x7D (125)
-    CHECK(buf[1] == 0x00D2); // LSLS r2, r2, #3   (r2 = 125 << 3 = 1000)
-    CHECK(buf[2] == 0x1A88); // SUBS r0, r1, r2
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(125))); // MOVS r2, #0x7D (125)
+    CHECK(buf[1] == ArmV6M::lsls(ArmV6M::LoReg(2), ArmV6M::LoReg(2), ArmV6M::Imm<5>(3))); // LSLS r2, r2, #3   (r2 = 125 << 3 = 1000)
+    CHECK(buf[2] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::LoReg(2))); // SUBS r0, r1, r2
 }
 
 TEST(SubAccImmRhsRegUsesRsubImmAsLeftWithNonzeroK)
@@ -271,8 +272,8 @@ TEST(SubAccImmRhsRegUsesRsubImmAsLeftWithNonzeroK)
     Shape operand = Shape::ofReg(3);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 2);
-    CHECK(buf[0] == 0x2214); // MOVS r2, #20
-    CHECK(buf[1] == 0x1AD0); // SUBS r0, r2, r3  (= 20 - 3 = 17)
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(20))); // MOVS r2, #20
+    CHECK(buf[1] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(2), ArmV6M::LoReg(3))); // SUBS r0, r2, r3  (= 20 - 3 = 17)
 }
 
 TEST(SubBothImmMaterializesAccIntoDest)
@@ -283,8 +284,8 @@ TEST(SubBothImmMaterializesAccIntoDest)
     Shape operand = Shape::ofImm(3);
     emitBinaryOp(e, Op::SUB, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 2);
-    CHECK(buf[0] == 0x200A); // MOVS r0, #10
-    CHECK(buf[1] == 0x1EC0); // SUBS r0, r0, #3  (= 10 - 3 = 7)
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(10))); // MOVS r0, #10
+    CHECK(buf[1] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(0), ArmV6M::Imm<3>(3))); // SUBS r0, r0, #3  (= 10 - 3 = 7)
 }
 
 TEST(RsubAccImmRhsRegFoldsIntoOrdinaryRegMinusImm)
@@ -298,7 +299,7 @@ TEST(RsubAccImmRhsRegFoldsIntoOrdinaryRegMinusImm)
     Shape operand = Shape::ofReg(3);
     emitBinaryOp(e, Op::RSUB, Combo::REG_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0x1F18); // SUBS r0, r3, #4  (= 3 - 4 = -1)
+    CHECK(buf[0] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(3), ArmV6M::Imm<3>(4))); // SUBS r0, r3, #4  (= 3 - 4 = -1)
 }
 
 TEST(RsubRhsImmAccRegUsesRsubImmAsLeftWithNonzeroK)
@@ -314,8 +315,8 @@ TEST(RsubRhsImmAccRegUsesRsubImmAsLeftWithNonzeroK)
     Shape operand = Shape::ofImm(7);
     emitBinaryOp(e, Op::RSUB, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 2);
-    CHECK(buf[0] == 0x2207); // MOVS r2, #7
-    CHECK(buf[1] == 0x1B50); // SUBS r0, r2, r5  (= 7 - acc)
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(7))); // MOVS r2, #7
+    CHECK(buf[1] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(2), ArmV6M::LoReg(5))); // SUBS r0, r2, r5  (= 7 - acc)
 }
 
 TEST(RsubBothImmMaterializesAccIntoDestNotScratchToAvoidAliasingWithK)
@@ -328,9 +329,9 @@ TEST(RsubBothImmMaterializesAccIntoDestNotScratchToAvoidAliasingWithK)
     Shape operand = Shape::ofImm(2);
     emitBinaryOp(e, Op::RSUB, Combo::IMM_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 3);
-    CHECK(buf[0] == 0x2009); // MOVS r0, #9    (acc materialized into dest)
-    CHECK(buf[1] == 0x2202); // MOVS r2, #2    (k materialized into SCRATCH_REG)
-    CHECK(buf[2] == 0x1A10); // SUBS r0, r2, r0  (= 2 - 9 = -7)
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(9))); // MOVS r0, #9    (acc materialized into dest)
+    CHECK(buf[1] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(2))); // MOVS r2, #2    (k materialized into SCRATCH_REG)
+    CHECK(buf[2] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(2), ArmV6M::LoReg(0))); // SUBS r0, r2, r0  (= 2 - 9 = -7)
 }
 
 TEST(AddAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
@@ -348,9 +349,9 @@ TEST(AddAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
     Shape operand = Shape::ofReg(SCRATCH_REG);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 3);
-    CHECK(buf[0] == 0x4610); // MOV r0, r2   (save the reloaded operand out of SCRATCH_REG)
-    CHECK(buf[1] == 0x2264); // MOVS r2, #100
-    CHECK(buf[2] == 0x1880); // ADDS r0, r0, r2  (= reloaded value + 100)
+    CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(2))); // MOV r0, r2   (save the reloaded operand out of SCRATCH_REG)
+    CHECK(buf[1] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(100))); // MOVS r2, #100
+    CHECK(buf[2] == ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(0), ArmV6M::LoReg(2))); // ADDS r0, r0, r2  (= reloaded value + 100)
 }
 
 TEST(SubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
@@ -361,9 +362,9 @@ TEST(SubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
     Shape operand = Shape::ofReg(SCRATCH_REG);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 3);
-    CHECK(buf[0] == 0x4610); // MOV r0, r2
-    CHECK(buf[1] == 0x2264); // MOVS r2, #100
-    CHECK(buf[2] == 0x1A10); // SUBS r0, r2, r0  (= 100 - reloaded value)
+    CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(2))); // MOV r0, r2
+    CHECK(buf[1] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(100))); // MOVS r2, #100
+    CHECK(buf[2] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(2), ArmV6M::LoReg(0))); // SUBS r0, r2, r0  (= 100 - reloaded value)
 }
 
 TEST(RsubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
@@ -374,9 +375,9 @@ TEST(RsubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
     Shape operand = Shape::ofReg(SCRATCH_REG);
     emitBinaryOp(e, Op::RSUB, Combo::REG_ACC, acc, &operand, 0);
     CHECK(e.halfwordCount() == 3);
-    CHECK(buf[0] == 0x4610); // MOV r0, r2
-    CHECK(buf[1] == 0x2232); // MOVS r2, #50
-    CHECK(buf[2] == 0x1A80); // SUBS r0, r0, r2  (= reloaded value - 50)
+    CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(2))); // MOV r0, r2
+    CHECK(buf[1] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(50))); // MOVS r2, #50
+    CHECK(buf[2] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(0), ArmV6M::LoReg(2))); // SUBS r0, r0, r2  (= reloaded value - 50)
 }
 
 TEST(TwoOpInPlaceNativeCoversEveryOpcode)
@@ -390,8 +391,12 @@ TEST(TwoOpInPlaceNativeCoversEveryOpcode)
         uint16_t expected;
     }
     cases[] = {
-        {Op::OR,  0x4328}, {Op::XOR, 0x4068}, {Op::MUL, 0x4368},
-        {Op::SHL, 0x40A8}, {Op::SHR, 0x40E8}, {Op::ASR, 0x4128},
+        {Op::OR,  ArmV6M::orrs(ArmV6M::LoReg(0), ArmV6M::LoReg(5))}, // ORR r0, r5
+        {Op::XOR, ArmV6M::eors(ArmV6M::LoReg(0), ArmV6M::LoReg(5))}, // EOR r0, r5
+        {Op::MUL, ArmV6M::muls(ArmV6M::LoReg(0), ArmV6M::LoReg(5))}, // MUL r0, r5
+        {Op::SHL, ArmV6M::lsls(ArmV6M::LoReg(0), ArmV6M::LoReg(5))}, // LSL r0, r5
+        {Op::SHR, ArmV6M::lsrs(ArmV6M::LoReg(0), ArmV6M::LoReg(5))}, // LSR r0, r5
+        {Op::ASR, ArmV6M::asrs(ArmV6M::LoReg(0), ArmV6M::LoReg(5))}, // ASR r0, r5
     };
     for(auto &c : cases)
     {
@@ -416,7 +421,7 @@ TEST(TwoOpInPlacePeekPeekUsesDestAsRhs)
     Shape acc = Shape::ofReg(1); // not ACC_REG — must be materialized first
     emitBinaryOp(e, Op::AND, Combo::PEEK_PEEK, acc, nullptr, 5);
     CHECK(e.halfwordCount() == 3);
-    CHECK(buf[0] == 0x4608); // MOV r0, r1  (materialize acc into ACC_REG)
-    CHECK(buf[1] == 0x4028); // ANDS r0, r5  (r5 == dest itself, PEEK_PEEK's own operand)
-    CHECK(buf[2] == 0x4605); // MOV r5, r0  (move result out to dest)
+    CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(1))); // MOV r0, r1  (materialize acc into ACC_REG)
+    CHECK(buf[1] == ArmV6M::ands(ArmV6M::LoReg(0), ArmV6M::LoReg(5))); // ANDS r0, r5  (r5 == dest itself, PEEK_PEEK's own operand)
+    CHECK(buf[2] == ArmV6M::mov(ArmV6M::AnyReg(5), ArmV6M::AnyReg(0))); // MOV r5, r0  (move result out to dest)
 }
