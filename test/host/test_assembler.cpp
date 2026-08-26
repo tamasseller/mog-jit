@@ -10,6 +10,7 @@
 #include "Mock.h"
 
 #include "runtime_internal.h"
+#include "host_runtime_support.h"
 
 #include "assembler.h"
 #include "imm_synth.h"
@@ -192,12 +193,11 @@ TEST(BindFlushesAnyOpenPoolChunkBeforeResolvingTheTarget)
 
 // ── overflow ─────────────────────────────────────────────────────────────
 
-TEST(EmitPastCapacityLatchesOverflowedOnADetachedAssembler)
+TEST(EmitPastCapacityBailsOnADetachedAssembler)
 {
     uint16_t buf[1];
     Assembler a(buf, 1);
     a.emit(0);
     MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    a.emit(0); // past capacity -- a safe no-op, not a write
-    CHECK(a.halfwordCount() == 1);
+    EXPECT_RESOURCE_ERROR(a.emit(0)); // past capacity -- escapes, never writes buf[1]
 }

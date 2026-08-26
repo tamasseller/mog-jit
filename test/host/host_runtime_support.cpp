@@ -3,20 +3,20 @@
 // and portable, per runtime_internal.h's own doc comment), so it needs
 // its own definition of runtimeBail to satisfy that header's contract,
 // the same way test_runtime_arena.cpp already supplies its own
-// trampolineAddr. An attached Assembler reaching this in a host test
-// means arena exhaustion genuinely wasn't recoverable by eviction — a
-// real finding the test should see, not something to silently unwind
-// past — so this just fails loudly rather than reproducing runtime.S's
-// own sp-restore-and-jump escape.
+// trampolineAddr. runtimeBail is declared [[noreturn]] — a caller
+// (Assembler::fail(), compiled against that declaration) is entitled to
+// assume nothing runs after the call, so this must actually never
+// return: MOCK(runtime)::CALL both records the call and, on a mismatch,
+// already escapes via TestRunner::failTest's own longjmp; on a match it
+// falls through here, so this still needs its own escape via
+// resourceErrorEscape (host_runtime_support.h) to honor the contract.
 #include "runtime_internal.h"
-
-#include <cstdio>
-#include <cstdlib>
-
-#include "Test.h"
-#include "Mock.h"
+#include "host_runtime_support.h"
 
 extern "C" void runtimeBail(Runtime *, uint32_t code)
 {
     MOCK(runtime)::CALL(runtimeBail).withParam(code);
+    longjmp(resourceErrorEscape, 1);
 }
+
+jmp_buf resourceErrorEscape;

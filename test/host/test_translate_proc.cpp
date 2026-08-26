@@ -10,6 +10,7 @@
 #include "armv6.h"
 
 #include "runtime_internal.h"
+#include "host_runtime_support.h"
 
 using namespace jitc;
 
@@ -151,7 +152,7 @@ TEST(OverflowIsReportedRatherThanOverrunningTheBuffer)
     Proc proc = makeProc(0, kProc0Body, 3, bodyBytes, sizeof(bodyBytes));
     Assembler a(buf, 4);
     MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    translateProc(proc, 0, kArgCounts, 2, a);
+    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, kArgCounts, 2, a));
 }
 
 // The tests below exercise LOOP/BR_TABLE/comparisons-as-values/unary ops/
@@ -682,7 +683,7 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     Assembler a(buf, 16, floor);
 
     MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    translateProc(proc, 0, argCounts, 1, a);
+    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, argCounts, 1, a));
 }
 
 // ── Literal pooling ─────────────────────────────────────────────────────

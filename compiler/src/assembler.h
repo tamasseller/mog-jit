@@ -75,13 +75,16 @@ public:
     // given at construction.
     uint32_t stackFloor() const;
 
-    // A translator-detected failure (arena exhausted beyond what
-    // reserve() could free, or the live stack-nesting guard tripped).
-    // Detached: latches overflowed() and returns normally. Attached:
-    // restores the caller's own saved sp and long-jumps to the landing
-    // with RESOURCE_ERROR — never returns. Every call site must still
-    // `return` right after calling this, exactly as if it always
-    // returned, since the detached case does.
+    // A translator-detected failure (arena exhausted with nothing left
+    // to evict, or the live stack-nesting guard tripped). Calls
+    // runtimeBail(), which is [[noreturn]] in every build: in production
+    // it restores the caller's own saved sp and long-jumps to the
+    // landing with RESOURCE_ERROR; the host build's own mocked
+    // runtimeBail() (test/host/host_runtime_support.cpp) escapes the
+    // same way via longjmp, the same mechanism 1test's own CHECK()
+    // failures already unwind through. Every call site should still
+    // `return` right after calling this regardless, as defense in depth
+    // against a build where that contract doesn't hold.
     void fail();
 
     // ── branches ────────────────────────────────────────────────────────

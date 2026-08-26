@@ -65,6 +65,7 @@ uint32_t Assembler::emit(uint16_t word)
         if(!this->growForAttached())
         {
             fail();
+            return at; // host's mocked runtimeBail() returns normally; every call site, including this one, must return right after per fail()'s own contract
         }
     }
 
@@ -274,7 +275,7 @@ void Assembler::patchPoolSite(uint32_t siteOffset, uint32_t word)
 // to one shared pool word.
 void Assembler::flushPoolImpl(bool endOfProcedure)
 {
-    if(pendingCount)
+    if(pendingCount == 0)
     {
         return;
     }
