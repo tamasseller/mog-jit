@@ -181,17 +181,18 @@ TEST(AddRegAccWithOversizedImmediateOperandSkipsTheDestEqualsNCheck)
     // immediate too large for imm3 *or* imm8 — fitsImm8(k) itself is
     // false here, short-circuiting past the dest==n check entirely
     // (distinct from AddImmFallsBackToMaterializeWhenDestDiffersAndImmTooLarge
-    // above, where fitsImm8 was true and dest!=n was what failed).
+    // above, where fitsImm8 was true and dest!=n was what failed). 1000 =
+    // 125 << 3, so materializeImm32's shift-trick synthesizes it in 2
+    // halfwords.
     uint16_t buf[8];
     Assembler e(buf, 8);
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofImm(1000);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, &operand, 0);
-    CHECK(e.halfwordCount() == 4);
-    CHECK(buf[0] == 0x2203); // MOVS r2, #3
-    CHECK(buf[1] == 0x0212); // LSLS r2, r2, #8
-    CHECK(buf[2] == 0x32E8); // ADDS r2, #232      (r2 = 3*256+232 = 1000)
-    CHECK(buf[3] == 0x1888); // ADDS r0, r1, r2
+    CHECK(e.halfwordCount() == 3);
+    CHECK(buf[0] == 0x227D); // MOVS r2, #0x7D (125)
+    CHECK(buf[1] == 0x00D2); // LSLS r2, r2, #3   (r2 = 125 << 3 = 1000)
+    CHECK(buf[2] == 0x1888); // ADDS r0, r1, r2
 }
 
 TEST(AddPeekPeekUsesDestAsRhsForOrdinaryArithmeticToo)
@@ -246,17 +247,17 @@ TEST(SubRegAccWithOversizedImmediateOperandSkipsTheDestEqualsNCheck)
     // SUB's mirror of AddRegAccWithOversizedImmediateOperand... above —
     // accShape is a register, operand an immediate too large for
     // imm3/imm8, so addOrSubWithImm's fitsImm8(k) check short-circuits
-    // false on its own.
+    // false on its own. 1000 = 125 << 3, so materializeImm32's
+    // shift-trick synthesizes it in 2 halfwords.
     uint16_t buf[8];
     Assembler e(buf, 8);
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofImm(1000);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, &operand, 0);
-    CHECK(e.halfwordCount() == 4);
-    CHECK(buf[0] == 0x2203); // MOVS r2, #3
-    CHECK(buf[1] == 0x0212); // LSLS r2, r2, #8
-    CHECK(buf[2] == 0x32E8); // ADDS r2, #232      (r2 = 1000)
-    CHECK(buf[3] == 0x1A88); // SUBS r0, r1, r2
+    CHECK(e.halfwordCount() == 3);
+    CHECK(buf[0] == 0x227D); // MOVS r2, #0x7D (125)
+    CHECK(buf[1] == 0x00D2); // LSLS r2, r2, #3   (r2 = 125 << 3 = 1000)
+    CHECK(buf[2] == 0x1A88); // SUBS r0, r1, r2
 }
 
 TEST(SubAccImmRhsRegUsesRsubImmAsLeftWithNonzeroK)

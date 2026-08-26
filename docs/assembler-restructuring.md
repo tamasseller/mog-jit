@@ -4,7 +4,10 @@
 
 **Stage 1: done, verified green.** **Stage 2: done, verified green.**
 **Post-Stage-2 cleanup: done, verified green.**
-168/168 host tests, 9/9 QEMU tests.
+**`materializeImm32` synthesis rework (independent, see below): done,
+verified green.**
+166/166 host tests (2 fewer — `imm32SynthCost`/`isPoolingEligible`'s own
+tests no longer apply, see below), 9/9 QEMU tests.
 
 | Stage 1 item | Status |
 |---|---|
@@ -401,3 +404,57 @@ copies.
 `enterProgram()`'s own body (and the literal pool it carried) is simply
 gone; `sharedArena`'s 512 bytes replace `arenaStorage`'s in `.bss`, a
 wash.
+
+---
+
+## `materializeImm32` synthesis rework (done, independent of Stages 1/2)
+
+Not part of this restructuring's own plan — a separate, later rework of
+`Assembler::materializeImm32`'s internals, applied directly against
+`assembler.{h,cpp}`. Recorded here because it invalidates several of this
+document's own numbers and function names. Full description:
+`docs/design.md` §16 item 25.
+
+In short: the old byte-by-byte MSB-first synthesis
+(`emitSynthesizeImm32Into`) and its `isPoolingEligible`/
+`POOLING_MIN_LENGTH` cost-threshold gate are gone. `materializeImm32` now
+tries three fixed shapes — direct imm8, bitwise-NOT-of-imm8, or an imm8
+pattern shifted into place — before falling back to the pool, and
+`materializeImm32Pooled` is folded into it via an `allowTwoIsnSeq` flag.
+Every reference to `materializeImm32Pooled`/`isPoolingEligible`/
+`imm32SynthCost`/`POOLING_MIN_LENGTH`/`emitSynthesizeImm32Into` earlier in
+this document (§1.2, §1.4, §1.7, the Stage 1 test-coverage list, the
+Verification record) describes the code as it stood at Stage 1/2
+completion — accurate as history, not as the current API.
+
+One real bug surfaced and was fixed during this rework (not by this
+document's own author): the shift-trick branch was missing its `return`,
+so a value that decomposed cleanly (e.g. `1000 = 125 << 3`) was
+synthesized correctly *and then also* pooled — a silent double
+materialization, caught by re-running the host suite (7/166 tests failing
+at the time) and root-caused to the one missing statement.
+
+**Not done, flagged instead:** `dispatch_abi.h`'s
+`TRANSLATOR_ENTRY_WORST_CASE_BYTES` (488) cited
+`Assembler::emitSynthesizeImm32Into`'s own stack frame as part of its
+"second chain." Tracing that chain against the new code surfaced a
+problem deeper than a stale function name: the call site it was anchored
+on (`translate_proc.cpp`'s last-argument-fold `accState.flush`, right
+before `translateBody`'s first call) never actually reaches
+`materializeImm32` — `accState` is freshly constructed and every
+`producer()` call reaching that point sets `Shape::ofReg(ACC_REG)`, never
+a pending immediate, so `materializeShape`'s imm branch is dead code
+there. The 488 figure is left in place as the last known-good number
+rather than replaced with an unverified guess — `dispatch_abi.h`'s own
+comment now carries this finding and what a correct re-derivation needs
+to re-establish. This is a real, unresolved open item, not a documentation
+nicety: getting a stack-safety budget wrong is a genuine hardware-safety
+concern, not something to patch over with a plausible-looking number.
+
+**Verification:** 166/166 host (168 minus the two deleted
+`imm32SynthCost`/`isPoolingEligible` tests; every hand-derived byte/count
+expectation touching a shift-trick-eligible value re-derived against
+actual emitted output, not re-guessed), 9/9 QEMU, both unchanged in
+outcome. `run.elf`'s `text` dropped again, 22424 → 22264 bytes — the new
+scheme's 1-2-instruction shapes cover more values more cheaply than the
+old byte-by-byte synthesis did.

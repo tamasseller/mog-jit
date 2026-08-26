@@ -56,11 +56,13 @@ TEST(abiEmitCallFitsImm8CalleeIndexIsAFixedFiveHalfwordSequence)
 {
     // procIdx=0, calleeIndex=1, called right after the 6-halfword prologue
     // (preCallPc = STUB_SIZE) — i.e. the CALL site of a procedure whose own
-    // entry instruction is itself a CALL. The call record is always
-    // force-pooled (Assembler::materializeImm32Pooled), so the sequence's
-    // own length is a closed-form constant — record(1) + calleeIndex(1,
-    // fits imm8) + movHi+ldr(callHelper)+bx(3) = 5 — rather than something
-    // a fixed-point search has to converge on.
+    // entry instruction is itself a CALL. The call record always costs
+    // exactly one halfword (materializeImm32's two-instruction-sequence
+    // forms are disallowed here, so it's a bare MOVS or a pooled
+    // placeholder, never wider), so the sequence's own length is a
+    // closed-form constant — record(1) + calleeIndex(1, fits imm8) +
+    // movHi+ldr(callHelper)+bx(3) = 5 — rather than something a
+    // fixed-point search has to converge on.
     uint16_t buf[16];
     Assembler e(buf, 16);
     emitPrologueStub(e); // advances e.pc() to STUB_SIZE, matching abiEmitCall's real call site
@@ -154,17 +156,17 @@ TEST(abiEmitReturnDeepArgsNonLeafSynthesizesLargeReclaimByteCount)
     // fit an 8-bit immediate — falls back to materializeImm32 instead of
     // silently truncating, same as abiEmitCall already does for a large
     // calleeIndex. Unlike the call record, this value has no self-
-    // reference to its own encoded length, so it goes through the
-    // ordinary pool-or-synthesize materializer rather than a forced pool
-    // — 400's own synthesis cost is 3, below POOLING_MIN_LENGTH(4), so it
-    // synthesizes inline here (this value's own eligibility, not a
-    // requirement the way the call record's forced pooling is).
+    // reference to its own encoded length, so it's free to use
+    // materializeImm32's full repertoire (unlike abiEmitCall's own calls,
+    // which disallow the two-instruction-sequence forms) — 400 = 25 << 4,
+    // so it synthesizes inline via the shift-trick (MOVS + LSLS, 2
+    // halfwords) rather than pooling.
     uint16_t buf[16];
     Assembler e(buf, 16);
     abiEmitReturn(e, /*savesLR=*/true, /*initialSpilledCount=*/100); // 4*100 = 400 > 0xff
     CHECK(!e.overflowed());
     uint32_t n = e.halfwordCount();
-    CHECK(n == Assembler::imm32SynthCost(400) + 3);
+    CHECK(n == 2 + 3); // MOVS + LSLS (400 = 25 << 4), then MOV/LDR/BX
     CHECK(buf[n - 3] == 0x4653); // MOV r3, r10
     CHECK(buf[n - 2] == 0x69DB); // LDR r3, [r3, #28] (returnHelperFromStackReclaim, index 7)
     CHECK(buf[n - 1] == 0x4718); // BX r3

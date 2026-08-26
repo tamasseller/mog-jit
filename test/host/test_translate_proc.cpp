@@ -433,9 +433,9 @@ TEST(StoreStandaloneOutOfWindowAndLastArgFoldRefCountZero)
 
 TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
 {
-    // CONST(1000) synthesizes in 3 halfwords, one short of
-    // POOLING_MIN_LENGTH — so this also guards the pooling threshold's
-    // lower edge: nothing here may become a literal load.
+    // CONST(1000) doesn't fit imm8, but 1000 = 125 << 3 does fit
+    // materializeImm32's shift-trick (MOVS + LSLS, 2 halfwords) — so this
+    // also guards that nothing here may become a literal load.
     const Instr body[] = {CONST(1000), bare(Op::RETURN)};
     uint32_t argCounts[] = {0};
     uint8_t bodyBytes[8];
@@ -444,7 +444,7 @@ TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(!a.overflowed());
-    CHECK(halfwordCount == 12);
+    CHECK(halfwordCount == 11);
     CHECK(literalSiteCount(buf, halfwordCount) == 0);
 }
 

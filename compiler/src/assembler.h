@@ -123,40 +123,7 @@ public:
     // ── raw halfword slots (BR_TABLE N>2 jump tables — never pool data) ──
     void patchRawHalfword(uint32_t siteOffset, uint16_t value);
 
-    // ── immediates ──────────────────────────────────────────────────────
-    // Materialize value into dstReg: a pooled PC-relative load when that
-    // beats inline shift-and-add synthesis, otherwise the synthesis
-    // itself. Callable from anywhere — the pool no longer needs a
-    // bytecode pc to tag a site with, so this has no bytecode dependency
-    // at all, unlike the old materializeLargeImmediate.
-    void materializeImm32(uint32_t dstReg, uint32_t value);
-
-    // Force-pool value regardless of isPoolingEligible — always exactly
-    // one halfword at the call site (the 4-byte word lands at flush time,
-    // outside this sequence). abi_strategy.cpp's call record needs its
-    // own emitted length to be independent of its own value to close
-    // findResumeOffset's old fixed point; a pooled site is the only shape
-    // that's true for. The caller must have already reserve()'d at least
-    // one free pool slot (reserve(maxBytes, /*poolEntries=*/1)) — this
-    // never itself triggers a flush, which would shift the very offset
-    // being computed around it.
-    void materializeImm32Pooled(uint32_t dstReg, uint32_t value);
-
-    // How many halfwords materializeImm32 would emit for value if it
-    // synthesized inline rather than pooling — a pure function of value
-    // alone, needed by abi_strategy.cpp to size its own callee-index
-    // operand (which, unlike the call record, has no self-reference to
-    // its own encoded length and so never needed pooling in the first
-    // place).
-    static uint32_t imm32SynthCost(uint32_t value);
-
-    // Shortest synthesis worth replacing with a pooled load (2 bytes of
-    // instruction + a 4-byte pool word). At 3 the two tie on size, but a
-    // mid-procedure pool's branch-around is *executed*, costing a chunk
-    // of n sites 2n+3 cycles against 3n — a loss for small n. From 4 up,
-    // pooling wins on both size and cycles.
-    static constexpr uint32_t POOLING_MIN_LENGTH = 4;
-    static bool isPoolingEligible(uint32_t value);
+    void materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoIsnSeq = true);
 
     // What the currently-open pool chunk still owes the output stream —
     // one word per pending site (after dedup this may overcount slightly;
@@ -210,7 +177,6 @@ private:
     void linkIntoChain(Label &label, uint32_t site);
     void parkPoolSite(uint32_t dstReg, uint32_t value);
     void patchPoolSite(uint32_t siteOffset, uint32_t word);
-    void emitSynthesizeImm32Into(uint32_t dstReg, uint32_t value);
     void flushPoolImpl(bool endOfProcedure);
     void ensurePoolRoom(uint32_t poolEntries);
     void growForAttached(uint32_t neededBytes);

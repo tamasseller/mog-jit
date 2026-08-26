@@ -36,15 +36,17 @@ uint32_t packRecord(uint32_t procIdx, uint32_t offsetPlus1)
 }
 
 // Both of a CALL sequence's own operands cost exactly one halfword at the
-// call site regardless of value: calleeIndex either fits imm8 as a bare
-// MOVS, or is force-pooled exactly like the record. That makes the whole
-// sequence's own length a true compile-time constant, which is the only
-// reason k (below) has a closed form at all — the record's own value
-// bakes k in, so the old design (synthesizing the record inline) made the
-// sequence's length depend on k, needing a 5-round fixed-point search to
-// find a k whose own encoding doesn't shift the length that determined
-// it. A pooled site can't have that problem: its own length never varies
-// with its value.
+// call site regardless of value: materializeImm32(..., false) below
+// disallows its own two-instruction-sequence forms, so it can only ever
+// emit a bare MOVS (value fits imm8) or a pooled placeholder (it
+// doesn't) — never anything wider. That makes the whole sequence's own
+// length a true compile-time constant, which is the only reason k
+// (below) has a closed form at all — the record's own value bakes k in,
+// so the old design (synthesizing the record inline) made the sequence's
+// length depend on k, needing a 5-round fixed-point search to find a k
+// whose own encoding doesn't shift the length that determined it. Both
+// the bare-MOVS and the pooled shapes are exactly one halfword, so
+// neither can have that problem.
 static constexpr uint32_t CALL_SEQUENCE_HALFWORDS = 1 /*record*/ + 1 /*calleeIndex*/ + 3 /*movHi + ldr(callHelper) + bx*/;
 static constexpr uint32_t CALL_SEQUENCE_BYTES = CALL_SEQUENCE_HALFWORDS * 2;
 
@@ -54,22 +56,14 @@ void abiEmitCall(Assembler &a, uint32_t procIdx, uint32_t calleeIndex)
     // still-open chunk (with its own branch-around), and that has to
     // finish *before* preCallPc is read below, or k would end up
     // measuring from the wrong position. After this, neither
-    // materializeImm32Pooled call below can trigger a flush of its own.
+    // materializeImm32 call below can trigger a flush of its own.
     a.reserve(CALL_SEQUENCE_BYTES, /*poolEntries=*/2);
     uint32_t preCallPc = a.pc();
 
     uint32_t k = (preCallPc - STUB_SIZE) + CALL_SEQUENCE_HALFWORDS * 2;
     uint32_t record = packRecord(procIdx, k + 1);
-    a.materializeImm32Pooled(ENTRY_IDX_REG, record);
-
-    if(fitsImm8((int32_t)calleeIndex))
-    {
-        a.emit(ArmV6M::movs(R(ENTRY_OFFSET_REG), ArmV6M::Imm<8>((uint16_t)calleeIndex)));
-    }
-    else
-    {
-        a.materializeImm32Pooled(ENTRY_OFFSET_REG, calleeIndex);
-    }
+    a.materializeImm32(ENTRY_IDX_REG, record, false);
+    a.materializeImm32(ENTRY_OFFSET_REG, calleeIndex, false);
     a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
     a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(0))); // callHelper, index 0
     a.emit(ArmV6M::bx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));

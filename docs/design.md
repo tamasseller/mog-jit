@@ -1776,3 +1776,37 @@ excluded on both sides by design), including eviction/compaction and both
       performs internally (`imm32SynthCost` returns 1 for anything that
       fits imm8, so `Assembler` already emits the same single `MOVS`) —
       collapsed to one unconditional call.
+25. **`materializeImm32`'s own synthesis scheme reworked** (independent of
+    item 23/24, done directly against `assembler.{h,cpp}`) — the
+    byte-by-byte MSB-first decomposition (`emitSynthesizeImm32Into`,
+    up to 7 halfwords) and its `isPoolingEligible`/`POOLING_MIN_LENGTH`
+    cost-threshold gate are gone, replaced by three fixed 1-2-instruction
+    shapes tried in order — direct imm8 (`MOVS`), bitwise-NOT-of-imm8
+    (`MOVS`+`MVNS`), or an imm8 pattern shifted into place (`MOVS`+`LSLS`)
+    — falling back to the pool only outside all three;
+    `materializeImm32Pooled` folded into `materializeImm32` itself via an
+    `allowTwoIsnSeq` flag (`abiEmitCall`'s two operands pass `false`,
+    guaranteeing exactly one halfword either way — the same
+    compile-time-constant-length property item 23 achieved by force-
+    pooling, reached here by construction instead). Values that
+    previously synthesized cheaply but fit none of the three shapes (an
+    `0x1234`-style scattered-bit pattern) now pool instead — a real
+    density/pool-pressure tradeoff, not obviously a regression given how
+    much cheaper the shift/NOT shapes are for what they do cover.
+    `test_blocks.cpp`/`test_binops.cpp`/`test_translate_proc.cpp`/
+    `test_assembler.cpp`'s hand-derived expectations re-derived to match
+    (verified against actual emitted bytes, not re-guessed).
+
+    Flagged, not fixed here: `dispatch_abi.h`'s
+    `TRANSLATOR_ENTRY_WORST_CASE_BYTES` derivation cited the deleted
+    `emitSynthesizeImm32Into`'s own stack frame as part of its "second
+    chain" (96 bytes) — and tracing that chain closely turned up a deeper
+    problem than a stale function name: the call site it was anchored on
+    (`translate_proc.cpp`'s last-argument-fold `accState.flush`, right
+    before `translateBody`'s first call) never actually reaches
+    `materializeImm32` at all — `accState` is freshly constructed
+    (`Kind::Clean`) and every `producer()` call reaching that point sets
+    `Shape::ofReg(ACC_REG)`, never a pending immediate. The 488 total is
+    left in place as the last known-good number rather than replaced with
+    an unverified guess; `dispatch_abi.h`'s own comment now flags it and
+    records what a correct re-derivation needs to establish.

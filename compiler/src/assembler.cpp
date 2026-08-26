@@ -1,5 +1,6 @@
 #include "assembler.h"
 #include "runtime_internal.h"
+#include "imm_synth.h"
 
 #include <cassert>
 #include <cstring>
@@ -23,44 +24,14 @@ static uint32_t roundUpToWord(uint32_t v)
     return (v + 3u) & ~3u;
 }
 
-// MSB-first byte decomposition, and the index of the first nonzero byte
-// among bytes[0..2] (bytes[3] is never skipped) — shared by
-// emitSynthesizeImm32Into and imm32SynthCost so the two can never
-// silently drift apart in *how* they decompose, only accidentally in
-// what they do with it.
-struct Decomposed
-{
-    uint8_t bytes[4];
-    int start;
-};
-
-static Decomposed decomposeImm32(uint32_t v)
-{
-    Decomposed d;
-    d.bytes[0] = (uint8_t)((v >> 24) & 0xff);
-    d.bytes[1] = (uint8_t)((v >> 16) & 0xff);
-    d.bytes[2] = (uint8_t)((v >> 8) & 0xff);
-    d.bytes[3] = (uint8_t)(v & 0xff);
-    d.start = 0;
-    while(d.start < 3 && d.bytes[d.start] == 0)
-    {
-        d.start++;
-    }
-    return d;
-}
-
 Assembler::Assembler(uint16_t *buf, uint32_t capacityHalfwords, uint32_t stackFloor)
-    : buf(buf), capacity(capacityHalfwords), detachedStackFloor(stackFloor)
-{
-}
+    : buf(buf), capacity(capacityHalfwords), detachedStackFloor(stackFloor) {}
 
 Assembler::Assembler(Runtime *rt, uint32_t procIdx, uint32_t lruTick)
     : buf((uint16_t *)(uintptr_t)rt->arenaCursor),
       capacity((rt->arenaEnd - rt->arenaCursor) / 2),
       detachedStackFloor(0),
-      runtime(rt), procIdx(procIdx), lruTick(lruTick)
-{
-}
+      runtime(rt), procIdx(procIdx), lruTick(lruTick) {}
 
 uint32_t Assembler::emit(uint16_t word)
 {
@@ -192,40 +163,6 @@ void Assembler::patchRawHalfword(uint32_t siteOffset, uint16_t value)
 
 // ── immediates ───────────────────────────────────────────────────────────
 
-void Assembler::emitSynthesizeImm32Into(uint32_t dstReg, uint32_t value)
-{
-    Decomposed d = decomposeImm32(value);
-    emit(ArmV6M::movs(R((uint16_t)dstReg), ArmV6M::Imm<8>(d.bytes[d.start])));
-    for(int i = d.start + 1; i < 4; i++)
-    {
-        emit(ArmV6M::lsls(R((uint16_t)dstReg), R((uint16_t)dstReg), ArmV6M::Imm<5>(8)));
-        if(d.bytes[i] != 0)
-        {
-            emit(ArmV6M::adds(R((uint16_t)dstReg), ArmV6M::Imm<8>(d.bytes[i])));
-        }
-    }
-}
-
-uint32_t Assembler::imm32SynthCost(uint32_t value)
-{
-    Decomposed d = decomposeImm32(value);
-    uint32_t cost = 1; // movs
-    for(int i = d.start + 1; i < 4; i++)
-    {
-        cost += 1; // lsls
-        if(d.bytes[i] != 0)
-        {
-            cost += 1; // adds
-        }
-    }
-    return cost;
-}
-
-bool Assembler::isPoolingEligible(uint32_t value)
-{
-    return imm32SynthCost(value) >= POOLING_MIN_LENGTH;
-}
-
 void Assembler::parkPoolSite(uint32_t dstReg, uint32_t value)
 {
     // The immediate field carries nothing meaningful — flushPool()
@@ -237,20 +174,58 @@ void Assembler::parkPoolSite(uint32_t dstReg, uint32_t value)
     pendingCount++;
 }
 
-void Assembler::materializeImm32(uint32_t dstReg, uint32_t value)
+struct ShiftDecomposition 
 {
-    if(!isPoolingEligible(value))
+    uint32_t pattern, shift;
+};
+
+static inline ShiftDecomposition unshift(uint32_t value)
+{
+    assert(value != 0);
+
+    for(uint32_t shift = 0; ; shift++)
     {
-        emitSynthesizeImm32Into(dstReg, value);
-        return;
+        const auto pattern = value >> shift;
+
+        if((pattern & 1) != 0)
+        {
+            return ShiftDecomposition {
+                .pattern = pattern, 
+                .shift = shift
+            };
+        }
     }
-    ensurePoolRoom(1);
-    parkPoolSite(dstReg, value);
 }
 
-void Assembler::materializeImm32Pooled(uint32_t dstReg, uint32_t value)
+void Assembler::materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoIsnSeq)
 {
-    assert(pendingCount < POOL_MAX_PENDING); // GCOV_EXCL_LINE — caller must reserve(_, 1) first
+    if(fitsImm8(value))
+    {
+        emit(ArmV6M::movs(R((uint16_t)dstReg), ArmV6M::Imm<8>(value)));
+        return;
+    }
+
+    if(allowTwoIsnSeq)
+    {
+        if(fitsImm8(~value))
+        {
+            emit(ArmV6M::movs(R((uint16_t)dstReg), ArmV6M::Imm<8>(~value)));
+            emit(ArmV6M::mvns(R((uint16_t)dstReg), R((uint16_t)dstReg)));
+            return;
+        }
+
+        const auto decomposed = unshift(value);
+        assert((decomposed.pattern << decomposed.shift) == value);
+
+        if(fitsImm8(decomposed.pattern))
+        {
+            emit(ArmV6M::movs(R((uint16_t)dstReg), ArmV6M::Imm<8>(decomposed.pattern)));
+            emit(ArmV6M::lsls(R((uint16_t)dstReg), R((uint16_t)dstReg), ArmV6M::Imm<5>(decomposed.shift)));
+            return;
+        }
+    }
+
+    ensurePoolRoom(1);
     parkPoolSite(dstReg, value);
 }
 

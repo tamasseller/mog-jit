@@ -12,42 +12,6 @@
 
 using namespace jitc;
 
-// ── imm32SynthCost / isPoolingEligible ──────────────────────────────────
-
-TEST(imm32SynthCostMatchesEachShape)
-{
-    CHECK(Assembler::imm32SynthCost(0) == 1);
-    CHECK(Assembler::imm32SynthCost(37) == 1);
-    // 0x01000001 -- bytes[1]/bytes[2] are both zero: LSLS runs for both,
-    // but the intermediate ADDS is skipped both times; only the final
-    // nonzero byte gets an ADDS. movs, lsls, lsls, lsls, adds == 5.
-    CHECK(Assembler::imm32SynthCost(0x01000001u) == 5);
-    CHECK(Assembler::imm32SynthCost(0xFFFFFFFFu) == 7); // movs + 3*(lsls;adds)
-    CHECK(Assembler::imm32SynthCost(0x1234) == 3);
-    CHECK(Assembler::imm32SynthCost(0x123400) == 4);
-}
-
-TEST(poolingEligibilityTracksSynthesisCost)
-{
-    // The threshold's own edges, keyed off the real cost model rather
-    // than hardcoded values: pooling costs a fixed 6 bytes (LDR + word),
-    // so it must lose at 3 halfwords of synthesis and win at 4.
-    CHECK(!Assembler::isPoolingEligible(0x1234));   // cost 3
-    CHECK(Assembler::isPoolingEligible(0x123400));  // cost 4
-
-    CHECK(!Assembler::isPoolingEligible(0));          // 1 -- a bare MOVS
-    CHECK(!Assembler::isPoolingEligible(0xff));       // 1
-    CHECK(Assembler::isPoolingEligible(0xffffffffu)); // 7 -- the worst case
-    CHECK(Assembler::isPoolingEligible(0x80000003u)); // 5 -- a TRAP sentinel
-
-    // Every legal shift amount stays inline, which is what lets
-    // translate_proc.cpp's IMM_ACC pooling leave shifts alone safely.
-    for(uint32_t amount = 0; amount < 32; amount++)
-    {
-        CHECK(!Assembler::isPoolingEligible(amount));
-    }
-}
-
 TEST(fitsImm)
 {
     CHECK(fitsImm8(0) && fitsImm8(255) && !fitsImm8(256) && !fitsImm8(-1));
@@ -74,12 +38,18 @@ TEST(materializeImm32SynthesizesASingleByteValue)
     CHECK(buf[0] == 0x2025); // MOVS r0, #37
 }
 
-TEST(materializeImm32SynthesizesAThreeHalfwordValueBelowThreshold)
+TEST(materializeImm32PoolsAValueWhoseUnshiftedPatternJustMissesImm8)
 {
+    // 0x101 has bit8 and bit0 both set, so unshift finds shift=0 (bit0 is
+    // already set) and hands back the value itself as its own pattern:
+    // 257, one past fitsImm8's ceiling. Neither the direct-imm8 form, the
+    // bitwise-NOT form, nor the shift form apply, so this still has to
+    // fall through to pooling.
     uint16_t buf[8];
     Assembler a(buf, 8);
-    a.materializeImm32(0, 0x1234); // cost 3 -- still below POOLING_MIN_LENGTH(4)
-    CHECK(a.halfwordCount() == 3);
+    a.materializeImm32(0, 0x101u);
+    CHECK(a.halfwordCount() == 1); // just the placeholder LDR at the site
+    CHECK(ArmV6M::isLiteralAccess(buf[0]));
 }
 
 TEST(materializeImm32ParksAPlaceholderForAnEligibleValue)
@@ -145,15 +115,21 @@ TEST(FlushPoolDedupsIdenticalValuesToOneSharedWord)
 
 TEST(PoolFlushesAutomaticallyOnceFull)
 {
+    // Bit 28 stays set alongside the varying low bits across the whole
+    // loop (i never reaches 16, so it can't carry that far) — two set
+    // bits far enough apart that unshift's own pattern always spans more
+    // than 8 bits, so every one of these is genuinely pool-eligible,
+    // unlike a bare 0x10000000u + i, where i=0 is a clean power of two
+    // materializeImm32's shift-trick would synthesize instead of pooling.
     uint16_t buf[256];
     Assembler a(buf, 256);
     for(uint32_t i = 0; i < 16; i++)
     {
-        a.materializeImm32(0, 0x10000000u + i); // 16 distinct pool-eligible values
+        a.materializeImm32(0, 0x10000001u + i); // 16 distinct pool-eligible values
     }
     CHECK(a.poolDebt() != 0); // still open, all 16 pending
 
-    a.materializeImm32(0, 0x20000000u); // 17th -- must flush the first 16 before parking this one
+    a.materializeImm32(0, 0x20000001u); // 17th -- must flush the first 16 before parking this one
     CHECK(a.poolDebt() == 4 * 1 + 4);   // exactly the new site remains pending
 }
 

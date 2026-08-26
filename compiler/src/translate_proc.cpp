@@ -424,21 +424,7 @@ static void translateBody(Ctx &ctx, Frame *frame)
             }
             else if(combo == Combo::IMM_ACC)
             {
-                // A hard-to-synthesize operand is worth pooling, and
-                // pre-materializing it here is all that takes: binops.cpp
-                // does no strength reduction, so it would have had to
-                // materialize the value into SCRATCH_REG anyway, and
-                // Shape::ofReg(SCRATCH_REG) is already what the spilled
-                // REG_ACC path above hands it.
-                if(!isShiftOp(instr.op) && Assembler::isPoolingEligible((uint32_t)instr.imm))
-                {
-                    ctx.a.materializeImm32(SCRATCH_REG, (uint32_t)instr.imm);
-                    operandStorage = Shape::ofReg(SCRATCH_REG);
-                }
-                else
-                {
-                    operandStorage = Shape::ofImm(instr.imm);
-                }
+                operandStorage = Shape::ofImm(instr.imm);
             }
             else if(combo == Combo::POP_ACC)
             {

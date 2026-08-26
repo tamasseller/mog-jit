@@ -2,6 +2,7 @@
 #include "assembler.h"
 #include "accstate.h"
 #include "shape.h"
+#include "armv6.h"
 
 using namespace jitc;
 
@@ -32,7 +33,7 @@ TEST(flushMaterializesPendingAndBecomesClean)
     acc.producer(Shape::ofImm(3));
     acc.flush(e, 5);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == 0x2503); // MOVS r5, #3
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(5), ArmV6M::Imm<8>(3))); // MOVS r5, #3
     Shape s = acc.peek();
     CHECK(!s.isImm && s.reg == 5);
 }

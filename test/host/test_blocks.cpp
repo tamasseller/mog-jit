@@ -424,7 +424,8 @@ TEST(EmitComparisonSkipsMirroredShortcutWhenPendingAccImmTooLargeForImm8)
     // fitsImm8(left.imm) is false here, unlike
     // EmitComparisonMirroredConditionWhenAccIsAFittingImmediate's small
     // pending value. Falls through to the ordinary materialize-acc path,
-    // direct condition preserved (not mirrored).
+    // direct condition preserved (not mirrored). 1000 = 125 << 3, so
+    // materializeImm32's shift-trick synthesizes it in 2 halfwords.
     uint16_t buf[8];
     Assembler e(buf, 8);
     AccState accState;
@@ -432,11 +433,10 @@ TEST(EmitComparisonSkipsMirroredShortcutWhenPendingAccImmTooLargeForImm8)
     Shape operand = Shape::ofReg(3);
     Cond c = emitComparison(e, accState, Op::LT_S, &operand);
     CHECK(c == Cond::LT);
-    CHECK(e.halfwordCount() == 4);
-    CHECK(buf[0] == 0x2003); // MOVS r0, #3
-    CHECK(buf[1] == 0x0200); // LSLS r0, r0, #8
-    CHECK(buf[2] == 0x30E8); // ADDS r0, #232      (r0 = 3*256+232 = 1000)
-    CHECK(buf[3] == ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::LoReg(3))); // CMP r0, r3
+    CHECK(e.halfwordCount() == 3);
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0x7D))); // MOVS r0, #0x7D (125)
+    CHECK(buf[1] == ArmV6M::lsls(ArmV6M::LoReg(0), ArmV6M::LoReg(0), ArmV6M::Imm<5>(3))); // LSLS r0, r0, #3 (r0 = 125 << 3 = 1000)
+    CHECK(buf[2] == ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::LoReg(3))); // CMP r0, r3
 }
 
 TEST(EmitComparisonMaterializesLargeImmediateOperandIntoScratch)
@@ -446,7 +446,8 @@ TEST(EmitComparisonMaterializesLargeImmediateOperandIntoScratch)
     // EmitComparisonDirectConditionForRegRegCmp's sibling tests exercise)
     // — materialize it into SCRATCH_REG first, direct condition preserved
     // (acc isn't itself an immediate here, so the mirrored-condition
-    // shortcut above doesn't apply).
+    // shortcut above doesn't apply). 1000 = 125 << 3, so materializeImm32's
+    // shift-trick synthesizes it in 2 halfwords.
     uint16_t buf[8];
     Assembler e(buf, 8);
     AccState accState;
@@ -454,11 +455,10 @@ TEST(EmitComparisonMaterializesLargeImmediateOperandIntoScratch)
     Shape operand = Shape::ofImm(1000);
     Cond c = emitComparison(e, accState, Op::LT_S, &operand);
     CHECK(c == Cond::LT);
-    CHECK(e.halfwordCount() == 4);
-    CHECK(buf[0] == 0x2203); // MOVS r2, #3
-    CHECK(buf[1] == 0x0212); // LSLS r2, r2, #8
-    CHECK(buf[2] == 0x32E8); // ADDS r2, #232      (r2 = 3*256+232 = 1000)
-    CHECK(buf[3] == ArmV6M::cmp(ArmV6M::LoReg(1), ArmV6M::LoReg(2))); // CMP r1, r2
+    CHECK(e.halfwordCount() == 3);
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(0x7D))); // MOVS r2, #0x7D (125)
+    CHECK(buf[1] == ArmV6M::lsls(ArmV6M::LoReg(2), ArmV6M::LoReg(2), ArmV6M::Imm<5>(3))); // LSLS r2, r2, #3 (r2 = 125 << 3 = 1000)
+    CHECK(buf[2] == ArmV6M::cmp(ArmV6M::LoReg(1), ArmV6M::LoReg(2))); // CMP r1, r2
 }
 
 TEST(MaterializeComparisonEmitsFiveInstructionIdiom)

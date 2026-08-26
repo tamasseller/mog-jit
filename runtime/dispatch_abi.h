@@ -63,28 +63,46 @@ extern uint64_t enterDispatch(uint32_t argIn, Runtime *runtime); /* runtime.S */
  * has no static whole-program worst case; that is policed live instead
  * (Assembler::stackFloor(), read fresh by translateBody's own guard).
  *
- * Re-measured for the Assembler-based compileProc (compiler/src/
- * assembler.{h,cpp} — the arena-owning seam moved out of a separate
- * ArenaRoom pointer into the Assembler itself, and the literal pool moved
- * from translate_proc.cpp's own Ctx into the Assembler too), via
- * `-fstack-usage` against every function actually on this path. Two
- * candidate chains both run sequentially before translateBody's first
- * call — prologue emission, then the last-argument-fold scan — so the
- * worse of the two, not their sum, sets this constant:
+ * STALE, NEEDS RE-DERIVING: the 96 below (and so the 488 total) was
+ * measured against an Assembler::materializeImm32 that no longer exists
+ * in this shape — it called out to a separate emitSynthesizeImm32Into for
+ * byte-by-byte synthesis; that's gone, folded into materializeImm32
+ * itself (an imm8-direct / bitwise-NOT-of-imm8 / shifted-imm8 repertoire,
+ * falling back to the pool only outside all three). Re-deriving isn't
+ * just a search-and-replace: the "last-argument-fold scan" call site this
+ * 96 was anchored on (translate_proc.cpp's accState.flush(a,
+ * physReg(lastArgSlot)) right before translateBody's first call) turns
+ * out to never actually reach materializeImm32 at all — accState is
+ * freshly constructed (Kind::Clean) and every producer() call reaching
+ * that point sets Shape::ofReg(ACC_REG), never a pending immediate, so
+ * materializeShape's imm branch is dead code from there. Whatever the
+ * true second-deepest one-time chain is (through Assembler::reserve at
+ * the top of translateProc, or through CONST/IMM_ACC's own
+ * materializeImm32 call inside translateBody — which may belong to the
+ * *live*, per-recursion-level budget instead, not this fixed one-time
+ * one) needs re-tracing before this number can be trusted again.
  *
- * translatorTrampoline's own push{r0,r1,r2} plus REALIGN_ENTER's
- * worst-case reservation (24, asm, unchanged from before); compileProc's
- * own static frame (224 — up from 96: it now holds the Assembler object
- * itself as a local rather than a separate RuntimeArenaRoom; the
- * calleeArgCounts VLA is still excluded, budgeted separately above);
- * translateProc's own frame (144, includes Ctx as a local; translateBody's
- * own recursive frames are a separate call, not folded in here); then the
- * deeper of — a.reserve(STUB_SIZE+2) (16) + Assembler::growForAttached
- * (48), called once before abiEmitPrologue even runs, versus
- * AccState::flush (32) + materializeShape (8) + Assembler::materializeImm32
- * (16) + Assembler::emitSynthesizeImm32Into (40) = 96, reached if the
- * last-argument-fold scan's own eager-flush path needs full synthesis —
- * the second chain is deeper. 24+224+144+96 = 488.
+ * Last known-good derivation (for compileProc as of the Assembler
+ * restructuring, docs/assembler-restructuring.md), via `-fstack-usage`
+ * against every function actually on this path — kept here as the
+ * starting point for the re-derivation above, not as a currently
+ * accurate one: two candidate chains both run sequentially before
+ * translateBody's first call — prologue emission, then the
+ * last-argument-fold scan — so the worse of the two, not their sum, sets
+ * this constant: translatorTrampoline's own push{r0,r1,r2} plus
+ * REALIGN_ENTER's worst-case reservation (24, asm, unchanged from
+ * before); compileProc's own static frame (224 — up from 96: it now
+ * holds the Assembler object itself as a local rather than a separate
+ * RuntimeArenaRoom; the calleeArgCounts VLA is still excluded, budgeted
+ * separately above); translateProc's own frame (144, includes Ctx as a
+ * local; translateBody's own recursive frames are a separate call, not
+ * folded in here); then the deeper of — a.reserve(STUB_SIZE+2) (16) +
+ * Assembler::growForAttached (48), called once before abiEmitPrologue
+ * even runs, versus AccState::flush (32) + materializeShape (8) +
+ * Assembler::materializeImm32 (16) + Assembler::emitSynthesizeImm32Into
+ * (40) = 96 (the reachability of which is exactly what's now in
+ * question, above) — the second chain taken as deeper.
+ * 24+224+144+96 = 488.
  *
  * Not yet enforced at build time via a per-file `-Wstack-usage=`/
  * `-Werror=stack-usage=` pin — wiring that into this Makefile's own

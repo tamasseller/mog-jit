@@ -32,12 +32,14 @@ uint32_t packRecord(uint32_t procIdx, uint32_t offsetPlus1);
 
 /** procIdx is this procedure's own dispatch-table index (packRecord's own
  *  argument). The resume offset k is closed-form, not a fixed-point
- *  search: the record is force-pooled (Assembler::materializeImm32Pooled)
- *  specifically so its own emitted length can never depend on the value
- *  it encodes (a pooled site is always exactly one halfword; the 4-byte
- *  word lands at flush time, outside this sequence) — the resume offset
- *  it encodes could otherwise never be computed without already knowing
- *  it. Unaffected by abiEmitPrologue's own conditional push{lr}: a.pc()
+ *  search: the record goes through materializeImm32 with its two-
+ *  instruction-sequence forms disallowed, which always costs exactly one
+ *  halfword at the call site regardless of value — a bare MOVS when the
+ *  value fits imm8, otherwise a pooled placeholder (the 4-byte word
+ *  lands at flush time, outside this sequence) — so its own emitted
+ *  length can never depend on the value it encodes. The resume offset it
+ *  encodes could otherwise never be computed without already knowing it.
+ *  Unaffected by abiEmitPrologue's own conditional push{lr}: a.pc()
  *  already reflects it, the same as any other emitted instruction —
  *  STUB_SIZE only ever measures from right after the fixed stub. */
 void abiEmitCall(Assembler &a, uint32_t procIdx, uint32_t calleeIndex);
