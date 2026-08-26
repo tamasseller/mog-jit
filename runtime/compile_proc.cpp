@@ -42,13 +42,5 @@ extern "C" void compileProc(uint32_t idx, Runtime *runtime)
     register uint32_t lruTick asm("r11");
     jitc::Assembler assembler(runtime, idx, lruTick);
 
-    /* translateProc finalizes assembler itself as its last step —
-     * flushing any still-open pool chunk and, since assembler is
-     * attached, committing the arena allocation and calling
-     * runtime->markCompiled(idx, ...) — so there is nothing left for this
-     * function to do afterward. Failure (arena exhaustion beyond what
-     * Assembler::reserve() could free by evicting, or the live
-     * stack-nesting guard tripping) never returns here at all: it
-     * unwinds straight through dispatch_abi.cpp's runtimeBail. */
     jitc::translateProc(proc, idx, calleeArgCounts, runtime->procCount, assembler, &savesLR);
 }

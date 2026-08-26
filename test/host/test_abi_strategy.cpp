@@ -97,7 +97,6 @@ TEST(abiEmitCallForcePoolsACalleeIndexNotFittingImm8Too)
     abiEmitCall(e, /*procIdx=*/2, /*calleeIndex=*/300);
     uint32_t n = e.halfwordCount() - before;
     CHECK(n == 5);
-    CHECK(!e.overflowed());
     CHECK(ArmV6M::isLiteralAccess(buf[before + 0])); // record
     CHECK(ArmV6M::isLiteralAccess(buf[before + 1])); // calleeIndex, also pooled
     CHECK(buf[before + 2] == 0x4653); // MOV r3, r10
@@ -164,7 +163,6 @@ TEST(abiEmitReturnDeepArgsNonLeafSynthesizesLargeReclaimByteCount)
     uint16_t buf[16];
     Assembler e(buf, 16);
     abiEmitReturn(e, /*savesLR=*/true, /*initialSpilledCount=*/100); // 4*100 = 400 > 0xff
-    CHECK(!e.overflowed());
     uint32_t n = e.halfwordCount();
     CHECK(n == 2 + 3); // MOVS + LSLS (400 = 25 << 4), then MOV/LDR/BX
     CHECK(buf[n - 3] == 0x4653); // MOV r3, r10

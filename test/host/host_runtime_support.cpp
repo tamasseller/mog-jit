@@ -13,8 +13,10 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "Test.h"
+#include "Mock.h"
+
 extern "C" void runtimeBail(Runtime *, uint32_t code)
 {
-    std::fprintf(stderr, "runtimeBail: RESOURCE_ERROR (code=0x%08x) reached in a host test\n", code);
-    std::abort();
+    MOCK(runtime)::CALL(runtimeBail).withParam(code);
 }

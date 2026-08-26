@@ -62,18 +62,9 @@ uint32_t Assembler::emit(uint16_t word)
 
     if(count == capacity)
     {
-        const auto grown = this->growForAttached();
-        
-        if(!grown)
+        if(!this->growForAttached())
         {
-            if(runtime != nullptr)
-            {
-                fail();
-            }
-            else
-            {
-                overflowedFlag = true;
-            }
+            fail();
         }
     }
 
@@ -91,11 +82,7 @@ uint32_t Assembler::stackFloor() const
 
 void Assembler::fail()
 {
-    if(runtime != nullptr)
-    {
-        runtimeBail(runtime, RESOURCE_ERROR_CODE);
-    }
-    overflowedFlag = true;
+    runtimeBail(runtime, RESOURCE_ERROR_CODE);
 }
 
 // ── branches ────────────────────────────────────────────────────────────
@@ -287,14 +274,8 @@ void Assembler::patchPoolSite(uint32_t siteOffset, uint32_t word)
 // to one shared pool word.
 void Assembler::flushPoolImpl(bool endOfProcedure)
 {
-    if(pendingCount == 0)
+    if(pendingCount)
     {
-        return;
-    }
-
-    if(overflowedFlag)
-    {
-        pendingCount = 0; // GCOV_EXCL_LINE — pc() has frozen; no offset here would mean anything
         return;
     }
 

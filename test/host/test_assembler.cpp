@@ -7,6 +7,10 @@
 // branch placeholder/patch primitives themselves are covered indirectly
 // through test_blocks.cpp's own LOOP/BR_TABLE cases, same as before.
 #include "Test.h"
+#include "Mock.h"
+
+#include "runtime_internal.h"
+
 #include "assembler.h"
 #include "imm_synth.h"
 
@@ -193,8 +197,7 @@ TEST(EmitPastCapacityLatchesOverflowedOnADetachedAssembler)
     uint16_t buf[1];
     Assembler a(buf, 1);
     a.emit(0);
-    CHECK(!a.overflowed());
+    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
     a.emit(0); // past capacity -- a safe no-op, not a write
-    CHECK(a.overflowed());
     CHECK(a.halfwordCount() == 1);
 }
