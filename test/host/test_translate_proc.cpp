@@ -9,6 +9,8 @@
 #include "encode_instr.h"
 #include "armv6.h"
 
+#include "runtime_internal.h"
+
 using namespace jitc;
 
 // proc0 (argCount 0): CONST(37), call(1), RETURN
@@ -90,7 +92,6 @@ TEST(TranslateProc0EntryProcedure)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, /*procIdx=*/0, kArgCounts, 2, a);
 
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 18);
 
     const uint16_t expected[] = {
@@ -127,7 +128,6 @@ TEST(TranslateProc1Callee)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, /*procIdx=*/1, kArgCounts, 2, a);
 
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 10);
 
     const uint16_t expected[] = {
@@ -150,8 +150,8 @@ TEST(OverflowIsReportedRatherThanOverrunningTheBuffer)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, kProc0Body, 3, bodyBytes, sizeof(bodyBytes));
     Assembler a(buf, 4);
+    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
     translateProc(proc, 0, kArgCounts, 2, a);
-    CHECK(a.overflowed());
 }
 
 // The tests below exercise LOOP/BR_TABLE/comparisons-as-values/unary ops/
@@ -183,7 +183,6 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 17);
 }
 
@@ -206,7 +205,6 @@ TEST(BrTableJumpTableHelperViaFullPipeline)
     uint16_t buf[64];
     Assembler a(buf, 64);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 24);
 }
 
@@ -224,7 +222,6 @@ TEST(ComparisonFusesIntoBrTableGuard)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 15);
 }
 
@@ -239,7 +236,6 @@ TEST(ComparisonMaterializesAsOrdinaryValue)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 15);
 }
 
@@ -252,7 +248,6 @@ TEST(NegViaFullPipeline)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 11);
 }
 
@@ -269,7 +264,6 @@ TEST(ClzHelperViaFullPipeline)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 14);
 }
 
@@ -285,7 +279,6 @@ TEST(LastArgumentFoldFallsBackToEagerFlushWhenReferencedTwice)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 11);
 }
 
@@ -307,7 +300,6 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 17);
 }
 
@@ -330,7 +322,6 @@ TEST(PopThroughFullPipeline)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 11);
 }
 
@@ -343,7 +334,6 @@ TEST(TrapAtTopLevel)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     // The 0x80000003 sentinel takes 5 synthesis halfwords, so it pools
     // instead: one LDR plus a word at the end. pc lands word-aligned
     // here, so no pad halfword.
@@ -375,7 +365,6 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 20);
     CHECK(buf[9] == ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(8)));  // LDR r0,[pc,#8] -- the TRAP sentinel, pooled
     CHECK(buf[13] == ArmV6M::b(ArmV6M::Ioff<1, 11>(2))); // the flush's own branch-around, past the pool word
@@ -395,7 +384,6 @@ TEST(LoadFromOutOfWindowSlot)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 11);
 }
 
@@ -412,7 +400,6 @@ TEST(StoreStandaloneInWindowWhenNotPrecededByAFoldableProducer)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 14);
 }
 
@@ -434,7 +421,6 @@ TEST(StoreStandaloneOutOfWindowAndLastArgFoldRefCountZero)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 12);
 }
 
@@ -450,7 +436,6 @@ TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 11);
     CHECK(literalSiteCount(buf, halfwordCount) == 0);
 }
@@ -464,7 +449,6 @@ TEST(ConstFoldsDirectlyIntoAFollowingStore)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 12);
 }
 
@@ -482,7 +466,6 @@ TEST(RegRegOutOfWindowWritesBackToStackAfterComputing)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 14);
 }
 
@@ -495,7 +478,6 @@ TEST(RegRegInWindowWritesBackToItsOwnRegister)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 12);
 }
 
@@ -508,7 +490,6 @@ TEST(PopAccStackComboThroughFullPipeline)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 11);
 }
 
@@ -521,7 +502,6 @@ TEST(PeekPeekStackComboThroughFullPipeline)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 14);
 }
 
@@ -547,7 +527,6 @@ TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 18);
 }
 
@@ -562,7 +541,6 @@ TEST(RevbitsHelperViaFullPipeline)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 14);
 }
 
@@ -585,7 +563,6 @@ TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
     uint16_t buf[64];
     Assembler a(buf, 64);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 28);
 }
 
@@ -611,7 +588,6 @@ TEST(LoopConditionClosesViaAnExplicitFusedComparison)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 16);
 }
 
@@ -628,7 +604,6 @@ TEST(ComparisonMaterializedResultFoldsDirectlyIntoAFollowingStore)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 17);
 }
 
@@ -646,7 +621,6 @@ TEST(LastArgumentFoldEagerlyFlushesWhenBodyStartReferenceIsNotALoad)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 11);
 }
 
@@ -682,7 +656,6 @@ TEST(DeeplyNestedButWellFormedBlocksSucceedWithNoStackFloor)
     uint16_t buf[512];
     Assembler a(buf, 512);
     translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
 }
 
 TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
@@ -707,8 +680,9 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     uint16_t buf[16];
     uint32_t floor = currentSp();
     Assembler a(buf, 16, floor);
+
+    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
     translateProc(proc, 0, argCounts, 1, a);
-    CHECK(a.overflowed());
 }
 
 // ── Literal pooling ─────────────────────────────────────────────────────
@@ -728,7 +702,6 @@ TEST(LargeConstAndLargeOperandBothPoolIntoOneChunk)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
 
-    CHECK(!a.overflowed());
     CHECK(halfwordCount == 16); // 24 unpooled: 7 + 7 synthesis halfwords
 
     const uint16_t expected[] = {
@@ -760,7 +733,6 @@ TEST(ShiftAmountNeverPoolsEvenWhenHardToSynthesize)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(!a.overflowed());
     CHECK(literalSiteCount(buf, halfwordCount) == 0);
 }
 
@@ -784,7 +756,6 @@ TEST(PooledLoadInsideGuardedRegionStillResolves)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
 
-    CHECK(!a.overflowed());
     CHECK(literalSiteCount(buf, halfwordCount) == 2);
 
     uint32_t value = 0;
@@ -818,7 +789,6 @@ TEST(PooledLoadSurvivesAcrossABrTableJumpTableUnflushed)
     Assembler a(buf, 64);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
 
-    CHECK(!a.overflowed());
     CHECK(literalSiteCount(buf, halfwordCount) == 1);
 
     uint32_t value = 0;
@@ -853,7 +823,6 @@ TEST(OutputReachDistanceForcesAMidProcedureFlush)
     Assembler a(buf, 1024);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
 
-    CHECK(!a.overflowed());
     CHECK(literalSiteCount(buf, halfwordCount) == 2);
 
     uint32_t value = 0;
@@ -888,8 +857,6 @@ TEST(OutputReachOverflowFlushesBeforeGoingOutOfRange)
     uint16_t buf[4096];
     Assembler a(buf, 4096);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-
-    CHECK(!a.overflowed());
 
     uint32_t site = nthLiteralSite(buf, halfwordCount, 0);
     CHECK(site < halfwordCount);

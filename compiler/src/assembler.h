@@ -68,11 +68,6 @@ public:
     uint32_t halfwordCount() const { return count; }
     uint32_t emit(uint16_t word);
 
-    // Detached only, meaningful: latched once emit() runs out of room or
-    // fail() is called. An attached Assembler never sets this — it exits
-    // directly instead (see fail()) — so this always reads false there.
-    bool overflowed() const { return overflowedFlag; }
-
     // The live stack-recursion floor translateBody's own nesting guard
     // checks against — for an attached Assembler this is
     // Runtime::liveStackFloor(), read fresh every call since arenaCursor
@@ -145,7 +140,6 @@ private:
     uint16_t *buf;
     uint32_t capacity;
     uint32_t count = 0;
-    bool overflowedFlag = false;
     uint32_t detachedStackFloor;
 
     Runtime *runtime = nullptr; // null: detached

@@ -267,10 +267,6 @@ static void translateBody(Ctx &ctx, Frame *frame)
             ctx.pc = afterInstr;
             Frame inner = openLoop(ctx.a, ctx.window, ctx.accState);
             translateBody(ctx, &inner);
-            if(ctx.a.overflowed())
-            {
-                return;
-            }
             continue;
         }
 
@@ -301,10 +297,6 @@ static void translateBody(Ctx &ctx, Frame *frame)
                 // construct one level further in).
                 Frame inner = openBrTable(ctx.a, ctx.window, ctx.accState, n, trueCondition, fused, ctx.bytes, ctx.bytesLen, afterInstr);
                 translateBody(ctx, &inner);
-            }
-            if(ctx.a.overflowed())
-            {
-                return;
             }
             continue;
         }
