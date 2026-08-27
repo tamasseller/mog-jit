@@ -11,229 +11,235 @@ namespace jitc
 
 using R = ArmV6M::LoReg;
 
-BinOpKind classifyBinOp(Op op, Combo combo)
+enum class AddSubRsubOp
 {
-    if(op == Op::ADD || op == Op::SUB || op == Op::RSUB)
-    {
-        return BinOpKind::AddSubRsub;
-    }
-    if((op == Op::SHL || op == Op::SHR || op == Op::ASR) && combo == Combo::IMM_ACC)
-    {
-        return BinOpKind::ShiftImm;
-    }
-    return BinOpKind::TwoOpInPlace; // AND, OR, XOR, MUL, and any shift with a register count
-}
+    Add, Sub, Rsub
+};
 
-/** Rd = n +/- k, materializing k into scratch first when no native
- *  immediate form fits.
- *
- *  n isn't always a register dest is free to leave alone: a caller can
- *  pass rhs.reg straight through, and when that operand came from an
- *  out-of-window stack slot (translate_proc.cpp's own ldrSp(SCRATCH_REG,
- *  ...) reload), n == SCRATCH_REG. Materializing k into SCRATCH_REG right
- *  after would silently clobber that just-reloaded value before the final
- *  op ever reads it, computing `k op k` instead of `n op k` — copy n into
- *  dest first so it survives k's own materialization. */
-static void addOrSubWithImm(Assembler &e, bool sub, uint32_t dest, uint32_t n, int32_t k)
-{
-    if(fitsImm3(k))
-    {
-        e.emit(sub ? ArmV6M::subs(R((uint16_t)dest), R((uint16_t)n), ArmV6M::Imm<3>((uint16_t)k))
-                   : ArmV6M::adds(R((uint16_t)dest), R((uint16_t)n), ArmV6M::Imm<3>((uint16_t)k)));
-        return;
-    }
-    if(fitsImm8(k) && dest == n)
-    {
-        e.emit(sub ? ArmV6M::subs(R((uint16_t)dest), ArmV6M::Imm<8>((uint16_t)k))
-                   : ArmV6M::adds(R((uint16_t)dest), ArmV6M::Imm<8>((uint16_t)k)));
-        return;
-    }
-    if(n == SCRATCH_REG)
-    {
-        materializeShape(e, Shape::ofReg(n), dest);
-        n = dest;
-    }
-    materializeShape(e, Shape::ofImm(k), SCRATCH_REG);
-    e.emit(sub ? ArmV6M::subs(R((uint16_t)dest), R((uint16_t)n), R((uint16_t)SCRATCH_REG))
-               : ArmV6M::adds(R((uint16_t)dest), R((uint16_t)n), R((uint16_t)SCRATCH_REG)));
-}
-
-/** Rd = k - n — immediate minus register, which has no direct native
- *  form: k===0 degenerates to NEG; otherwise materialize k into scratch.
- *  Same n == SCRATCH_REG hazard as addOrSubWithImm above, same fix. */
-static void emitRsubImmAsLeft(Assembler &e, uint32_t dest, int32_t k, uint32_t n)
+static void addOrSubWithImm(AddSubRsubOp which, Assembler &e, uint32_t dest, uint32_t n, int32_t k)
 {
     if(k == 0)
     {
-        e.emit(ArmV6M::negs(R((uint16_t)dest), R((uint16_t)n)));
-        return;
-    }
-    if(n == SCRATCH_REG)
-    {
-        materializeShape(e, Shape::ofReg(n), dest);
-        n = dest;
-    }
-    materializeShape(e, Shape::ofImm(k), SCRATCH_REG);
-    e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)SCRATCH_REG), R((uint16_t)n)));
-}
-
-/** ADD/SUB/RSUB, covering every (accShape, operandShape) combination —
- *  operand===nullptr means PEEK_PEEK, whose right-hand operand is dest
- *  itself. */
-static void emitAddSubRsub(Assembler &e, Op op, uint32_t dest, const Shape &accShape, const Shape *operand)
-{
-    Shape rhs = operand ? *operand : Shape::ofReg(dest);
-
-    if(op == Op::ADD)
-    {
-        if(!accShape.isImm)
+        /*
+         * Degenerate case: constant is zero, lowerer should have caught it. But still
+         * needs to be handled for correctness.
+         */
+        if(which != AddSubRsubOp::Rsub)
         {
-            if(!rhs.isImm)
+            /*
+             * Add or take away zero is nop, except if destination is different.
+             */
+            if(dest != n)
             {
-                e.emit(ArmV6M::adds(R((uint16_t)dest), R((uint16_t)accShape.reg), R((uint16_t)rhs.reg)));
+                e.emit(ArmV6M::mov(R((uint16_t)dest), R((uint16_t)n)));
             }
-            else
-            {
-                addOrSubWithImm(e, false, dest, accShape.reg, rhs.imm);
-            }
-        }
-        else if(!rhs.isImm)
-        {
-            addOrSubWithImm(e, false, dest, rhs.reg, accShape.imm);
         }
         else
         {
-            // both imm — rare/degenerate. Materialize accShape into dest
-            // itself, not SCRATCH_REG: addOrSubWithImm's own fallback below
-            // (when k doesn't fit imm3/imm8) also materializes k into
-            // SCRATCH_REG, and dest is guaranteed distinct from
-            // SCRATCH_REG at every call site that can reach this branch
-            // (registers.h's own invariant — SCRATCH_REG is never a
-            // window register, never acc's own home), so the two can't
-            // alias.
-            materializeShape(e, accShape, dest);
-            addOrSubWithImm(e, false, dest, dest, rhs.imm);
+            /*
+             * Substract from zero is negation, source vs destination match doesn't matter.
+             */
+            e.emit(ArmV6M::negs(R((uint16_t)dest), R((uint16_t)n)));
         }
-        return;
     }
-
-    if(op == Op::SUB)
-    { // acc - rhs
-        if(!accShape.isImm)
-        {
-            if(!rhs.isImm)
-            {
-                e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)accShape.reg), R((uint16_t)rhs.reg)));
-            }
-            else
-            {
-                addOrSubWithImm(e, true, dest, accShape.reg, rhs.imm);
-            }
-        }
-        else if(!rhs.isImm)
-        {
-            emitRsubImmAsLeft(e, dest, accShape.imm, rhs.reg);
-        }
-        else
-        {
-            materializeShape(e, accShape, dest); // both imm — see ADD's own comment above
-            addOrSubWithImm(e, true, dest, dest, rhs.imm);
-        }
-        return;
-    }
-
-    // RSUB: rhs - acc
-    if(!rhs.isImm)
+    else if(which != AddSubRsubOp::Rsub && fitsImm3(k))
     {
-        if(!accShape.isImm)
-        {
-            e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)rhs.reg), R((uint16_t)accShape.reg)));
-        }
-        else
-        {
-            // acc imm (k), rhs reg (n): dest = n - k — an ordinary
-            // register-minus-immediate, the ADD/SUB row's own fold.
-            addOrSubWithImm(e, true, dest, rhs.reg, accShape.imm);
-        }
+        /*
+         * Small literal rhs version, no real rsub in Thumb-1.
+         */
+        e.emit(which == AddSubRsubOp::Sub
+            ? ArmV6M::subs(R((uint16_t)dest), R((uint16_t)n), ArmV6M::Imm<3>((uint16_t)k))
+            : ArmV6M::adds(R((uint16_t)dest), R((uint16_t)n), ArmV6M::Imm<3>((uint16_t)k)));
+        
     }
-    else if(!accShape.isImm)
+    else if(which != AddSubRsubOp::Rsub && fitsImm8(k) && dest == n)
     {
-        emitRsubImmAsLeft(e, dest, rhs.imm, accShape.reg);
+        /*
+         * Increment/decrement by literal version.
+         */
+
+        e.emit(which == AddSubRsubOp::Sub
+            ? ArmV6M::subs(R((uint16_t)dest), ArmV6M::Imm<8>((uint16_t)k))
+            : ArmV6M::adds(R((uint16_t)dest), ArmV6M::Imm<8>((uint16_t)k)));
     }
     else
     {
-        materializeShape(e, accShape, dest); // both imm — see ADD's own comment above
-        emitRsubImmAsLeft(e, dest, rhs.imm, dest);
-    }
-}
+        /*
+         * Can't fold constant, materialize into temporary instead, becomes temp = k, then dest = n + temp.
+         */
+        auto t = SCRATCH_REG;
 
-static uint16_t shiftOpImm(Op op, uint32_t d, uint32_t m, int32_t amount)
-{
-    if(op == Op::SHL)
-    {
-        return ArmV6M::lsls(R((uint16_t)d), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)amount));
-    }
-    if(op == Op::SHR)
-    {
-        return ArmV6M::lsrs(R((uint16_t)d), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)amount));
-    }
-    return ArmV6M::asrs(R((uint16_t)d), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)amount));
-}
-
-static uint16_t twoOpInPlaceNative(Op op, uint32_t dn, uint32_t m)
-{
-    switch(op)
-    {
-        case Op::AND: return ArmV6M::ands(R((uint16_t)dn), R((uint16_t)m));
-        case Op::OR:  return ArmV6M::orrs(R((uint16_t)dn), R((uint16_t)m));
-        case Op::XOR: return ArmV6M::eors(R((uint16_t)dn), R((uint16_t)m));
-        case Op::MUL: return ArmV6M::muls(R((uint16_t)dn), R((uint16_t)m));
-        case Op::SHL: return ArmV6M::lsls(R((uint16_t)dn), R((uint16_t)m));
-        case Op::SHR: return ArmV6M::lsrs(R((uint16_t)dn), R((uint16_t)m));
-        case Op::ASR: return ArmV6M::asrs(R((uint16_t)dn), R((uint16_t)m));
-        default:
-            assert(false); // GCOV_EXCL_LINE
-            return 0;      // GCOV_EXCL_LINE
-    }
-}
-
-void emitBinaryOp(
-    Assembler &e, Op op, Combo combo,
-    const Shape &accShape, const Shape *operand, uint32_t dest)
-{
-    BinOpKind kind = classifyBinOp(op, combo);
-
-    if(kind == BinOpKind::TwoOpInPlace)
-    {
-        // operand == nullptr means PEEK_PEEK — its own right-hand operand
-        // is dest itself, the same idiom emitAddSubRsub already relies on
-        // above: dest is safe to read as Rm since the native 2-op-in-place
-        // form reads Rm before overwriting Rdn, and Rdn here is always
-        // ACC_REG, never dest.
-        Shape rhs = operand ? *operand : Shape::ofReg(dest);
-        // Never folds — materialize acc into ACC_REG specifically,
-        // unconditionally, even when accShape is already some other
-        // register: the native 2-op-in-place form's Rdn slot is both read
-        // and written, and that other register can be a live variable's
-        // own home.
-        materializeShape(e, accShape, ACC_REG);
-        uint32_t m = shapeToReg(e, rhs, SCRATCH_REG);
-        e.emit(twoOpInPlaceNative(op, ACC_REG, m));
-        if(dest != ACC_REG)
+        if(n == SCRATCH_REG)
         {
-            e.emit(ArmV6M::mov(ArmV6M::AnyReg((uint16_t)dest), ArmV6M::AnyReg((uint16_t)ACC_REG)));
+            /*
+             * If input aliases SCRATCH_REG becomes dest = k, then dest += n.
+             */
+            assert(dest != SCRATCH_REG);
+            t = dest;
         }
-        return;
-    }
+        
+        e.materializeImm32(t, k);
 
-    if(kind == BinOpKind::ShiftImm)
+        switch(which)
+        {
+            case AddSubRsubOp::Add:  e.emit(ArmV6M::adds(R((uint16_t)dest), R((uint16_t)n), R((uint16_t)t))); break;
+            case AddSubRsubOp::Sub:  e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)n), R((uint16_t)t))); break;
+            case AddSubRsubOp::Rsub: e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)t), R((uint16_t)n))); break;
+        }
+    }
+}
+
+void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const Shape *operand, uint32_t dest)
+{
+    Shape rhs = operand ? *operand : Shape::ofReg(dest);
+
+    if(accShape.isImm && rhs.isImm)
     {
-        assert(operand != nullptr && operand->isImm); // GCOV_EXCL_LINE
-        e.emit(shiftOpImm(op, dest, shapeToReg(e, accShape, SCRATCH_REG), operand->imm));
-        return;
+        /*
+        * Degenerate case - foldable constants, lowerer should have caught it but easier 
+        * to deal with it like this and is required for correctness.
+        */
+        switch (op)
+        {
+            case Op::ADD:  e.materializeImm32(dest, accShape.imm + rhs.imm); break;
+            case Op::SUB:  e.materializeImm32(dest, accShape.imm - rhs.imm); break;
+            case Op::RSUB: e.materializeImm32(dest, rhs.imm - accShape.imm); break;
+            case Op::MUL:  e.materializeImm32(dest, accShape.imm * rhs.imm); break;
+            case Op::AND:  e.materializeImm32(dest, accShape.imm & rhs.imm); break;
+            case Op::OR:   e.materializeImm32(dest, accShape.imm | rhs.imm); break;
+            case Op::XOR:  e.materializeImm32(dest, accShape.imm ^ rhs.imm); break;
+            case Op::SHL:  e.materializeImm32(dest, accShape.imm << rhs.imm); break;
+            case Op::SHR:  e.materializeImm32(dest, accShape.imm >> rhs.imm); break;
+            case Op::ASR:  e.materializeImm32(dest, (int32_t)accShape.imm >> rhs.imm); break;
+            default: assert(false);
+        }
     }
+    else if(op == Op::ADD || op == Op::SUB || op == Op::RSUB)
+    {
+        /*
+         * Addition and substraction are well supported, many options here.
+         */
+        if(!accShape.isImm && !rhs.isImm)
+        {
+            /*
+             * If both are registers the most general form is used.
+             */
+            switch(op)
+            {
+                case Op::ADD:  e.emit(ArmV6M::adds(R((uint16_t)dest), R((uint16_t)accShape.reg), R((uint16_t)rhs.reg))); break;
+                case Op::SUB:  e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)accShape.reg), R((uint16_t)rhs.reg))); break;
+                case Op::RSUB: e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)rhs.reg), R((uint16_t)accShape.reg))); break;
+                default: assert(false); // GCOV_EXCL_LINE
+            }
+        }
+        else if(rhs.isImm)
+        {
+            /*
+             * Right hand side is constant left is register, asymmetric, SUB vs RSUB distinction must be kept.
+             */
+            switch(op)
+            {
+                case Op::ADD:  addOrSubWithImm(AddSubRsubOp::Add, e, dest, accShape.reg, rhs.imm); break;
+                case Op::SUB:  addOrSubWithImm(AddSubRsubOp::Sub, e, dest, accShape.reg, rhs.imm); break;
+                case Op::RSUB: addOrSubWithImm(AddSubRsubOp::Rsub, e, dest, accShape.reg, rhs.imm); break;
+                default: assert(false); // GCOV_EXCL_LINE
+            }
+        }
+        else
+        {
+            /*
+             * Left hand side is constant, still asymmetric, but can use the same templates as the above,
+             * with SUB vs RSUB exchanged.
+             */
+            assert(accShape.isImm);
+            switch(op)
+            {
+                case Op::ADD:  addOrSubWithImm(AddSubRsubOp::Add, e, dest, rhs.reg, accShape.imm); break;
+                case Op::SUB:  addOrSubWithImm(AddSubRsubOp::Rsub, e, dest, rhs.reg, accShape.imm); break;
+                case Op::RSUB: addOrSubWithImm(AddSubRsubOp::Sub, e, dest, rhs.reg, accShape.imm); break;
+                default: assert(false); // GCOV_EXCL_LINE
+            }
+        }
+    }
+    else if(op == Op::SHL || op == Op::SHR || op == Op::ASR)
+    {
+        if(combo == Combo::IMM_ACC)
+        {
+            /*
+             * Shift by literal is also well supported, some special cases here.
+             */
+            assert(operand != nullptr && operand->isImm); // GCOV_EXCL_LINE
 
-    emitAddSubRsub(e, op, dest, accShape, operand);
+            const auto m = shapeToReg(e, accShape, SCRATCH_REG);
+
+            switch(op)
+            {
+                case Op::SHL: e.emit(ArmV6M::lsls(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)operand->imm))); break;
+                case Op::SHR: e.emit(ArmV6M::lsrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)operand->imm))); break;
+                case Op::ASR: e.emit(ArmV6M::asrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)operand->imm))); break;
+                default: assert(false); // GCOV_EXCL_LINE
+            }
+        }
+        else
+        {
+            /*
+             * Shift by register, non-commutative, only a <<= b form isn exists, mov + shift (either order) 
+             * in general, aliasing hazard.
+             */
+            auto m = shapeToReg(e, rhs, SCRATCH_REG);
+            auto t = (m == dest) ? ACC_REG : dest;
+
+            materializeShape(e, accShape, t);
+
+            switch(op)
+            {
+                case Op::SHL: e.emit(ArmV6M::lsls(R((uint16_t)t), R((uint16_t)m))); break;
+                case Op::SHR: e.emit(ArmV6M::lsrs(R((uint16_t)t), R((uint16_t)m))); break;
+                case Op::ASR: e.emit(ArmV6M::asrs(R((uint16_t)t), R((uint16_t)m))); break;
+                default: assert(false); // GCOV_EXCL_LINE
+            }
+
+            if(dest != t)
+            {
+                e.emit(ArmV6M::mov(ArmV6M::AnyReg((uint16_t)dest), ArmV6M::AnyReg((uint16_t)t)));
+            }
+        }
+    }
+    else
+    {
+        /*
+         * Commutative register ops, only a *= b form isn exists, mov + op in that order in general, 
+         * aliasing handled by swapping.
+         */
+        auto m = shapeToReg(e, rhs, SCRATCH_REG);
+
+        if(m == dest)
+        {
+            const auto t = shapeToReg(e, accShape, ACC_REG);
+
+            switch(op)
+            {
+                case Op::AND: e.emit(ArmV6M::ands(R((uint16_t)dest), R((uint16_t)t))); break;
+                case Op::OR:  e.emit(ArmV6M::orrs(R((uint16_t)dest), R((uint16_t)t))); break;
+                case Op::XOR: e.emit(ArmV6M::eors(R((uint16_t)dest), R((uint16_t)t))); break;
+                case Op::MUL: e.emit(ArmV6M::muls(R((uint16_t)dest), R((uint16_t)t))); break;
+                default: assert(false); // GCOV_EXCL_LINE
+            }
+        }
+        else
+        {
+            materializeShape(e, accShape, dest);
+
+            switch(op)
+            {
+                case Op::AND: e.emit(ArmV6M::ands(R((uint16_t)dest), R((uint16_t)m))); break;
+                case Op::OR:  e.emit(ArmV6M::orrs(R((uint16_t)dest), R((uint16_t)m))); break;
+                case Op::XOR: e.emit(ArmV6M::eors(R((uint16_t)dest), R((uint16_t)m))); break;
+                case Op::MUL: e.emit(ArmV6M::muls(R((uint16_t)dest), R((uint16_t)m))); break;
+                default: assert(false); // GCOV_EXCL_LINE
+            }
+        }
+    }
 }
 
 } // namespace jitc

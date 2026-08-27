@@ -14,21 +14,7 @@ namespace jitc
 
 class Assembler;
 
-enum class BinOpKind : uint8_t
-{
-    AddSubRsub,
-    ShiftImm,
-    TwoOpInPlace
-};
-
-BinOpKind classifyBinOp(Op op, Combo combo);
-
-/** Emit one arithmetic binary op. accShape is acc's current value; operand
- *  is combo's own right-hand side (nullptr means PEEK_PEEK, whose operand
- *  is dest itself); dest says where the result must end up. */
-void emitBinaryOp(
-    Assembler &e, Op op, Combo combo,
-    const Shape &accShape, const Shape *operand, uint32_t dest);
+void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const Shape *operand, uint32_t dest);
 
 } // namespace jitc
 

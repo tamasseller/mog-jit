@@ -23,6 +23,7 @@ uint32_t shapeToReg(Assembler &a, const Shape &shape, uint32_t scratchReg)
     {
         return shape.reg;
     }
+    
     materializeShape(a, shape, scratchReg);
     return scratchReg;
 }

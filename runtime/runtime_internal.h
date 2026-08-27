@@ -27,7 +27,7 @@ class Runtime;
  * support file) — the same escape 1test's own CHECK() already unwinds
  * through, and the same pattern test_runtime_arena.cpp already uses to
  * satisfy trampolineAddr for a Runtime built outside the real runtime. */
-extern "C" [[noreturn, weak]] void runtimeBail(Runtime *runtime, uint32_t code);
+extern "C" [[noreturn]] void runtimeBail(Runtime *runtime, uint32_t code);
 
 /* One procedure's whole entry: the runtime's own mutable dispatch state
  * (codePtr/lastUsed, exactly what runtime.S's hand-written asm touches)

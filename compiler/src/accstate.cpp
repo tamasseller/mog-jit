@@ -20,10 +20,10 @@ void AccState::flush(Assembler &e, uint32_t dstReg)
     reg = dstReg;
 }
 
-void AccState::emitBinary(Assembler &e, Op op, Combo combo, const Shape *operand,
-                          uint32_t dest, bool clobbersAcc)
+void AccState::emitBinary(Assembler &e, Op op, Combo combo, const Shape *operand, uint32_t dest, bool clobbersAcc)
 {
     emitBinaryOp(e, op, combo, peek(), operand, dest);
+
     if(clobbersAcc)
     {
         poison();

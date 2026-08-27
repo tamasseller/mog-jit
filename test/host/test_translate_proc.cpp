@@ -494,6 +494,9 @@ TEST(PopAccStackComboThroughFullPipeline)
     CHECK(halfwordCount == 11);
 }
 
+    #include <iostream>
+#include <iomanip>
+
 TEST(PeekPeekStackComboThroughFullPipeline)
 {
     const Instr body[] = {CONST(3), PUSH(), CONST(6), opStack(Op::AND, Combo::PEEK_PEEK), POP(), bare(Op::RETURN)};
@@ -503,7 +506,7 @@ TEST(PeekPeekStackComboThroughFullPipeline)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
-    CHECK(halfwordCount == 14);
+    CHECK(halfwordCount == 13);
 }
 
 TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
