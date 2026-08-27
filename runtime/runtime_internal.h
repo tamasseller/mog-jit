@@ -167,7 +167,16 @@ public:
     bool init(const uint8_t *programBytes, uint32_t programSize, uint32_t bodyOffset, uint32_t procCount,
         uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit, uint32_t arenaOverlapsStack)
     {
-        arenaEnd = codeArenaBase + codeArenaSize;
+        /* Rounded down, mirroring arenaCursor's own rounding up just below:
+         * allocate()'s reserveFor() rounds every reservation up to a
+         * multiple of 4, so if the gap between arenaCursor and arenaEnd
+         * weren't itself always a multiple of 4, a procedure that exactly
+         * fills the remaining capacity could have that rounding push
+         * arenaCursor past arenaEnd. Both arenaCursor (allocate()) and this
+         * gap (evict(), via occupiedSizeOf's codePtr differences) only ever
+         * move by multiples of 4 afterward, so 4-aligning both ends here
+         * keeps the gap a multiple of 4 for the arena's entire lifetime. */
+        arenaEnd = (codeArenaBase + codeArenaSize) & ~3u;
         /* Rounded up here, not left to the caller: enterProgramOnStack
          * anchors the arena at stackLimit and enterProgramSplit takes the
          * base as a parameter, so neither can be covered by an alignas on
@@ -176,6 +185,11 @@ public:
          * procedure's PC-relative literal loads depend on — see
          * allocate(). */
         arenaCursor = (codeArenaBase + 3u) & ~3u;
+        // codeArenaSize smaller than codeArenaBase's own alignment slack —
+        // a degenerate caller-supplied arena, not reachable from untrusted
+        // wire bytes (those only ever narrow procCount/argCount/body sizes,
+        // never codeArenaBase/codeArenaSize).
+        assert(arenaCursor <= arenaEnd); // GCOV_EXCL_LINE
         this->procCount = procCount;
         this->stackLimit = stackLimit;
         this->arenaOverlapsStack = arenaOverlapsStack;

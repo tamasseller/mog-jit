@@ -143,7 +143,13 @@ void Window::discardWindow(Assembler &e) const
     uint32_t spilled = spilledCount(tos) - (savesLR ? initialSpilledCount : 0);
     if(spilled > 0)
     {
-        e.emit(ArmV6M::incrSp(ArmV6M::Uoff<2, 7>((uint16_t)(4 * spilled))));
+        uint32_t bytes = 4 * spilled;
+        if(!ArmV6M::Uoff<2, 7>::isInRange(bytes))
+        {
+            e.fail();
+            return;
+        }
+        e.emit(ArmV6M::incrSp(ArmV6M::Uoff<2, 7>((uint16_t)bytes)));
     }
 }
 
@@ -202,7 +208,13 @@ void restoreWindow(Assembler &e, Window &window, uint32_t targetTos)
 
     if(spilledNow > reloadTop)
     {
-        e.emit(ArmV6M::incrSp(ArmV6M::Uoff<2, 7>((uint16_t)(4 * (spilledNow - reloadTop)))));
+        uint32_t bytes = 4 * (spilledNow - reloadTop);
+        if(!ArmV6M::Uoff<2, 7>::isInRange(bytes))
+        {
+            e.fail();
+            return;
+        }
+        e.emit(ArmV6M::incrSp(ArmV6M::Uoff<2, 7>((uint16_t)bytes)));
     }
     popRuns(e, spilledTarget, reloadTop - spilledTarget);
 

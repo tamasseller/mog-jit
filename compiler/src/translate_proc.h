@@ -17,9 +17,10 @@ namespace jitc
 {
 
 // The per-procedure forward pass. procIdx is this procedure's own
-// dispatch-table index (abiEmitCall's own packRecord argument).
-// calleeArgCounts[i] is procedure i's own argCount — this function only
-// ever reads calleeArgCounts[instr.calleeIndex].
+// dispatch-table index (abiEmitCall's own packRecord argument). A CALL's
+// own callee argCount is read directly off
+// r.slot(instr.calleeIndex).argCount() — no separate array; r is the one
+// seam into the whole-program directory (runtime_internal.h's ProcSlot).
 //
 // a is the only seam into anything Runtime-owned (arena growth, the live
 // stack-nesting floor, final registration) — an attached Assembler

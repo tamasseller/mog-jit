@@ -201,3 +201,35 @@ TEST(EmitPastCapacityBailsOnADetachedAssembler)
     MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
     EXPECT_RESOURCE_ERROR(a.emit(0)); // past capacity -- escapes, never writes buf[1]
 }
+
+TEST(PatchBranchBailsOnAnUnencodableUnconditionalDelta)
+{
+    // F5: patchBranch used to mask an out-of-range delta into whatever the
+    // low bits happened to be, silently retargeting the branch, instead of
+    // rejecting it.
+    uint16_t buf[1];
+    Assembler a(buf, 1);
+    uint32_t site = a.placeholderBranch(); // site 0, pc now 2
+    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
+    EXPECT_RESOURCE_ERROR(a.patchBranch(site, 3000)); // delta 2996 > Ioff<1,11>::maxValue
+}
+
+TEST(PatchBranchBailsOnAnUnencodableConditionalDelta)
+{
+    uint16_t buf[1];
+    Assembler a(buf, 1);
+    uint32_t site = a.placeholderCondBranch(ArmV6M::Condition::EQ); // site 0, pc now 2
+    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
+    EXPECT_RESOURCE_ERROR(a.patchBranch(site, 400)); // delta 396 > Ioff<1,8>::maxValue
+}
+
+TEST(PatchBranchAcceptsTheMaxEncodableUnconditionalDelta)
+{
+    uint16_t buf[1];
+    Assembler a(buf, 1);
+    uint32_t site = a.placeholderBranch();
+    a.patchBranch(site, site + 4 + 2046); // exactly Ioff<1,11>::maxValue -- must not fail()
+    uint16_t rawOff;
+    CHECK(ArmV6M::getBranchOffset(buf[0], rawOff));
+    CHECK(ArmV6M::signExtend(rawOff, 11) << 1 == 2046);
+}

@@ -49,11 +49,13 @@ TEST(flushOfAlreadyCleanSameRegisterIsANoOp)
 
 TEST(flushLiveOnPoisonedAccIsANoOp)
 {
-    // The one legitimate case where acc is poisoned at a control-flow merge
-    // (blocks.h's closeBlockEnd/closeCaseViaTerminator): the last
-    // instruction in a case/loop body clobbered acc (REG_REG or PEEK_PEEK)
-    // with nothing after to re-establish it. flushLive treats this as a
-    // no-op, not an error — nothing downstream could read acc either way.
+    // The ordinary case at a control-flow merge point
+    // (translate_proc.cpp's localJumpCleanup and translateLoop's own
+    // entry): isa-core.md §8.7 poisons acc at every CFG split/merge
+    // unconditionally, not just when the last instruction in a case/loop
+    // body happened to clobber it via REG_REG/PEEK_PEEK. flushLive treats
+    // this as a no-op, not an error — nothing downstream could read acc
+    // either way.
     uint16_t buf[4];
     Assembler e(buf, 4);
     AccState acc;

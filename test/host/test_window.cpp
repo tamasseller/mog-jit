@@ -1,11 +1,15 @@
 // Expected halfwords are cross-checked against arm-none-eabi-as, not
 // re-derived from the same formulas under test.
 #include "Test.h"
+#include "Mock.h"
 #include "assembler.h"
 #include "window.h"
 #include "accstate.h"
 #include "shape.h"
 #include "armv6.h"
+
+#include "runtime_internal.h"
+#include "host_runtime_support.h"
 
 #include <initializer_list>
 
@@ -120,6 +124,37 @@ TEST(discardWindowForSavesLRReclaimsOnlySelfSpilledLocals)
     Window w(5, /*savesLR=*/true); // tos=5, spilledCount=1, all of it "original"
     w.discardWindow(e);
     CHECK(e.halfwordCount() == 0); // nothing self-spilled — nothing to reclaim here
+}
+
+TEST(discardWindowAcceptsTheMaxEncodableSpAdjustment)
+{
+    uint16_t buf[4];
+    Assembler e(buf, 4);
+    Window w(4 + 127); // 127 words spilled -> 508 bytes, exactly Uoff<2,7>::maxValue
+    w.discardWindow(e);
+    CHECK(e.halfwordCount() == 1);
+    CHECK(buf[0] == ArmV6M::incrSp(ArmV6M::Uoff<2, 7>(508)));
+}
+
+TEST(discardWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
+{
+    // F6: incrSp(Uoff<2,7>(...)) used to silently flip ADD into SUB
+    // (fmtImm7's unmasked OR bleeds into the opcode's own ADD/SUB bit)
+    // instead of failing once more than 127 words are spilled.
+    uint16_t buf[4];
+    Assembler e(buf, 4);
+    Window w(4 + 128); // 128 words spilled -> 512 bytes, one word past the limit
+    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
+    EXPECT_RESOURCE_ERROR(w.discardWindow(e));
+}
+
+TEST(restoreWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
+{
+    uint16_t buf[4];
+    Assembler e(buf, 4);
+    Window w(4 + 128);
+    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
+    EXPECT_RESOURCE_ERROR(restoreWindow(e, w, 0));
 }
 
 TEST(callShuffleWithStackArgsExceedingWindowSize)

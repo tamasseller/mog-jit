@@ -77,3 +77,37 @@ TEST(BranchExchangeR0)
     // BX r0
     CHECK(ArmV6M::bx(ArmV6M::AnyReg(0)) == 0x4700);
 }
+
+// ── range checks ────────────────────────────────────────────────────────
+//
+// Regression guards for the scaling bug that let Ioff<a,n>::isInRange admit
+// twice the encodable range (it compared the halfword-scaled value against
+// byte-scaled bounds).
+
+TEST(IoffUnconditionalBranchRangeBoundary)
+{
+    CHECK(ArmV6M::Ioff<1, 11>::isInRange(2046));
+    CHECK(!ArmV6M::Ioff<1, 11>::isInRange(2048));
+    CHECK(ArmV6M::Ioff<1, 11>::isInRange(-2048));
+    CHECK(!ArmV6M::Ioff<1, 11>::isInRange(-2050));
+}
+
+TEST(IoffConditionalBranchRangeBoundary)
+{
+    CHECK(ArmV6M::Ioff<1, 8>::isInRange(254));
+    CHECK(!ArmV6M::Ioff<1, 8>::isInRange(256));
+    CHECK(ArmV6M::Ioff<1, 8>::isInRange(-256));
+    CHECK(!ArmV6M::Ioff<1, 8>::isInRange(-258));
+}
+
+TEST(UoffSpAdjustRangeBoundary)
+{
+    CHECK(ArmV6M::Uoff<2, 7>::isInRange(508));
+    CHECK(!ArmV6M::Uoff<2, 7>::isInRange(512));
+}
+
+TEST(UoffSpillOffsetRangeBoundary)
+{
+    CHECK(ArmV6M::Uoff<2, 8>::isInRange(1020));
+    CHECK(!ArmV6M::Uoff<2, 8>::isInRange(1024));
+}

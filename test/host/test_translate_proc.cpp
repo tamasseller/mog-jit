@@ -169,12 +169,12 @@ TEST(TranslateProc0EntryProcedure)
 
 TEST(TranslateProc1Callee)
 {
-    // Last-argument fold: proc1's only reference to slot 0 (its last
-    // argument) is body[0]'s own LOAD, so the callee prologue elides
-    // both the unconditional flush into physReg(0) and that LOAD — the
-    // argument stays PENDING in ACC_REG instead of round-tripping
-    // through r7. No CALL here, so entirely unaffected by the call
-    // record's own pooling change.
+    // The callee prologue always flushes the incoming last argument into
+    // its home register (physReg(0)=r7) unconditionally now, regardless
+    // of how the body goes on to use it. LOAD(0) is then just an ordinary
+    // in-window read (a deferred producer, itself free), folding straight
+    // into the following opImm(ADD,5). No CALL here, so entirely
+    // unaffected by the call record's own pooling change.
     uint16_t buf[32];
     uint8_t bodyBytes[16];
     Proc proc = makeProc(1, kProc1Body, 3, bodyBytes, sizeof(bodyBytes));
@@ -183,11 +183,12 @@ TEST(TranslateProc1Callee)
     rt.set(1, 1, /*savesLR=*/false);
     uint32_t halfwordCount = translateProc(proc, /*procIdx=*/1, a, rt.runtime());
 
-    CHECK(halfwordCount == 10);
+    CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
-        ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(0), ArmV6M::Imm<3>(5)), // ADDS r0, r0, #5  (LOAD(0)+opImm(ADD,5): LOAD elided, folded straight into acc)
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),                 // MOV r7, r0  (callee prologue: incoming last arg always flushed into physReg(0))
+        ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(7), ArmV6M::Imm<3>(5)), // ADDS r0, r7, #5  (LOAD(0)+opImm(ADD,5), folded straight into acc)
         RETURN_VIA_LR,
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -209,9 +210,57 @@ TEST(OverflowIsReportedRatherThanOverrunningTheBuffer)
     EXPECT_RESOURCE_ERROR(translateProc(proc, 0, a, rt.runtime()));
 }
 
+TEST(LoopBackEdgeBailsWhenTheBodyExceedsTheEncodableBranchRange)
+{
+    // A LOOP body long enough that the unconditional back-edge needs more
+    // than Ioff<1,11>'s +-2048-byte reach used to silently retarget the
+    // branch instead of failing.
+    Instr body[404];
+    uint32_t n = 0;
+    body[n++] = bare(Op::LOOP);
+    body[n++] = CONST(1);
+    body[n++] = bare(Op::BLOCK_END);
+    for(uint32_t i = 0; i < 400; i++)
+    {
+        body[n++] = bare(Op::CLZ);
+    }
+    body[n++] = bare(Op::BLOCK_END);
+    body[n++] = bare(Op::RETURN);
+
+    FakeRuntime<1> rt;
+    rt.set(0, 1, /*savesLR=*/false);
+    uint8_t bodyBytes[2048];
+    Proc proc = makeProc(1, body, n, bodyBytes, sizeof(bodyBytes));
+    uint16_t buf[4096]; // generous -- the failure under test must come from
+                         // the branch-range check, not emit()'s own capacity check
+    Assembler a(buf, 4096);
+    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
+    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, a, rt.runtime()));
+}
+
+TEST(SpillLoadBailsWhenTheOffsetExceedsTheEncodableRange)
+{
+    // Same defect class as F5/F6, found while fixing them: Window::
+    // spillOffset's callers built Uoff<2,8> from an unbounded offset with
+    // no range check, corrupting the destination-register field of the
+    // LDR instead of just truncating the offset.
+    const Instr body[] = {LOAD(0), bare(Op::RETURN)};
+    FakeRuntime<1> rt;
+    // tos=261 (argCount, all out-of-window) -> spillOffset(0) ==
+    // 4*(spilledCount(261)-1) == 4*256 == 1024, past Uoff<2,8>::maxValue (1020).
+    rt.set(0, 261, /*savesLR=*/false);
+    uint8_t bodyBytes[16];
+    Proc proc = makeProc(261, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
+    uint16_t buf[32];
+    Assembler a(buf, 32);
+    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
+    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, a, rt.runtime()));
+}
+
 // The tests below exercise LOOP/BR_TABLE/comparisons-as-values/unary ops/
-// last-argument-fold/block-nesting-overflow through translateProc()'s
-// main loop. End-to-end behavioral correctness for all of these is
+// the last-argument's home slot/block-nesting-overflow through
+// translateProc()'s main loop. End-to-end behavioral correctness for all
+// of these is
 // already proven on real QEMU (test/qemu/fixtures.cpp), but that binary
 // isn't gcov-instrumented, so it doesn't contribute to this host suite's
 // own coverage. Sizes below are the measured halfwordCount for each body
@@ -230,6 +279,10 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
         bare(Op::BLOCK_END),
             LOAD(0), opImm(Op::SUB, 1), STORE(0),
         bare(Op::BLOCK_END),
+        // isa-core.md §8.7: the loop-exit edge starts acc poisoned, so
+        // RETURN needs its own fresh producer rather than reading whatever
+        // the body last left behind.
+        LOAD(0),
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
@@ -239,7 +292,7 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 17);
+    CHECK(halfwordCount == 18);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -251,6 +304,7 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
         ArmV6M::subs(ArmV6M::LoReg(7), ArmV6M::LoReg(7), ArmV6M::Imm<3>(1)), // SUBS r7,r7,#1 (body's LOAD(0)+SUB(1)+STORE(0), all folded in place)
         ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (LoopBody close's own flushLive, right before the back-edge)
         ArmV6M::b(ArmV6M::Ioff<1, 11>(-14)),               // B -14 — unconditional back-edge, to loopStart (the second MOV r0,r7 above)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (RETURN's flush of the post-loop LOAD(0) — the exit edge's own fresh producer)
         RETURN_VIA_LR,
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -270,6 +324,10 @@ TEST(BrTableJumpTableHelperViaFullPipeline)
             CONST(10), bare(Op::BLOCK_END),
             CONST(20), bare(Op::BLOCK_END),
             CONST(30), bare(Op::BLOCK_END),
+        // isa-core.md §8.7: the switch's merge point starts acc poisoned
+        // regardless of which case fell through — RETURN needs its own
+        // fresh producer.
+        CONST(0),
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
@@ -279,7 +337,7 @@ TEST(BrTableJumpTableHelperViaFullPipeline)
     uint16_t buf[64];
     Assembler a(buf, 64);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 24);
+    CHECK(halfwordCount == 25);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -298,6 +356,7 @@ TEST(BrTableJumpTableHelperViaFullPipeline)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(20)), // MOVS r0,#20 (case1: CONST 20)
         ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                  // B +0 — skip to end (case1 isn't the last case)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(30)), // MOVS r0,#30 (case2: CONST 30, last case — no skip needed)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)),  // MOVS r0,#0  (RETURN's flush of the post-switch CONST(0) — the merge point's own fresh producer)
         RETURN_VIA_STACK,
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -312,6 +371,10 @@ TEST(ComparisonFusesIntoBrTableGuard)
         CONST(5), opImm(Op::GT_U, 3), brTable(2),
             CONST(1), bare(Op::BLOCK_END),
             CONST(2), bare(Op::BLOCK_END),
+        // isa-core.md §8.7: the if/else merge point starts acc poisoned
+        // regardless of which arm ran — RETURN needs its own fresh
+        // producer.
+        CONST(0),
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
@@ -321,7 +384,7 @@ TEST(ComparisonFusesIntoBrTableGuard)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 15);
+    CHECK(halfwordCount == 16);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -331,6 +394,7 @@ TEST(ComparisonFusesIntoBrTableGuard)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)), // MOVS r0,#1 (case0: CONST 1)
         ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                 // B +0 — skip case1, to RETURN
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(2)), // MOVS r0,#2 (case1: CONST 2)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)), // MOVS r0,#0 (RETURN's flush of the post-construct CONST(0) — the merge point's own fresh producer)
         RETURN_VIA_LR,
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -424,11 +488,11 @@ TEST(ClzHelperViaFullPipeline)
     }
 }
 
-TEST(LastArgumentFoldFallsBackToEagerFlushWhenReferencedTwice)
+TEST(LastArgumentHomeSlotReadTwiceViaLoad)
 {
-    // Two references to the last argument's slot — takes the fallback
-    // path (unconditional flush into physReg(argCount-1)), not the
-    // elision TranslateProc1Callee exercises.
+    // The callee prologue always flushes the last argument into
+    // physReg(argCount-1) unconditionally, so two ordinary LOADs of that
+    // same in-window slot both just read the already-correct value.
     const Instr body[] = {LOAD(0), LOAD(0), opReg(Op::ADD, 0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
     rt.set(0, 1, /*savesLR=*/false);
@@ -441,8 +505,42 @@ TEST(LastArgumentFoldFallsBackToEagerFlushWhenReferencedTwice)
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
-        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),                  // MOV r7, r0  (eager flush: arg referenced twice, so acc -> physReg(0)=r7 unconditionally)
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),                  // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(0))
         ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(7), ArmV6M::LoReg(7)), // ADDS r0, r7, r7  (both LOAD(0)s fold to reading r7; REG_ACC ADD combines them)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
+}
+
+TEST(LastArgumentHomeSlotReadViaPopAcc)
+{
+    // At tos == argCount, window.topReg() *is* physReg(lastArgSlot). This
+    // used to be reached through a deferred-fold scan that could miss
+    // POP_ACC/PEEK_PEEK/a bare POP (none carry a target field) and leave
+    // physReg(lastArgSlot) unflushed, reading it uninitialised. The callee
+    // prologue now always flushes unconditionally instead, so POP_ACC's
+    // implicit window-top read is correct by construction, no scan
+    // involved. POP_ACC (not
+    // PEEK_PEEK) is used so the program stays accLive-valid into RETURN
+    // (isa-core.md §10.1: PEEK_PEEK's write-back-in-place clobbers acc,
+    // POP_ACC produces a fresh value).
+    const Instr body[] = {opStack(Op::ADD, Combo::POP_ACC), bare(Op::RETURN)};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
+    uint8_t bodyBytes[16];
+    Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
+    uint16_t buf[32];
+    Assembler a(buf, 32);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    CHECK(halfwordCount == 11);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),                  // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(lastArgSlot))
+        ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(7), ArmV6M::LoReg(7)), // ADDS r0, r7, r7  (POP_ACC ADD: acc and the popped home slot are now the same, correctly-flushed value)
         RETURN_VIA_LR,
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -461,6 +559,10 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
         CONST(5), opImm(Op::GT_U, 3), brTable(2),
             CONST(1), bare(Op::RETURN),
             CONST(2), bare(Op::BLOCK_END),
+        // isa-core.md §8.7: the if/else merge point starts acc poisoned
+        // regardless of which arm ran — the trailing RETURN needs its own
+        // fresh producer.
+        CONST(0),
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
@@ -470,7 +572,7 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 17);
+    CHECK(halfwordCount == 18);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -480,6 +582,7 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)), // MOVS r0, #1  (case0: CONST 1)
         RETURN_VIA_LR,                                     // case0's own bare RETURN — closeFrameForTerminator's Case dispatch
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(2)), // MOVS r0, #2  (case1: CONST 2)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)), // MOVS r0, #0  (trailing RETURN's flush of the post-construct CONST(0) — the merge point's own fresh producer)
         RETURN_VIA_LR,                                     // the trailing bare RETURN after case1's BLOCK_END
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -564,6 +667,10 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
         CONST(5), opImm(Op::GT_U, 3), brTable(2),
             CONST(1), trapInstr(9),
             CONST(2), bare(Op::BLOCK_END),
+        // isa-core.md §8.7: the if/else merge point starts acc poisoned
+        // regardless of which arm ran — the trailing RETURN needs its own
+        // fresh producer.
+        CONST(0),
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
@@ -573,7 +680,7 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 20);
+    CHECK(halfwordCount == 21);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -585,6 +692,7 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
         ArmV6M::nop(),                                     // case0's terminator-close flush: alignment pad, no branch-around needed
         0x0009, 0x8000,                                    // pool word: TRAP sentinel 0x80000009
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(2)), // MOVS r0, #2  (case1's CONST 2)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)), // MOVS r0, #0  (trailing RETURN's flush of the post-construct CONST(0) — the merge point's own fresh producer)
         RETURN_VIA_LR,
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -597,7 +705,9 @@ TEST(LoadFromOutOfWindowSlot)
 {
     // argCount=5 > WINDOW_SIZE(4) — slot 0 is spilled from procedure
     // entry, so LOAD(0) must reload it via ldrSp instead of reading a
-    // window register directly.
+    // window register directly. The callee prologue's own unconditional
+    // flush targets slot 4 (physReg(4) wraps back to r7), unrelated to
+    // slot 0's own spill/reload.
     const Instr body[] = {LOAD(0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
     rt.set(0, 5, /*savesLR=*/false);
@@ -606,10 +716,11 @@ TEST(LoadFromOutOfWindowSlot)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 11);
+    CHECK(halfwordCount == 12);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),      // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(4)=r7)
         ArmV6M::ldrSp(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(0)), // LDR r0,[sp,#0]  (LOAD(0): slot0 spilled, argCount=5>WINDOW_SIZE)
         ArmV6M::incrSp(ArmV6M::Uoff<2, 7>(4)),                  // ADD sp,#4  (discardWindow: reclaim the one spilled arg slot before returning)
         RETURN_VIA_LR,
@@ -638,7 +749,7 @@ TEST(StoreStandaloneInWindowWhenNotPrecededByAFoldableProducer)
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
-        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)), // MOV r7, r0  (eager flush of the sole/last arg into physReg(0); body-start isn't a LOAD, so the fold doesn't elide this)
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)), // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(0))
         ArmV6M::movs(ArmV6M::LoReg(6), ArmV6M::Imm<8>(9)), // MOVS r6, #9  (CONST 9, into physReg(1) for the PUSH)
         ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(6)), // MOV r0, r6  (POP: window top -> acc)
         ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)), // MOV r7, r0  (STORE(0): standalone, not preceded by a foldable producer)
@@ -651,17 +762,17 @@ TEST(StoreStandaloneInWindowWhenNotPrecededByAFoldableProducer)
     }
 }
 
-TEST(StoreStandaloneOutOfWindowAndLastArgFoldRefCountZero)
+TEST(StoreStandaloneOutOfWindowSlot)
 {
-    // Two gaps at once: peekStoreFold never folds an out-of-window STORE
-    // target regardless of what precedes it (fold.reg is a physical
-    // register, meaningless for a spilled slot), so NEG's own STORE(0)
-    // here always takes the standalone out-of-window path. Separately,
-    // argCount=5's own last argument (slot 4) is never referenced by this
-    // body at all — translateProc's own last-argument-fold scan finds
-    // refCount==0 and leaves the incoming value as a plain ACC_REG
-    // producer, the one case last-arg-fold's own dedicated tests above
-    // don't otherwise reach (they all reference the last slot).
+    // peekStoreFold never folds an out-of-window STORE target regardless
+    // of what precedes it (fold.reg is a physical register, meaningless
+    // for a spilled slot), so NEG's own STORE(0) here always takes the
+    // standalone out-of-window path. argCount=5's own last argument
+    // (slot 4, physReg(4)=r7) is unrelated to slot 0 and gets the callee
+    // prologue's usual unconditional flush regardless of never being
+    // referenced by this body — NEG then has no fold axis of its own, so
+    // it flushes unconditionally into ACC_REG too, bringing the value
+    // back from r7 to r0 before negating.
     const Instr body[] = {bare(Op::NEG), STORE(0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
     rt.set(0, 5, /*savesLR=*/false);
@@ -670,11 +781,13 @@ TEST(StoreStandaloneOutOfWindowAndLastArgFoldRefCountZero)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 12);
+    CHECK(halfwordCount == 14);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
-        ArmV6M::negs(ArmV6M::LoReg(0), ArmV6M::LoReg(0)),       // NEGS r0, r0  (NEG: slot4 unreferenced, so the incoming arg stayed plain ACC_REG — no eager flush needed)
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),      // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(4)=r7, unreferenced by this body)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),      // MOV r0, r7  (NEG's own unconditional flush(ACC_REG): acc was Clean at r7)
+        ArmV6M::negs(ArmV6M::LoReg(0), ArmV6M::LoReg(0)),       // NEGS r0, r0
         ArmV6M::strSp(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(0)), // STR r0,[sp,#0]  (STORE(0): out-of-window, peekStoreFold never applies here)
         ArmV6M::incrSp(ArmV6M::Uoff<2, 7>(4)),                  // ADD sp,#4  (discardWindow: reclaim the one spilled arg slot before returning)
         RETURN_VIA_LR,
@@ -727,7 +840,7 @@ TEST(ConstFoldsDirectlyIntoAFollowingStore)
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
-        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(ACC_REG)), // MOV r7, r0  (callee prologue: argCount=1's incoming last-arg always flushed into physReg(0)=r7, since its only ref is a STORE, not a body-start LOAD)
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(ACC_REG)), // MOV r7, r0  (callee prologue: argCount=1's incoming last arg always flushed into physReg(0)=r7)
         ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(5)),       // MOVS r7, #5  (CONST 5 folds straight into STORE(0)'s target r7, overwriting the arg)
         ArmV6M::mov(ArmV6M::AnyReg(ACC_REG), ArmV6M::AnyReg(7)), // MOV r0, r7  (RETURN's flush: acc's clean value now lives in r7, brought back to r0)
         RETURN_VIA_LR,
@@ -744,7 +857,10 @@ TEST(RegRegOutOfWindowWritesBackToStackAfterComputing)
     // reload (shared with REG_ACC) and REG_REG's own SCRATCH_REG-as-dest
     // plus explicit str-back are both otherwise only exercised indirectly
     // through binops.cpp's own lower-level tests, never through this
-    // file's real dispatch.
+    // file's real dispatch. argCount=5's callee prologue flush leaves
+    // accState Clean at physReg(4)=r7 (a plain copy of r0, same value) —
+    // since nothing else produces a fresh value before this REG_REG runs,
+    // its acc operand reads r7, not r0.
     const Instr body[] = {opRegWriteback(Op::ADD, 0), CONST(1), bare(Op::RETURN)};
     FakeRuntime<1> rt;
     rt.set(0, 5, /*savesLR=*/false);
@@ -753,12 +869,13 @@ TEST(RegRegOutOfWindowWritesBackToStackAfterComputing)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 14);
+    CHECK(halfwordCount == 15);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),                                          // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(4)=r7)
         ArmV6M::ldrSp(ArmV6M::LoReg(SCRATCH_REG), ArmV6M::Uoff<2, 8>(0)),                           // LDR r2,[sp,#0]  (reload the REG_REG operand — slot 0 is out-of-window since argCount=5>WINDOW_SIZE)
-        ArmV6M::adds(ArmV6M::LoReg(SCRATCH_REG), ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(SCRATCH_REG)), // ADDS r2, r0, r2  (REG_REG ADD: acc(r0) + reloaded operand(r2), dest is SCRATCH_REG since target is out-of-window)
+        ArmV6M::adds(ArmV6M::LoReg(SCRATCH_REG), ArmV6M::LoReg(7), ArmV6M::LoReg(SCRATCH_REG)),     // ADDS r2, r7, r2  (REG_REG ADD: acc — now Clean at r7 — plus reloaded operand(r2), dest is SCRATCH_REG since target is out-of-window)
         ArmV6M::strSp(ArmV6M::LoReg(SCRATCH_REG), ArmV6M::Uoff<2, 8>(0)),                           // STR r2,[sp,#0]  (write the result back to the spilled slot)
         ArmV6M::movs(ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<8>(1)),                                    // MOVS r0, #1  (CONST(1), flushed for RETURN)
         ArmV6M::incrSp(ArmV6M::Uoff<2, 7>(4)),                                                      // ADD sp, #4  (discardWindow reclaims the one spilled arg slot; savesLR is false here)
@@ -876,10 +993,12 @@ TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 18);
+    CHECK(halfwordCount == 20);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),        // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(0)=r7, unreferenced by this body)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),        // MOV r0, r7  (testAccNonzero's own flush(ACC_REG): acc was Clean at r7, brought back for the hardcoded-r0 CMP)
         ArmV6M::cmp(ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<8>(0)),   // CMP r0, #0  (LOOP condition: no fused comparison, testAccNonzero's fallback)
         ArmV6M::beq(ArmV6M::Ioff<1, 8>(6)),                       // BEQ exitFixup  (loop-exit branch, taken when acc==0)
         ArmV6M::movs(ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<8>(42)), // MOVS r0, #42  (RETURN's flush of CONST(42)'s pending value)
@@ -933,6 +1052,10 @@ TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
             CONST(10), bare(Op::BLOCK_END),
             CONST(20), bare(Op::BLOCK_END),
             CONST(30), bare(Op::BLOCK_END),
+        // isa-core.md §8.7: the switch's merge point starts acc poisoned
+        // regardless of which case fell through — RETURN needs its own
+        // fresh producer.
+        LOAD(0),
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
@@ -942,12 +1065,13 @@ TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
     uint16_t buf[64];
     Assembler a(buf, 64);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 28);
+    CHECK(halfwordCount == 30);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
         ArmV6M::pushWithLr(ArmV6M::LoRegs{0}),              // PUSH {lr}  (savesLR — BR_TABLE N>2 needs LR save)
-        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(3)),   // CMP r0, #3  (LOAD(0) elided into acc via last-arg fold; GT_U operand=3)
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),  // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(0)=r7)
+        ArmV6M::cmp(ArmV6M::LoReg(7), ArmV6M::Imm<8>(3)),   // CMP r7, #3  (LOAD(0): ordinary in-window read of physReg(0), pending straight into the comparison; GT_U operand=3)
         ArmV6M::bls(ArmV6M::Ioff<1, 8>(2)),                 // BLS +2  (inverse of HI/GT_U's true condition — comparison doesn't fuse into the N>2 jump table)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)),  // MOVS r0, #1  (materialized true value)
         ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                  // skip the false branch
@@ -964,6 +1088,7 @@ TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(20)), // CONST(20), case1
         ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                  // case1's skip-to-end
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(30)), // CONST(30), case2 (last — no skip needed)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),  // MOV r0, r7  (RETURN's flush of the post-switch LOAD(0) — the merge point's own fresh producer)
         RETURN_VIA_STACK,
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -986,6 +1111,10 @@ TEST(LoopConditionClosesViaAnExplicitFusedComparison)
         bare(Op::BLOCK_END),
             LOAD(0), opImm(Op::SUB, 1), STORE(0),
         bare(Op::BLOCK_END),
+        // isa-core.md §8.7: the loop-exit edge starts acc poisoned, so
+        // RETURN needs its own fresh producer rather than reading whatever
+        // the body last left behind.
+        LOAD(0),
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
@@ -995,7 +1124,7 @@ TEST(LoopConditionClosesViaAnExplicitFusedComparison)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 16);
+    CHECK(halfwordCount == 17);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -1006,6 +1135,7 @@ TEST(LoopConditionClosesViaAnExplicitFusedComparison)
         ArmV6M::subs(ArmV6M::LoReg(7), ArmV6M::LoReg(7), ArmV6M::Imm<3>(1)), // SUBS r7,r7,#1  (LOAD(0)+opImm(SUB,1) folds straight into STORE(0)'s target r7)
         ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),              // MOV r0, r7  (closeBlockEnd's own flushLive before the back-edge)
         ArmV6M::b(ArmV6M::Ioff<1, 11>(-12)),                            // unconditional back-edge to loopStart
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),              // MOV r0, r7  (RETURN's flush of the post-loop LOAD(0) — the exit edge's own fresh producer)
         RETURN_VIA_LR,
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -1032,7 +1162,7 @@ TEST(ComparisonMaterializedResultFoldsDirectlyIntoAFollowingStore)
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
-        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)), // MOV r7, r0  (last-arg eager flush: STORE(0) refs slot0 but isn't a body-start LOAD)
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)), // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(0))
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(5)), // MOVS r0, #5  (CONST 5)
         ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(3)),  // CMP r0, #3  (GT_U operand=3)
         ArmV6M::bls(ArmV6M::Ioff<1, 8>(2)),                // BLS — inverse of HI/GT_U's true condition
@@ -1048,13 +1178,12 @@ TEST(ComparisonMaterializedResultFoldsDirectlyIntoAFollowingStore)
     }
 }
 
-TEST(LastArgumentFoldEagerlyFlushesWhenBodyStartReferenceIsNotALoad)
+TEST(LastArgumentHomeSlotReadViaRegAcc)
 {
-    // The last-arg-fold's own LOAD-elision fast path is keyed on the
-    // first reference being a body-start *LOAD* specifically — a
-    // REG_ACC read (opReg) at the very same body-start position must
-    // still take the eager-flush path, since it reads via physReg(slot)
-    // rather than acc's own pending value.
+    // A REG_ACC read (opReg) of the last argument's own slot, right at
+    // body start — reads via physReg(slot) rather than a LOAD, exercising
+    // a different addressing mode than LastArgumentHomeSlotReadTwiceViaLoad
+    // above against the same unconditionally-flushed value.
     const Instr body[] = {opReg(Op::ADD, 1), bare(Op::RETURN)};
     FakeRuntime<1> rt;
     rt.set(0, 2, /*savesLR=*/false);
@@ -1067,7 +1196,7 @@ TEST(LastArgumentFoldEagerlyFlushesWhenBodyStartReferenceIsNotALoad)
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
-        ArmV6M::mov(ArmV6M::AnyReg(6), ArmV6M::AnyReg(0)), // MOV r6, r0  (eager flush: opReg's own target(1)==lastArgSlot isn't a body-start LOAD)
+        ArmV6M::mov(ArmV6M::AnyReg(6), ArmV6M::AnyReg(0)), // MOV r6, r0  (callee prologue: incoming last arg flushed into physReg(1)=r6)
         ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(6), ArmV6M::LoReg(6)), // ADDS r0,r6,r6  (opReg(ADD,1): acc, already r6 post-flush, plus window slot1 — same r6)
         RETURN_VIA_LR,
     };
@@ -1093,7 +1222,10 @@ TEST(DeeplyNestedButWellFormedBlocksSucceedWithNoStackFloor)
     // stackFloor (0, no limit), only the live stack pointer's real
     // headroom matters, and this host process has plenty of it.
     constexpr int kDepth = 50;
-    Instr body[2 * kDepth + 1];
+    // isa-core.md §8.7: the outermost if-then's merge point starts acc
+    // poisoned once all 50 levels unwind, so RETURN needs its own fresh
+    // producer (CONST — argCount=0, no window slot available).
+    Instr body[2 * kDepth + 2];
     for(int i = 0; i < kDepth; i++)
     {
         body[i] = brTable(1);
@@ -1102,11 +1234,12 @@ TEST(DeeplyNestedButWellFormedBlocksSucceedWithNoStackFloor)
     {
         body[kDepth + i] = bare(Op::BLOCK_END);
     }
-    body[2 * kDepth] = bare(Op::RETURN);
+    body[2 * kDepth] = CONST(0);
+    body[2 * kDepth + 1] = bare(Op::RETURN);
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[512];
-    Proc proc = makeProc(0, body, 2 * kDepth + 1, bodyBytes, sizeof(bodyBytes));
+    Proc proc = makeProc(0, body, 2 * kDepth + 2, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[512];
     Assembler a(buf, 512);
     translateProc(proc, 0, a, rt.runtime());
@@ -1201,6 +1334,11 @@ TEST(PooledLoadInsideGuardedRegionStillResolves)
         CONST(5), opImm(Op::GT_U, 3), brTable(2),
             CONST(0x12345678), bare(Op::BLOCK_END),
             CONST(0x0ABCDEF0), bare(Op::BLOCK_END),
+        // isa-core.md §8.7: the if/else merge point starts acc poisoned
+        // regardless of which arm ran — RETURN needs its own fresh
+        // producer. A small immediate (not a literal) so it doesn't
+        // disturb the pooling this test is about.
+        CONST(0),
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
@@ -1235,6 +1373,11 @@ TEST(PooledLoadSurvivesAcrossABrTableJumpTableUnflushed)
             CONST(1), bare(Op::BLOCK_END),
             CONST(2), bare(Op::BLOCK_END),
             CONST(3), bare(Op::BLOCK_END),
+        // isa-core.md §8.7: the switch's merge point starts acc poisoned
+        // regardless of which case fell through — RETURN needs its own
+        // fresh producer. A small immediate (not a literal) so it doesn't
+        // disturb the one pooled site this test is about.
+        CONST(0),
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;

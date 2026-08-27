@@ -35,9 +35,9 @@ public:
 
     void flush(Assembler &e, uint32_t dstReg);
 
-    // flush(), but safe at a control-flow merge point (blocks.h's
-    // closeBlockEnd/closeCaseViaTerminator/closeLoopBodyViaTerminator) —
-    // Poisoned isn't an error here, it's a no-op, since the acc-clobbering
+    // flush(), but safe at a control-flow merge point (translate_proc.cpp's
+    // localJumpCleanup, and translateLoop's own entry) — Poisoned isn't an
+    // error here, it's a no-op, since isa-core.md §8.7's acc-clobbering
     // convention already forbids anything downstream from reading it
     // regardless of which path arrived.
     void flushLive(Assembler &e, uint32_t dstReg)

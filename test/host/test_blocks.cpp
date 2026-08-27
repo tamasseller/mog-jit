@@ -1,9 +1,10 @@
-// Unit tests for blocks.h's branch/table bookkeeping (openBrTable/
-// closeBlockEnd etc). End-to-end LOOP/BR_TABLE/comparison-as-value
-// behavior is covered on real QEMU instead (test/qemu/fixtures.cpp) —
-// this file targets bookkeeping that's awkward to observe from the
-// outside: a mis-patched branch is invisible in a passing *value* unless
-// the test happens to exercise the exact path that would expose it.
+// Unit tests for blocks.h's comparison-fusion and span-bounding primitives
+// (emitComparison/testAccNonzero/maxSpanBytes/emitGuardedBranch). End-to-end
+// LOOP/BR_TABLE/comparison-as-value behavior is covered on real QEMU
+// instead (test/qemu/fixtures.cpp) — this file targets bookkeeping that's
+// awkward to observe from the outside: a mis-patched branch is invisible
+// in a passing *value* unless the test happens to exercise the exact path
+// that would expose it.
 #include "Test.h"
 #include "blocks.h"
 #include "assembler.h"

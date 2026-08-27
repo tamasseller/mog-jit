@@ -6,10 +6,8 @@
 > (`jit-armv6m/runtime`) on real ARMv6-M hardware via `qemu-system-arm`. A TS
 > prototype (`jit-armv6m/prototype`) existed earlier as a faster-iteration
 > blueprint for working out the algorithm before committing it to C++; it was
-> retired once the native port reached full feature parity, and citations to
-> it below (mostly in §16) are historical — they record how a given mechanism
-> was originally worked out or a bug originally found, not a live path. §16
-> tracks what is verified, what is derived on paper, and what is still open.
+> retired once the native port reached full feature parity. §16 lists
+> currently-open gaps and follow-ups only.
 
 ---
 
@@ -151,17 +149,11 @@ absolute arena address. Every offset is relative to the current procedure's
 own start, the same position-independence §11 requires of emitted code, so
 compaction sliding the code region never invalidates a still-open record.
 
-The now-retired TS prototype's own mock translator (formerly
-`prototype/qemu/compile_proc.cpp`) had no Frame stack at all: it was an
-unconditionally-terminating copy from a precompiled blob, so its worst case
-was one number (§16 item 19). The real translator's own figure,
-`TRANSLATOR_ENTRY_WORST_CASE_BYTES` (`jit-armv6m/runtime/dispatch_abi.h`),
-has been re-measured via `-fstack-usage` twice since — once when the real
-translator replaced the mock (item 19) and again when `compileProc`'s own
-call chain moved onto `Assembler` (item 23) — each time itemized per
-function on the real path, never guessed. Build-time enforcement (a
-per-file `-Wstack-usage=`/`-Werror=stack-usage=` pin, matching the
-now-retired mock translator's own analogous rule) remains a reasonable
+`TRANSLATOR_ENTRY_WORST_CASE_BYTES` (`jit-armv6m/runtime/dispatch_abi.h`)
+is re-measured via `-fstack-usage` whenever the real translator's own call
+chain changes shape, itemized per function on the real path, never
+guessed. Build-time enforcement (a per-file `-Wstack-usage=`/
+`-Werror=stack-usage=` pin) remains a reasonable
 follow-up, not done.
 
 **Interrupt isolation.** Checked against ARMv6-M's exception-entry
@@ -578,8 +570,8 @@ bits doesn't realistically wrap in an embedded system's lifetime, so the
 scan is a plain comparison.
 
 The static half (`body_ptr`/`static_info`) is what makes this table
-double as the whole-program procedure directory §16 originally tracked as
-missing entirely: `enter_program`'s one-time wire-format walk
+double as the whole-program procedure directory: `enter_program`'s one-time
+wire-format walk
 (`Runtime::init`, `jit-armv6m/runtime/runtime_internal.h`) fills it in for
 every procedure before `enter_dispatch` ever runs, and `compileProc` reads
 a procedure's own `arg_count`/body location/`needs_lr_save` straight out
@@ -741,7 +733,7 @@ Per-opcode-class notes:
   (`compiler/src/blocks.cpp`'s `openBrTableJump`) needs a literal-pool jump
   table plus a computed `BX`, but not one dispatch routine per site: one
   flash-resident copy for the whole program (§11's reserved slot 6,
-  `brTableJumpHelper`, `jit-armv6m/runtime/runtime.S` — §16 item 21, done),
+  `brTableJumpHelper`, `jit-armv6m/runtime/runtime.S`),
   reached by `BLX` through the helper vector, with the call site's own table
   addressed relative to `lr` exactly as it would be after a local `BL`.
 
@@ -915,34 +907,21 @@ producer *or* a write-back-in-place op. Four consequences:
   `POISONED`, unlike a bare `flush`): cheap when nothing was pending, paid
   only in the case that needs it.
 - **A fused branch's *opening* is a merge point too, in the other
-  direction, and had no equivalent guard** (found via §16 item 4's own
-  cross-check, after this table's "no" cell above turned out wrong and
-  prompted a closer look at the fusion code around it). Branch-fusion
-  never materializes the comparison's 0/1 result anywhere — only CPU flags
-  carry it into the guard — so `accState` was left completely untouched
-  across the fusion, still describing whatever `acc` held *before* the
-  comparison ran. Per isa-core.md, a comparison is an ordinary producer and
-  neither `BR_TABLE` nor a loop condition's `BLOCK_END` clobbers `acc`
-  (`validate.ts`'s `accLive` stays true across both, and `vm.ts`'s own
-  `BR_TABLE` handling never touches it), so a case or loop body is
-  entitled to read `acc` immediately and get the comparison's own boolean
-  — but the translator would silently hand back the stale pre-comparison
-  operand instead, reachable by a bare `STORE` as a case/loop body's first
-  instruction with nothing in between to re-establish `acc`. Fixed by
-  seeding `accState` with the statically-known constant (`Imm(0)`
-  entering `case[0]`/`Imm(1)` entering `case[1]` or a loop body) exactly
-  when the branch is genuinely fused — never for `testAccNonzero`'s
-  unfused fallback, which never replaced `acc`'s real value in the first
-  place and needs no seeding (`blocks.ts`/`blocks.h`'s `Frame.fusedBoolean`
-  and `closeBlockEnd`'s `fusedLoopExit` parameter). Confirmed as a genuine
-  reference-interpreter/QEMU divergence (not just a theoretical gap) before
-  the fix, on both the prototype and the native port, with permanent
-  regression tests at every level (`acc-fusion-boundary.test.ts`,
-  `test_blocks.cpp`, `test/qemu/fixtures.cpp`#22/#23).
+  direction.** Branch-fusion never materializes the comparison's 0/1
+  result anywhere — only CPU flags carry it into the guard — so `accState`
+  is left completely untouched across the fusion unless something
+  re-establishes it. `accState` is seeded with the statically-known
+  constant (`Imm(0)` entering `case[0]`/`Imm(1)` entering `case[1]` or a
+  loop body) exactly when the branch is genuinely fused — never for
+  `testAccNonzero`'s unfused fallback, which flushes for real before the
+  branch and needs no seeding.
 
-This holds against any bytecode honoring the acc-clobbering convention, not
-just this project's own `lower.ts` output. Nothing statically enforces it
-yet (§16 item 2).
+isa-core.md §8.7 makes this a validation error generally: a CFG split
+(`BR_TABLE`/`LOOP`) clobbers `acc` unconditionally, so a case/loop body
+reading a value from before the split — including the leaving direction,
+a merge point being read without every incoming edge re-establishing a
+value — is rejected by `validate.ts`/`vm.ts` rather than relying on this
+one seeded case alone.
 
 **Callee-side prologue as a fold.** isa-core.md §4.6's last argument arrives
 in `acc`, not at `phys(argidx)`, which holds stale data (whatever the
@@ -1059,10 +1038,10 @@ has into this — checked at `translateProc`'s existing per-instruction
 checkpoint (`blocks.h`'s `instrMaxBytes`, the same budget `maxSpanBytes`
 already used for a different reason), before the prologue stub, and (via
 the same call) before a literal-pool flush. `reserve` is a plain method on
-`Assembler` itself now, not a virtual call through a separate interface
-(§16 item 23 retired the `ArenaRoom` abstraction this paragraph originally
-described — there was only ever one implementor, hiding a `Runtime` the
-host build already instantiates directly). An *attached* `Assembler`
+`Assembler` itself now, not a virtual call through a separate interface —
+the `ArenaRoom` abstraction this paragraph once described had only ever
+one implementor, hiding a `Runtime` the host build already instantiates
+directly, so it was retired. An *attached* `Assembler`
 (constructed over a real `Runtime*`) runs the ordinary
 `findEvictionVictim`/`evict` loop internally, best-effort: `neededBytes`
 is always a worst-case upper bound, so evicting everything resident and
@@ -1338,475 +1317,83 @@ this cleanly.
 
 ---
 
-## 16. State and open questions
+## 16. Known gaps and follow-ups
 
-**On the `prototype/` citations below.** `jit-armv6m/prototype` (the TS
-translation algorithm this section originally cross-checked against, and
-that most items below narrate finding/fixing bugs in first) has been
-retired — deleted once `jit-armv6m/compiler` reached full feature parity, per
-this doc's own top-of-file status line. Every `prototype/src/*.ts`,
-`prototype/test/*.test.ts`, `program.ts`/`programAbi.ts` (the whole-program
-drivers), and mock-translator (`compile_proc.cpp`) reference below is
-historical: it records how that item was originally found, fixed, or
-verified back when both implementations existed side by side, not a
-currently-navigable path. Left as-is rather than mechanically repointed,
-since in most items the file-pointer and the historical claim ("verified
-identically on both implementations," "TDD: red test failed with the
-predicted wrong value before the fix") are the same sentence — rewriting the
-pointer away would erase the record of what was actually verified. The five
-files that *did* survive, relocated rather than deleted, are
-`jit-armv6m/runtime/{runtime.S,runtime_host.{cpp,h},runtime_internal.h,
-semihosting.cpp}` — the real dispatch/eviction runtime, formerly at
-`prototype/qemu/`.
-
-**Verified on real `qemu-system-arm`** (`prototype/test/`, historical — see
-above): the §6 shuffle including a phase-misaligned window with
-non-argument locals resident alongside the args (`call.test.ts`),
-`stackArgs ≥ WINDOW_SIZE` (`deep-args.test.ts`), §10.1's rotation-eviction
-corner (`rotation.test.ts`), `BR_TABLE N>2` including the `lr` Thumb-bit trap
-(`br-table.test.ts`), the §9 dispatch ABI end to end (`abi-dispatch.test.ts`),
-eviction and compaction (`eviction.test.ts`), and both §2 entry variants
-(`enter-program-variants.test.ts`) — all since re-verified directly against
-`test/host`/`test/qemu`, which now cover the native port's
-full instruction set (`LOOP`/`BR_TABLE`/unary ops/comparisons included, `EXT`
-excluded on both sides by design), including eviction/compaction and both
-`RESOURCE_ERROR` sides against genuinely native-compiled code on real QEMU
-(items 17/18 below).
-
-**Open:**
-
-1. ~~`validateProgram` exposes no max-call-depth figure~~ — **done**:
-   `ProgramStats.maxCallDepth`, one memoized DFS alongside `totalDepth`
-   (`validate.ts`'s `depthsOf`). Still not wired into replacing the
-   caller-supplied parameter at `enter_program_on_stack`/`_split` (§1) call
-   sites — that's real static data available now, just not consumed yet.
-2. ~~The acc-clobbering convention is declared, not enforced~~ — **done**:
-   `validate.ts`'s `walk` now threads `accLive` alongside `tos` (`BR_TABLE`
-   siblings reconciled by AND; `LOOP`'s own back-edge is a documented,
-   accepted gap — see its doc comment), and `vm.ts`'s `runProc` now poisons
-   `acc` after `REG_REG`/`PEEK_PEEK`, matching `raise.ts`. TDD: red tests in
-   `validate.test.ts`/`vm.test.ts` first.
-3. ~~`LOOP`'s back-edge is a control-flow merge and hadn't been audited for
-   the case-boundary-flush hazard~~ — **done**: `openLoop`/`closeBlockEnd`'s
-   `loopBody` branch both now call `accState.flushLive` before the
-   condition sub-block's first instruction can run, on both the
-   fall-through and the back-edge. TDD: `loop-merge.test.ts`'s red test
-   (compiled-once condition ignoring what the body actually left pending)
-   failed with the predicted wrong value (5 instead of 1) before the fix.
-4. ~~§10.1's consumer-class table is reasoned per op by hand, not derived
-   mechanically~~ — **done**: cross-checked cell by cell against
-   `binops.cpp`/`.ts`, `unaryops.cpp`/`.ts`, `blocks.cpp`/`.ts` and their
-   `translate_proc`/`translateProc` call sites on both sides (native and
-   prototype agree exactly — no row was ported incompletely). Found two
-   genuine transcription errors, now fixed in the table above: comparisons
-   *do* fold into a following `STORE` when not branch-fused (the table
-   said "no"), and `NEG`/`NOT` never fold a pending register operand in
-   either implementation despite the ISA allowing it (the table said
-   `Reg`) — both dispatchers flush unconditionally, by deliberate,
-   identically-worded choice on both sides, not an oversight. Chasing the
-   cross-check down further surfaced a real, previously-undetected
-   correctness bug one layer over from the table itself — not a
-   misclassified cell, but a merge-point gap in the fusion mechanism the
-   table describes — fixed on both sides with regression tests at every
-   level; see this section's own new bullet above ("A fused branch's
-   *opening* is a merge point too...") for the mechanism and the fix.
-5. ~~Pass 2's branch-range fixup is unimplemented~~ (§10.2) — **done**, no
-   Pass 2 needed: `blocks.ts`'s `emitGuardedBranch` bounds the guarded span
-5. ~~Pass 2's branch-range fixup is unimplemented~~ (§10.2) — **done**, no
-   Pass 2 needed: `blocks.ts`'s `emitGuardedBranch` bounds the guarded span
-   *before* emitting (a cheap, deliberately loose per-opcode over-estimate,
-   `maxSpanBytes`), using a bare `condBranch` only when that's proven safe
-   and the invert-and-long-branch idiom otherwise. `branch-range.test.ts`
-   forces the long form at both call sites (`openBrTable`, the loop-exit)
-   on real QEMU.
-6. ~~Block-nesting `Frame` stack isn't fixed-size~~ — **done**: fixup
-   arrays became a cursor + backpatch chain, and `BlockStack`/`Frame[]`
-   itself was replaced by recursion (blocks.ts/translateProc.ts).
-7. ~~Thumb-bit hygiene on every dispatch-table `code_ptr`~~ — **done**:
-   `runtime_internal.h`'s `Runtime` now funnels every write through
-   `setCodePtr`/`slideCodePtr` (private static helpers, unconditionally
-   OR-ing in bit 0), so no call site has to reason case by case about
-   whether a given value already carries it; `runtime.S`'s one hand-written
-   assembly site (`.Lresume+1`, not `.thumb_func`-taggable) now cross-
-   references the same convention in its own comment. Verified against both
-   the prototype's own QEMU suite and the native compiler's (host + QEMU,
-   all 7 fixtures matching exactly).
-8. ~~The native compiler covers a straight-line slice only~~ — **done for
-   the prototype**: `unaryops.ts` implements `NEG`/`NOT` (single native
-   instructions) and `CLZ`/`REVBITS` (per-procedure software helpers,
-   reached by a local `BL`, `emitBrTableHelper`'s own precedent — ARMv6-M
-   has neither instruction natively); `blocks.ts`'s `materializeComparison`
-   makes a comparison usable as an ordinary value, not just a branch
-   condition, gated by a one-token lookahead so existing branch-fusion is
-   unaffected. `BLOCK_END`/`LOOP`/`BR_TABLE` stayed deliberately out of the
-   native compiler's scope at the time (items 17/18 tracked that
-   separately) — **since done**: native picked up the full instruction set
-   too (`compiler/src/blocks.cpp`/`unaryops.cpp`), see items 17/18.
-   `EXT` still throws, untouched, on both sides, by design.
-9. ~~`r9`'s callee-saved treatment is a build convention to pin down~~ (§2)
-   — **done**: AAPCS designates `r9` a platform-defined register (SB/TR)
-   only when the platform needs that role; `arm-none-eabi`'s bare-metal
-   environment assigns it none, so it's plain `v6` (an ordinary
-   callee-saved register) and the JIT's use of it needs no special
-   handling.
-10. ~~Item-number drift. Several code comments cite a "§16 item N" whose content has since moved~~ 
-    — **done**: swept `call.test.ts`/
-    `abi-dispatch.test.ts`/`emit.ts`/`blocks.ts`/`translateProc.ts`/
-    `rotation.test.ts`/`window.ts`. Most had drifted onto a concern that's
-    since been fully resolved (§6's shuffle proven end to end on QEMU, the
-    rotation-eviction hazard closed) rather than just mis-numbered, so
-    those got reworded past-tense instead of repointed; `emit.ts`/
-    `blocks.ts`'s Pass-2/branch-target citation genuinely mapped onto a
-    still-open item and now cites it correctly (item 5). Item 8's own
-    cross-reference (`jit-armv6m/README.md`) already lined up, untouched.
-11. ~~`binops.ts`/`compiler/binops.cpp` share a gap: `PEEK_PEEK` for a
-    two-op-in-place op is unimplemented on both sides~~ — **done**: `dest`
-    itself as the right-hand operand, the same idiom `emitAddSubRsub`
-    already used for `PEEK_PEEK` ADD/SUB/RSUB — one line, no new native
-    form needed. Landed prototype-first as recorded here originally;
-    `compiler/binops.cpp` has since picked up the identical one-liner
-    (`emitBinaryOp`'s `TwoOpInPlace` branch, citing this item in its own
-    comment) once the native port caught up to the full instruction set
-    (§16's own top summary/items 17-18).
-12. ~~§10.1's immediate-side mirror-table optimization isn't implemented~~
-    — **done**: `blocks.ts`'s `emitComparison`, a `MIRRORED_CONDITION`
-    table alongside `DIRECT_CONDITION` (comparison-fusion.test.ts,
-    including a signed/unsigned-boundary case on real QEMU).
-13. ~~§6's "last argument as a fold" optimization~~ / ~~14's deferred
-    ISA-level version~~ (merged, one JIT-level fix) — **done**:
-    `translateProc.ts`'s callee prologue now stays a pending producer
-    instead of unconditionally flushing whenever a whole-body reference
-    count *proves* it's safe (zero references, or exactly one and it's
-    `body[0]`'s own `LOAD`) — 14's goal ("stops being paid regardless of
-    whether it's ever read") achieved at the JIT level per 13, no lowering
-    change needed. `last-arg-fold.test.ts` checks both correctness and a
-    real code-size reduction on real QEMU.
-15. ~~The procedure directory... but nothing consumes it yet~~ — **done**:
-    `program.ts`/`programAbi.ts` (the two real whole-program drivers) now
-    build the directory once (`encodeProgram` + `buildProcDirectory`) and
-    hand each procedure's `savesLR` to both `noEvictionStrategy`/
-    `abiRealStrategy` and `translateProc` itself, which use it in place of
-    their own `RtlInstr[]` scan whenever supplied (`needsLRSave`'s new
-    `override` parameter) — every direct unit-test call, with no directory
-    at hand, keeps falling back to the scan unchanged. `bytecodeReader.ts`
-    gained a `Unary` `InstrKind` (`imm = code - 90`) so the skip-pass can
-    tell `CLZ`/`REVBITS` (software helpers, `savesLR`-triggering) apart
-    from `NEG`/`NOT` (single instructions, not). `EXT` still throws on both
-    sides, by design (item 8). The whole-program procedure-directory
-    concept itself has no native equivalent — `compiler/` currently gets its
-    per-procedure `argCount`s through a plain array parameter
-    (`compile_proc_real.cpp`'s `calleeArgCounts`, fixtures-supplied) rather
-    than a built-once directory; with the TS reference retired, a native
-    directory (if one turns out to be needed as the compiler grows a real
-    whole-program driver) would be designed fresh rather than ported.
-16. ~~The bigger migration this sets up for is still ahead~~ — **done for
-    the prototype**: `bytecodeReader.ts` gained `decodeInstr` (`RtlInstr`'s
-    shape minus `EXT`'s generic payload — nothing here needs it, since
-    `EXT` already only ever throws), and `translateProc.ts`'s main loop
-    now decodes one instruction at a time from `encodeBody(proc.body)`'s
-    raw bytes — `pc` is a byte offset advanced by each instruction's own
-    decoded `.next`, never a fixed `+1`/`+2` array-index step. `blocks.ts`'s
-    `maxSpanBytes`/`openBrTable`/`closeBlockEnd` (item 5's span bounding)
-    moved to the same byte stream, since they walk the same body. No
-    caller-visible signature changed — `program.ts`/every test file still
-    hands `translateProc` an `RtlProc`, encoded internally, right where the
-    old code took a `body: RtlInstr[]` and stopped indexing it. All 147
-    existing tests (every one on real QEMU) passed unmodified after the
-    rewrite — the prototype's own "surfaces an inconsistency cheaply" bet
-    (formerly this section's workflow note) paid off with none found.
-    **Since done on the native side too**: `compiler/src/translate_proc.cpp`
-    decodes from the same kind of raw byte stream throughout
-    (`decode_instr.h`'s `decodeInstr`), never a pre-decoded array — there
-    was no separate "native port" step needed for this one, since native
-    was written this way from the start rather than retrofitted.
-17. ~~Eviction/compaction is untested against genuinely native-compiled
-    code on real QEMU~~ — **done**: `test/qemu/main.cpp` measures
-    each fixture procedure's real compiled size once (via a throwaway
-    `translateProc` call) purely to size an undersized arena, then drives
-    the exercise through the ordinary lazy `enterProgramSplit`/`compileProc`
-    path, reading each procedure's own metadata from the real program
-    bytes (item 22's `ProcSlot` directory) rather than any fixture-only
-    side channel — `testEvictionThreeDeepCallChain`,
-    `testEvictionCallerAndCalleeNeverCoresident`, and
-    `testResourceErrorSingleProcedureLargerThanArena` (code-area side) sit
-    alongside `testOnStackRejectsBeforeTouchingAnything` (stack side), so
-    both `RESOURCE_ERROR` triggers are proven against real native-compiled
-    code, not the mock/TS-generated path.
-18. ~~Once `LOOP`/`BR_TABLE` reach the native compiler, redo the
-    block-nesting-as-recursion call there too~~ — **done**:
-    `compiler/src/translate_proc.cpp`'s `translateBody` recurses per
-    open `LOOP`/`BR_TABLE`, each with its own stack-local `Frame`
-    (`blocks.h`/`blocks.cpp`), the same recursion-not-array design item 6
-    settled on the prototype side — no heap, no fixed-depth array, just
-    the C call stack.
-19. ~~`requiredStackBytes` still budgets for the retired mock translator~~
-    — **done**: `MOCK_TRANSLATOR_ENTRY_WORST_CASE_BYTES` (92 bytes,
-    unconditionally added regardless of which translator was linked in —
-    a real gap even before the prototype's own mock translator was
-    deleted, since native's `compile_proc_real.cpp` was already the only
-    translator this figure ever needed to cover) is replaced by
-    `TRANSLATOR_ENTRY_WORST_CASE_BYTES` (324 bytes: `translator_trampoline`
-    +`REALIGN_ENTER` (24) + `compileProc`'s own frame (104) +
-    `translateProc`'s own frame (176, `Ctx` included — item 21's site-list
-    arrays no longer part of it) + `memcpy` (20), each measured via
-    `-fstack-usage`/`objdump`, not guessed). Deliberately covers only the
-    *fixed*, one-time cost up to `translateBody`'s own first call, never
-    the recursion itself — that's item 20's own live check's job now, not
-    a bigger static sum. Build-time enforcement (a per-file `-Wstack-
-    usage=`/`-Werror=stack-usage=` pin, matching the now-retired mock
-    translator's own analogous rule) is a reasonable follow-up, not done
-    here — the fixed value itself is the correctness fix; automatically
-    catching future drift in it is a separate, lower-stakes concern.
-20. ~~`MAX_BLOCK_NESTING = 32` is a flat, arbitrary constant~~, carried
-    unchanged from the prototype, where nesting depth should instead be
-    policed *live* against however much stack margin actually remains
-    (§2's "The translator's own exception" — "a real translator replaces
-    this constant with the live accounting above, not a bigger constant")
-    — **done**: `translateBody` (`compiler/src/translate_proc.cpp`) reads
-    the real stack pointer on every recursive call and bails into
-    `TranslateResult::overflowed` the moment it (minus
-    `TRANSLATE_BODY_STACK_MARGIN`'s own conservative per-level allowance)
-    would reach or pass `stackFloor` — a new `translateProc` parameter,
-    threaded from `Runtime::liveStackFloor()` (`jit-armv6m/runtime/
-    runtime_internal.h`), read fresh by `compileProc` every call rather
-    than cached, since it tracks `arenaCursor` for `enter_program_on_
-    stack` specifically (`arenaOverlapsStack`, a new `Runtime` field —
-    that variant's own code arena genuinely shares address space with the
-    C stack the recursion also runs on, "anchored at `stackLimit` itself
-    and grows up from there," so its live floor is `max(stackLimit,
-    arenaCursor)`; the other two entry points have no such overlap, so
-    theirs is just `stackLimit` — a real, caller-supplied bound for
-    `enter_program_on_stack`/`_split`, or a new, deliberately generous
-    internal one (`GENEROUS_TRANSLATOR_STACK_MARGIN`, since it has no
-    caller-supplied figure to work from) for plain `enter_program`, which
-    had no stack protection at all before this. `depth` itself (the old
-    counter) is gone — nothing needs it once the check is genuinely live.
-    Host-level regression: `test_translate_proc.cpp`'s
-    `DeeplyNestedButWellFormedBlocksSucceedWithNoStackFloor` (50 levels,
-    deliberately past the old fixed cap, succeeds under the default "no
-    limit") and `BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable`
-    (a floor pinned at the current `sp`, failing immediately regardless of
-    depth — avoids calibrating an exact per-level byte count against this
-    host build's own `-O0`, which wouldn't transfer to the real target's
-    `-Os` anyway) replace the old test's "just nest 40 loops past the
-    fixed cap" mechanism, which stopped being meaningful once there's no
-    fixed cap to exceed.
-21. ~~`CLZ`/`REVBITS`/`BR_TABLE(N>2)`'s dispatch helper are emitted fresh
-    into every procedure's own arena code~~ — **done**: all three now live
-    once, flash-resident, in `jit-armv6m/runtime/runtime.S`
-    (`clzHelper`/`revbitsHelper`/`brTableJumpHelper`, §11's reserved slots
-    4-6 in `g_helperVec`), reached by the same `MOV r3,r10 / LDR r3,[r3,
-    #idx*4] / BLX r3` idiom `abi_strategy.cpp` already used for slots 0-3
-    — `BLX` even for `brTableJumpHelper`'s own tail-jump, since the call
-    site's own jump table sits immediately after that `BLX` and the
-    routine locates it through `lr`, exactly as it did through the old
-    local `BL`'s own `lr` side effect. `compiler/src/unaryops.{h,cpp}`'s
-    `UnaryHelperSites`/`kMaxUnaryHelperSites` and
-    `translate_proc.cpp`'s `brTableHelperSites`/`kMaxBrTableHelperSites`
-    (the fixed-size site-list caps this item's own investigation found
-    silently unenforced under `-DNDEBUG` on the real hardware build) are
-    deleted outright, along with `blocks.cpp`'s own now-redundant
-    `emitBrTableHelper` and `unaryops.cpp`'s `emitClzHelper`/
-    `emitRevbitsHelper` — nothing left to track or backpatch once every
-    call site reaches a fixed, permanently-known vector slot. Every
-    procedure's own emitted code shrank as a direct result (no more
-    trailing helper-routine copies per procedure that used one); confirmed
-    via `objdump` and the native QEMU suite's own `.text` size dropping
-    accordingly, with the same fixtures (CLZ/REVBITS/BR_TABLE N>2) still
-    producing identical values end to end.
-22. ~~`FlashProc`/`enter_program`'s real production input path was
-    write-only: `Runtime::flashProcs` was assigned in `init()` and read
-    nowhere, `enter_program`/`_on_stack`/`_split` had never had a real
-    caller anywhere in this repo, and `compile_proc_real.cpp` (despite its
-    own name) read exclusively from a fixture-only global
-    (`realProcs`/`test/qemu/fixtures.cpp`) that bypassed the wire format
-    entirely — a stand-in for a subsystem that had never actually been
-    built, not a simplified version of one that existed. Compounding it,
-    `compile_proc_real.cpp` translated into a private static scratch
-    buffer and `memcpy`'d the result into the arena afterward, contradicting
-    §2/§11's own description of the emitter writing directly into the arena
-    with eviction able to trigger mid-translation~~ — **done**, in three
-    parts:
-    - **The wire envelope** (§1): `packages/machine/src/bytecode.ts` gained
-      `encodeJitProgram`/`decodeJitProgram`, prepending
-      `max_call_depth`/`total_depth` to an ordinary `encodeProgram` blob —
-      isa-core.md's own extension point for exactly this. Porting the
-      boundary-finding side of this (`decodeProcBody`) surfaced a genuine,
-      previously-unnoticed bug in it, unrelated to this item's own scope
-      but blocking the native port below: a `BR_TABLE` case closed via a
-      bare `RETURN`/`TRAP` (legal per §8.5, and exactly what
-      `blocks.cpp`'s `closeCaseViaTerminator` produces) never decremented
-      the case frame's own `remaining` counter, so a non-last case using
-      that shape silently corrupted the boundary-finding for everything
-      after it. Fixed with regression tests
-      (`packages/machine/test/bytecode.test.ts`) before porting the
-      algorithm natively, so the port wouldn't inherit it.
-    - **The merged procedure directory** (§9): `DispatchEntry` → `ProcSlot`
-      (above). `jitc::scanProcBody` (`compiler/src/proc_scan.{h,cpp}`,
-      genuinely new code, not a move) ports `decodeProcBody`'s
-      boundary-finding as native recursion — one call per open
-      `LOOP`/`BR_TABLE`, mirroring `translate_proc.cpp`'s own
-      `translateBody` shape — rather than an explicit frame-stack array,
-      checked live against a stack floor for the identical reason
-      `translateBody` already is. `Runtime::init()` walks the whole
-      program once, building every slot's static half; `enter_program`'s
-      own three variants take one `(programBytes, programSize)` pointer
-      pair instead of a `FlashProc` array plus separately-supplied
-      `procCount`/`operandStackBytes`/`maxCallDepth` (§1's own updated
-      signatures) — nothing here can drift out of sync with what the
-      wire bytes actually contain, because there is no second copy of any
-      of it to drift.
-    - **Direct-arena compilation** (§11, above): the scratch buffer and
-      final `memcpy` are gone.
-    - Also retired: `test/qemu/fixtures.cpp`'s hand-populated `Proc`
-      arrays, replaced by real encoded programs (`compiler/src/
-      encode_instr.h`'s new `ProcSource`/`encodeProgram`/`encodeJitProgram`
-      — a native-side mirror of the TS encoder, since fixtures need to
-      produce real wire bytes without a `ts-node` round trip). Doing this
-      surfaced a second, independent bug — `Fixture fixtures[] = {...}`'s
-      own static initializer captured each program's `bytes`/`size` *by
-      value* at static-init time, before `initFixtures()` (a `main()`-time
-      function call) had ever run to fill them in, so every fixture
-      silently got a null pointer and a size of 0. Fixed by capturing each
-      program's own fixed address (`&f1Prog`, valid immediately, exactly
-      the trick the old `Proc*`-based scheme relied on without stating it)
-      and reading through it later, instead of copying the two fields out
-      by value. `test/host`'s 162 tests and `test/qemu`'s 9 all pass
-      against the final shape, including a `RuntimeArenaRoom` unit test
-      (host) and the existing eviction/`RESOURCE_ERROR` scenarios
-      (QEMU) — none needed new content, just adapting to the new call
-      shapes, since nothing about *what* they exercise changed.
-23. **The compiler/runtime boundary had no real seam** — `ArenaRoom`
-    (`compiler/src/arena_room.h`) was a one-method interface with exactly
-    one implementor, existing only to hide a `Runtime` the host build
-    already instantiated directly (`test_runtime_arena.cpp`); the literal
-    pool lived in `translate_proc.cpp`'s own `Ctx` while the primitives it
-    drove sat in `Emitter`; pool debt was threaded by hand through three
-    `blocks.h` signatures; and because the pool recovered each word by
-    *re-decoding bytecode* at flush time, it needed a scan of its own
-    output, which is what forced a flush before every `BR_TABLE(N>2)`
-    jump table and blocked `abi_strategy.cpp`'s call record from pooling
-    at all (a record is not any instruction's own immediate, so it has no
-    bytecode tag to carry) — the same gap that forced `findResumeOffset`'s
-    5-round fixed-point search (§9) to exist. — **done**, in two stages
-    (`docs/assembler-restructuring.md` has the full plan and verification
-    record):
-    - **Stage 1**: `compiler/src/emitter.h` → `assembler.{h,cpp}`. One
-      `Assembler` (two constructors, detached/attached) now owns the
-      buffer, branch fixups (a new `Label`/`bind()` that generalizes the
-      pre-existing `endFixupChain` self-linking trick — resolving a
-      forward fixup always flushes the pool *first*, so a label's target
-      can never land on top of pool words a flush inserts), the literal
-      pool (rewritten to track stored `(site, value)` pairs instead of a
-      bytecode tag — no output scan, so the forced flush before
-      `BR_TABLE(N>2)`'s jump table is gone entirely), immediate-scheme
-      selection (`materializeImm32`, reachable everywhere now, closing
-      `shape.cpp`'s own `AccState::flush` blind spot), and — when
-      attached to a real `Runtime` — arena eviction/compaction and final
-      dispatch-table registration. `abi_strategy.cpp`'s call record is
-      now force-pooled (`materializeImm32Pooled`): a pooled site is always
-      exactly one halfword regardless of value, which makes the whole
-      call sequence's own length a compile-time constant and deletes
-      `findResumeOffset`'s fixed-point search outright. An attached
-      `Assembler` that cannot free enough room exits directly
-      (`Assembler::fail()` → `runtimeBail`) instead of latching a flag for
-      a caller to check later.
-
-      Two real bugs surfaced and were fixed while landing this, not just
-      documented: `growForAttached`'s eviction loop originally failed
-      immediately whenever it couldn't fully satisfy a *worst-case*
-      reservation, contradicting this codebase's own stated philosophy
-      that such reservations are loose over-estimates — this broke real
-      eviction on QEMU until fixed to evict-best-effort-then-stop, leaving
-      the genuine failure trigger at `emit()`'s own bounds check
-      (root-caused on the host first, via a throwaway probe using
-      `mmap(MAP_32BIT)` so a real `Runtime` and real `evict()` survive
-      `uint32_t` address truncation on a 64-bit host); and eviction now
-      compares against `Runtime::reserveFor`'s padded size, not the raw
-      byte count, closing the `allocate()`-overruns-`arenaEnd` gap
-      `reserveFor`'s own comment already warned about but nothing
-      enforced. `-ffixed-r8/r9/r10/r11` — asserted in comments here and in
-      `runtime.S` but absent from every Makefile — is now actually passed
-      to the QEMU build.
-    - **Stage 2**: purely structural. `runtime_host.cpp` split into
-      `enter_program.cpp` (layer 1: the three entry points,
-      `parseProgramHeader`, `requiredStackBytes`, `stackHasRoom`,
-      including a new `enterProgramWithHeader` collapsing what had been
-      three copies of the `runtimeStorage` VLA + `enterProgramCore` call)
-      and `dispatch_abi.{h,cpp}` (layer 2: the helper vector,
-      `trampolineAddr`, the ABI's own fixed-cost constants,
-      `runtimeBail`'s target definition, moved out of `compile_proc.cpp`
-      — renamed from `compile_proc_real.cpp`, the "real" qualifier having
-      distinguished it from a mock retired by item 22). Every stale file
-      reference (comments, `README.md`) swept to match.
-
-    `TRANSLATOR_ENTRY_WORST_CASE_BYTES` re-measured via `-fstack-usage`
-    against the new call chain, not guessed: 488, up from 400 —
-    `compileProc`'s own frame grew (it now holds the `Assembler` object
-    as a local, not a separate `RuntimeArenaRoom`), and the deeper of two
-    pre-`translateBody` chains is now the last-argument-fold scan's own
-    eager-flush path, not the prologue's own arena-growth call.
-    `test/host`'s 168 tests and `test/qemu`'s 9 both pass against the
-    final shape.
-24. **Three loose ends flagged (not fixed) by item 23** — **done**:
-    - `Runtime::arenaBase` was write-only (set in `init()`, read nowhere)
-      — deleted. `RUNTIME_DISPATCH_TABLE_OFFSET` drops from 44 to 40
-      accordingly; the `static_assert` pairing it against `Runtime`'s real
-      layout (`runtime_internal.h`) is what would have caught a
-      hand-arithmetic mistake here.
-    - Plain `enterProgram()` — no `stackLimit`, a fixed 512-byte `static`
-      arena baked into `enter_program.cpp`, a blind
-      `GENEROUS_TRANSLATOR_STACK_MARGIN` instead of a real budget check —
-      was an arbitrary special case among the three entry points item 23's
-      Stage 2 bullet still describes as three: deleted outright, along
-      with the constant and the array. A caller that wants a plain global
-      arena now declares one itself and calls `enterProgramSplit` — one
-      line, the same pattern `test/qemu/main.cpp`'s own
-      `SplitThreeDeepCallChainSucceeds` already used. `enter_program.cpp`
-      now has two entry points, not three; `test/qemu/main.cpp`'s fixture
-      loop and eviction/`RESOURCE_ERROR` scenarios (previously the four
-      heaviest `enterProgram()` callers) moved to a single
-      file-local `enterProgramWithSharedArena` helper wrapping
-      `enterProgramSplit` against one shared `static` buffer, the same
-      shape the deleted function had internally, just no longer hidden
-      inside the runtime.
-    - `abi_strategy.cpp`'s `abiEmitReturn` had a hand-written
-      `fitsImm8`-then-`MOVS`-else-`materializeImm32` branch at its deep-args
-      reclaim-byte-count site, duplicating logic `materializeImm32` already
-      performs internally (`imm32SynthCost` returns 1 for anything that
-      fits imm8, so `Assembler` already emits the same single `MOVS`) —
-      collapsed to one unconditional call.
-25. **`materializeImm32`'s own synthesis scheme reworked** (independent of
-    item 23/24, done directly against `assembler.{h,cpp}`) — the
-    byte-by-byte MSB-first decomposition (`emitSynthesizeImm32Into`,
-    up to 7 halfwords) and its `isPoolingEligible`/`POOLING_MIN_LENGTH`
-    cost-threshold gate are gone, replaced by three fixed 1-2-instruction
-    shapes tried in order — direct imm8 (`MOVS`), bitwise-NOT-of-imm8
-    (`MOVS`+`MVNS`), or an imm8 pattern shifted into place (`MOVS`+`LSLS`)
-    — falling back to the pool only outside all three;
-    `materializeImm32Pooled` folded into `materializeImm32` itself via an
-    `allowTwoIsnSeq` flag (`abiEmitCall`'s two operands pass `false`,
-    guaranteeing exactly one halfword either way — the same
-    compile-time-constant-length property item 23 achieved by force-
-    pooling, reached here by construction instead). Values that
-    previously synthesized cheaply but fit none of the three shapes (an
-    `0x1234`-style scattered-bit pattern) now pool instead — a real
-    density/pool-pressure tradeoff, not obviously a regression given how
-    much cheaper the shift/NOT shapes are for what they do cover.
-    `test_blocks.cpp`/`test_binops.cpp`/`test_translate_proc.cpp`/
-    `test_assembler.cpp`'s hand-derived expectations re-derived to match
-    (verified against actual emitted bytes, not re-guessed).
-
-    Flagged, not fixed here: `dispatch_abi.h`'s
-    `TRANSLATOR_ENTRY_WORST_CASE_BYTES` derivation cited the deleted
-    `emitSynthesizeImm32Into`'s own stack frame as part of its "second
-    chain" (96 bytes) — and tracing that chain closely turned up a deeper
-    problem than a stale function name: the call site it was anchored on
-    (`translate_proc.cpp`'s last-argument-fold `accState.flush`, right
-    before `translateBody`'s first call) never actually reaches
-    `materializeImm32` at all — `accState` is freshly constructed
-    (`Kind::Clean`) and every `producer()` call reaching that point sets
-    `Shape::ofReg(ACC_REG)`, never a pending immediate. The 488 total is
-    left in place as the last known-good number rather than replaced with
-    an unverified guess; `dispatch_abi.h`'s own comment now flags it and
-    records what a correct re-derivation needs to establish.
+- `ProgramStats.maxCallDepth` (`validate.ts`'s `depthsOf`) isn't wired into
+  replacing the caller-supplied depth parameter at `enter_program_on_stack`/
+  `_split` (§1) call sites yet — real static data available, just not
+  consumed there.
+- No build-time enforcement (e.g. a per-file `-Wstack-usage=`/
+  `-Werror=stack-usage=` pin) catches future drift in
+  `TRANSLATOR_ENTRY_WORST_CASE_BYTES` — the fixed value itself is correct,
+  automatic drift detection is a follow-up.
+- `TRANSLATOR_ENTRY_WORST_CASE_BYTES`'s 488 total has two stale components,
+  both flagged in `dispatch_abi.h`'s own comment: its "second chain" was
+  anchored on a call site (`translate_proc.cpp`'s last-argument-fold
+  `accState.flush`) that turns out to never actually reach
+  `materializeImm32` at all; and its "24" first term attributes
+  `translatorTrampoline`'s entry push to `push{r0,r1,r2}`, but
+  `runtime.S:196` actually pushes `{r0,r1,r2,lr}` (16 bytes, not 12) —
+  potentially under-reserving by up to 4 bytes depending on
+  `REALIGN_ENTER`'s own worst case. Left as the last known-good number
+  rather than an unverified guess; a correct re-derivation is still owed.
+- `runtime/compile_proc.cpp`'s `calleeArgCounts` VLA is dead — built (a
+  dense per-procedure copy, one loop reading every `ProcSlot.argCount()`)
+  but never read: `translateProc` takes `const Runtime&` and reads
+  `r.slot(instr.calleeIndex).argCount()` directly wherever it needs a
+  callee's argCount (`translate_proc.cpp:133`). Deleting it removes a
+  `procCount`-sized VLA from the tightest stack in the system, the loop
+  that fills it, and lets `CALLEE_ARG_COUNTS_BYTES_PER_PROC` come out of
+  `requiredStackBytes`/`dispatch_abi.h` entirely.
+- `translateBody`'s live stack-nesting guard (`translate_proc.cpp`) only
+  ever runs once, at recursion depth 0 — the real recursion
+  (`translateLoop`/`translateIfThen`/`translateIfThenElse`/`translateSwitch`
+  → `processUntilTerminator` → `processNonTerminators`, back into those)
+  never re-enters `translateBody`, so nothing checks the stack floor at
+  deeper levels, while `proc_scan.cpp`'s own nesting walk does check at
+  every level with a much smaller margin — `Runtime::init` can accept a
+  nesting depth that then silently blows the stack during compilation, on
+  a target where that stack holds the operand stack, the dispatch table,
+  and (under `enterProgramOnStack`) the arena itself. `blocks.cpp`'s
+  `maxSpanBytes` recurses over the same nesting with no guard at all, at
+  the deepest point. The check needs to move to where the recursion
+  actually is.
+- `CALL`'s callee index (`translate_proc.cpp`, `abi_strategy.cpp`) is never
+  bounds-checked against `procCount` before reaching `Runtime::slot` or
+  being baked into emitted code — `runtime.S`'s `callHelper` computes
+  `slotAddr = r8 + idx*16` and jumps to whatever it finds there, relying
+  entirely on `validateProgram` catching a bad index upstream. Related:
+  `stackArgs > window.tos` underflows `window.tos - stackArgs`, reaching
+  `windowRuns` with a huge count and writing past `RegRun::regs`
+  (`window.cpp`) — a stack buffer overflow inside the compiler itself. One
+  bounds check against `procCount` converts an arbitrary jump into a clean
+  `RESOURCE_ERROR`.
+- `decodeLeb128` (`decode_instr.cpp`) has no length bound — its `pos`/
+  `shift` guards are both debug-only asserts, compiled out in the real
+  build. A malformed trailing continuation byte walks off the program
+  buffer; `shift >= 32` is UB. Reached on untrusted wire bytes from
+  `Runtime::init` onward. Related: `processUntilTerminator`'s own
+  `assert(false); for(;;);` fallback becomes an infinite loop under
+  `-DNDEBUG` when the byte stream runs out mid-block instead of at a
+  proper close.
+- `procCount == 0` dispatches into `slots[1]`, one past what
+  `storageBytesFor(0)` allocates (only the sentinel, `slots[0]`) —
+  `Runtime::slot(idx)` returns `slots[idx+1]` unconditionally, and nothing
+  in `enter_program`'s path rejects `procCount == 0`.
+- `fusesIntoBrTable` (`translate_proc.cpp`) uses `imm <= 2`, which admits
+  `N == 0` or a negative `N` from a large LEB128 — those route to
+  `translateSwitch`, whose `assert(hasPendingComparisonCondition == false)`
+  silently leaks a pending fusion into the next construct under
+  `-DNDEBUG`. Should be `imm == 1 || imm == 2`.
+- `proc_scan.cpp`'s `instr.imm > 2` is a signed compare on `imm`
+  (`int32_t`), disagreeing with `translate_proc.cpp`'s own `switch` for
+  `N >= 2^31`: `needsLRSave` stays false while `translateSwitch` runs
+  anyway (a negative `imm` implicitly converts to a huge `uint32_t n`),
+  destroying the `lr`-borne call record.
+- `inWindow(tos, k)` (`window.cpp`) is `tos - k <= WINDOW_SIZE`, which
+  admits `k == tos` — one past the legal `k < tos` (isa-core.md §8.6).
+- Three unresolved `XXX` questions in `Assembler`'s pool logic
+  (`assembler.cpp`): whether an unconditional flush is actually necessary,
+  why `flushPoolImpl` is called with `false` at one site, and whether
+  `endOfProcedure` needs to skip the jump-around it currently always
+  takes.

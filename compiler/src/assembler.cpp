@@ -15,8 +15,7 @@ static constexpr uint32_t LITERAL_POOL_MAX_REACH = 1020;
 // Headroom the reach check keeps in hand, since it runs *before* an
 // instruction whose own emission then extends the distance to the pool.
 // Must exceed the most any single instruction or block close can emit —
-// blocks.cpp prices CALL at 64 and translate_proc.cpp's own stack-margin
-// comment budgets closeBlockEnd at 80.
+// blocks.h's own CALL_MAX_BYTES prices a call sequence at 64.
 static constexpr uint32_t LITERAL_POOL_REACH_MARGIN = 128;
 
 static uint32_t roundUpToWord(uint32_t v)
@@ -107,7 +106,13 @@ void Assembler::patchBranch(uint32_t siteOffset, uint32_t targetOffset)
     }
     uint16_t isn = buf[idx];
     int32_t delta = (int32_t)targetOffset - (int32_t)(siteOffset + 4);
-    buf[idx] = ArmV6M::isCondBranch(isn)
+    bool cond = ArmV6M::isCondBranch(isn);
+    if(cond ? !ArmV6M::Ioff<1, 8>::isInRange(delta) : !ArmV6M::Ioff<1, 11>::isInRange(delta))
+    {
+        fail();
+        return;
+    }
+    buf[idx] = cond
         ? ArmV6M::setCondBranchOffset(isn, ArmV6M::Ioff<1, 8>((int16_t)delta))
         : ArmV6M::setBranchOffset(isn, ArmV6M::Ioff<1, 11>((int16_t)delta));
 }

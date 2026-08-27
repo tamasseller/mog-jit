@@ -88,11 +88,11 @@ public:
     void fail();
 
     // ── branches ────────────────────────────────────────────────────────
-    // Raw placeholder/patch primitives — blocks.cpp's own Frame bookkeeping
-    // (TableInfo's raw halfword slots, the guard branch site openBrTable
-    // hands back to its caller) still reaches these directly; Label/bind()
-    // below is the flush-safe alternative for a fixup that resolves to
-    // "wherever we are once this construct closes."
+    // Raw placeholder/patch primitives — translate_proc.cpp's own
+    // translateSwitch reaches patchRawHalfword directly for its jump
+    // table's raw slots; Label/bind() below is the flush-safe alternative
+    // for a fixup that resolves to "wherever we are once this construct
+    // closes."
     uint32_t placeholderBranch();
     uint32_t placeholderCondBranch(ArmV6M::Condition c);
     void patchBranch(uint32_t siteOffset, uint32_t targetOffset);

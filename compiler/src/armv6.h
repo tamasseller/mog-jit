@@ -56,7 +56,14 @@ struct ArmV6M
     template<size_t a, size_t n>
     struct Uoff
     {
+        static constexpr auto maxValue = (1 << (n + a)) - 1;
+
         uint16_t v;
+
+        static inline bool isInRange(uint32_t v)
+        {
+            return v <= maxValue;
+        }
 
         inline Uoff() = default;
         inline Uoff(const Uoff&) = default;
@@ -64,7 +71,7 @@ struct ArmV6M
         Uoff(uint16_t v): v(v >> a)
         {
             assert((v & ~(-1 << a)) == 0); // GCOV_EXCL_LINE
-            assert(v < (1 << (n + a)));    // GCOV_EXCL_LINE
+            assert(isInRange(v));          // GCOV_EXCL_LINE
         }
     };
 
@@ -76,7 +83,7 @@ struct ArmV6M
 
         uint16_t v;
 
-        static inline bool isInRange(int16_t v)
+        static inline bool isInRange(int32_t v)
         {
             return minValue <= v && v <= maxValue;
         }
@@ -87,7 +94,7 @@ struct ArmV6M
         Ioff(int16_t v): v((v >> a) & ~(-1 << n))
         {
             assert((v & ~(-1 << a)) == 0); // GCOV_EXCL_LINE
-            assert(isInRange(v >> a));     // GCOV_EXCL_LINE
+            assert(isInRange(v));          // GCOV_EXCL_LINE
         }
     };
 
