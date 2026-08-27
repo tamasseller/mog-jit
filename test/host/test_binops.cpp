@@ -319,16 +319,19 @@ TEST(AddAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
     // SCRATCH_REG itself — exactly what happens when an out-of-window
     // local gets reloaded via ldrSp(SCRATCH_REG, ...) in
     // translate_proc.cpp. Materializing k into SCRATCH_REG right after
-    // would clobber that just-reloaded value, so addOrSubWithImm copies n
-    // out to dest first whenever n == SCRATCH_REG.
+    // would clobber that just-reloaded value, so addOrSubWithImm
+    // materializes k into ENTRY_JUMP_REG instead whenever n == SCRATCH_REG
+    // — a register never live across bytecode instructions, so always
+    // free to borrow, unlike dest (which can itself alias SCRATCH_REG via
+    // the same reload path).
     uint16_t buf[8];
     Assembler e(buf, 8);
     Shape acc = Shape::ofImm(100);
     Shape operand = Shape::ofReg(SCRATCH_REG);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, operand, 0);
     CHECK(e.halfwordCount() == 2);
-    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(100))); // MOVS r2, #100
-    CHECK(buf[1] == ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(2), ArmV6M::LoReg(0))); // ADDS r0, r0, r2  (= reloaded value + 100)
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(3), ArmV6M::Imm<8>(100))); // MOVS r3, #100
+    CHECK(buf[1] == ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(2), ArmV6M::LoReg(3))); // ADDS r0, r2, r3  (= reloaded value + 100)
 }
 
 TEST(SubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
@@ -339,8 +342,8 @@ TEST(SubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
     Shape operand = Shape::ofReg(SCRATCH_REG);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, operand, 0);
     CHECK(e.halfwordCount() == 2);
-    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(100))); // MOVS r2, #100
-    CHECK(buf[1] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(0), ArmV6M::LoReg(2))); // SUBS r0, r2, r0  (= 100 - reloaded value)
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(3), ArmV6M::Imm<8>(100))); // MOVS r3, #100
+    CHECK(buf[1] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(3), ArmV6M::LoReg(2))); // SUBS r0, r3, r2  (= 100 - reloaded value)
 }
 
 TEST(RsubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
@@ -351,8 +354,29 @@ TEST(RsubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
     Shape operand = Shape::ofReg(SCRATCH_REG);
     emitBinaryOp(e, Op::RSUB, Combo::REG_ACC, acc, operand, 0);
     CHECK(e.halfwordCount() == 2);
-    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(50))); // MOVS r2, #50
-    CHECK(buf[1] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(2), ArmV6M::LoReg(0))); // SUBS r0, r0, r2  (= reloaded value - 50)
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(3), ArmV6M::Imm<8>(50))); // MOVS r3, #50
+    CHECK(buf[1] == ArmV6M::subs(ArmV6M::LoReg(0), ArmV6M::LoReg(2), ArmV6M::LoReg(3))); // SUBS r0, r2, r3  (= reloaded value - 50)
+}
+
+TEST(AddAccImmRhsScratchRegDestAlsoScratchRegDoesNotAssert)
+{
+    // The bug this regression-tests: dest can alias SCRATCH_REG too (the
+    // not-in-window REG_REG path in translate_proc.cpp stores its result
+    // back through SCRATCH_REG), and when it does at the same time n ==
+    // SCRATCH_REG, the old "copy n out to dest" trick had no register left
+    // to hold k at all (dest == n == SCRATCH_REG). ENTRY_JUMP_REG sidesteps
+    // this since it's never aliased by dest or n. k = 1000 doesn't fit the
+    // imm8 increment-in-place shortcut (dest == n alone isn't enough to
+    // take that path), so this reaches the materialize-a-temporary branch.
+    uint16_t buf[8];
+    Assembler e(buf, 8);
+    Shape acc = Shape::ofImm(1000);
+    Shape operand = Shape::ofReg(SCRATCH_REG);
+    emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, operand, SCRATCH_REG);
+    CHECK(e.halfwordCount() == 3);
+    CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(3), ArmV6M::Imm<8>(125)));               // MOVS r3, #125
+    CHECK(buf[1] == ArmV6M::lsls(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Imm<5>(3))); // LSLS r3, r3, #3      (r3 = 1000)
+    CHECK(buf[2] == ArmV6M::adds(ArmV6M::LoReg(2), ArmV6M::LoReg(2), ArmV6M::LoReg(3))); // ADDS r2, r2, r3       (= reloaded value + 1000)
 }
 
 TEST(TwoOpInPlaceNativeCoversEveryOpcode)

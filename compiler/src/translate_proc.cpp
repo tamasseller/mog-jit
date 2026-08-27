@@ -458,10 +458,18 @@ static void translateIfThen(Ctx &ctx, Assembler& a, const Runtime& r)
     {
         localJumpCleanup(ctx, a, entryTos);
     }
-    else 
+    else
     {
         handleGlobalJump(ctx, a, term, entryTos);
     }
+
+    // "end" is also reached directly from the guarded branch above, on the
+    // edge that skips the body entirely -- that edge never ran the body,
+    // so code from here on can't rely on whatever the body's own
+    // processing left ctx.accState as. Match globalJumpCleanup's own
+    // convention (a real value ends up in ACC_REG) rather than carrying
+    // over a stale Poisoned/Pending state from a path that wasn't taken.
+    ctx.accState.setClean(ACC_REG);
 
     a.bind(end);
 }
@@ -501,16 +509,32 @@ static void translateIfThenElse(Ctx &ctx, Assembler& a, const Runtime& r)
     {
         ctx.accState.producer(Shape::ofImm(1));
     }
+    else
+    {
+        // "otherwise" is reached exactly when "then" wasn't taken, so acc
+        // still holds whatever testAccNonzero's flush() put in ACC_REG
+        // right before the branch -- not whatever "then"'s own
+        // (not-taken-here) body left ctx.accState as.
+        ctx.accState.setClean(ACC_REG);
+    }
 
     const auto term2 = processUntilTerminator(ctx, a, r, false);
     if(term2.op == Op::BLOCK_END)
     {
         localJumpCleanup(ctx, a, entryTos);
     }
-    else 
+    else
     {
         handleGlobalJump(ctx, a, term2, entryTos);
     }
+
+    // "end" merges two edges -- "then"'s branch (taken when "then" ran and
+    // fell through its own BLOCK_END) and "otherwise"'s fallthrough (taken
+    // when "otherwise" ran) -- each leaving ctx.accState as whatever its
+    // own body did. Code after this construct can't rely on either one in
+    // particular, so land on the same fixed convention every other merge
+    // point in this file uses.
+    ctx.accState.setClean(ACC_REG);
 
     if(end.chain != -1)
     {
@@ -545,6 +569,13 @@ static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n
     {
         a.patchRawHalfword(base + i * 2, (uint16_t)(a.pc() - base));
 
+        // Every case is an alternative continuation from the same dispatch
+        // point (the flush() above the jump table), not a continuation of
+        // the previous case -- reset here so case i doesn't inherit
+        // whatever accState mutation case i-1's own (not-taken-here) body
+        // left behind.
+        ctx.accState.setClean(ACC_REG);
+
         const auto term = processUntilTerminator(ctx, a, r, false);
         if(term.op == Op::BLOCK_END)
         {
@@ -563,6 +594,15 @@ static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n
     }
 
     a.patchRawHalfword(base + n * 2, (uint16_t)(a.pc() - base));
+
+    // "end" merges however many of the n cases branched here (each
+    // leaving ctx.accState as whatever its own body did) plus the
+    // fallthrough from the last case -- code after the switch can't rely
+    // on any one of those, so land on the same fixed convention every
+    // other merge point in this file uses (globalJumpCleanup's
+    // setClean(ACC_REG)) rather than whatever the textually-last case
+    // happened to leave behind.
+    ctx.accState.setClean(ACC_REG);
 
     if(end.chain != -1)
     {
@@ -606,6 +646,14 @@ static void translateLoop(Ctx &ctx, Assembler& a, const Runtime& r)
     }
 
     a.flushPoolNoGuard();
+
+    // "out" is reached directly from the guarded branch above whenever the
+    // loop condition was false -- the body above never ran on that edge,
+    // so acc must reflect a fixed, well-defined state (matching
+    // testAccNonzero's own flush target), not whatever the body's own
+    // processing left ctx.accState as.
+    ctx.accState.setClean(ACC_REG);
+
     a.bind(out);
 }
 

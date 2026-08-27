@@ -144,7 +144,14 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     uint32_t bodyOffset = 0;
     uint32_t argCount = jitc::decodeLeb128(data, 0, bodyOffset); // same bytes the oracle just parsed successfully
 
-    alignas(8) uint8_t storage[Runtime::storageBytesFor(1)] = {};
+    // storageBytesFor(1) isn't a constant expression (Runtime::init()'s own
+    // argument is fixed at 1, but the function itself isn't constexpr) --
+    // g++ tolerates initializing an array sized by it as a GNU VLA
+    // extension, clang doesn't. A fixed, generously-sized buffer sidesteps
+    // the question: it only ever needs to hold one Runtime header plus one
+    // ProcSlot (well under 256 bytes either way), never exactly that size.
+    static_assert(sizeof(Runtime) + 2 * sizeof(ProcSlot) <= 256, "grow this buffer if Runtime/ProcSlot grow");
+    alignas(8) uint8_t storage[256] = {};
     Runtime &rt = *reinterpret_cast<Runtime *>(storage);
     // codeArenaBase/codeArenaSize/stackLimit are dummy values -- this
     // harness never touches arena allocation, only the static per-proc
@@ -182,11 +189,39 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     return 0;
 }
 
+// AFL++'s own persistent-mode entry point (afl-cc/afl-gcc-fast define
+// __AFL_COMPILER; a plain g++/clang build never sees this block at all).
+// Shared-memory testcase delivery (__AFL_FUZZ_TESTCASE_BUF), no fork per
+// run -- this is AFL++'s own documented from-scratch harness shape
+// (utils/persistent_mode/persistent_demo.c in the afl++ source tree), not
+// something specific to this project. last_input.bin's own repro-saving
+// is skipped here: AFL++ already saves every crashing input to its own
+// output directory (out/default/crashes/), and writing a file every
+// iteration would tank exactly the throughput persistent mode exists for.
+#ifdef __AFL_COMPILER
+#include <unistd.h>
+__AFL_FUZZ_INIT();
+
+int main(void)
+{
+#ifdef __AFL_HAVE_MANUAL_CONTROL
+    __AFL_INIT();
+#endif
+    unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+    while(__AFL_LOOP(10000))
+    {
+        int len = __AFL_FUZZ_TESTCASE_LEN;
+        if(len < 1) continue;
+        LLVMFuzzerTestOneInput(buf, (size_t)len);
+    }
+    return 0;
+}
+
 // No libFuzzer/AFL++ in this environment (no clang, no afl-*) -- this is a
 // tiny, dumb mutation loop against the exact same entry point above, so
 // swapping in real coverage-guided fuzzing later is a rebuild against
 // -fsanitize=fuzzer or afl-clang-fast, not a rewrite of anything here.
-#ifndef PPL_FUZZ_LIBFUZZER_BUILD
+#elif !defined(PPL_FUZZ_LIBFUZZER_BUILD)
 #include <cstdlib>
 #include <ctime>
 #include <vector>

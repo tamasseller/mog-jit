@@ -1,2 +1,6 @@
 fuzz_driver
+fuzz_driver_afl
+repro_driver*
 last_input.bin
+out/
+out_*/

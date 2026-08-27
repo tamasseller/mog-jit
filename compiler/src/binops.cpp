@@ -65,19 +65,26 @@ static void addOrSubWithImm(AddSubRsubOp which, Assembler &e, uint32_t dest, uin
     else
     {
         /*
-         * Can't fold constant, materialize into temporary instead, becomes temp = k, then dest = n + temp.
+         * Can't fold constant, materialize into a temporary instead: temp = k, then dest = n op temp.
          */
         auto t = SCRATCH_REG;
 
         if(n == SCRATCH_REG)
         {
             /*
-             * If input aliases SCRATCH_REG becomes dest = k, then dest += n.
+             * n already occupies SCRATCH_REG, so it can't also hold the
+             * materialized constant -- and dest can't stand in for it
+             * either, since dest can itself alias SCRATCH_REG here (e.g. a
+             * spilled REG_REG operand loaded into SCRATCH_REG, combined
+             * with an immediate accumulator, and stored back out through
+             * SCRATCH_REG too). ENTRY_JUMP_REG is never live across
+             * bytecode instructions -- only used transiently by
+             * CALL/RETURN/BR_TABLE dispatch sequences -- so it's always
+             * free to borrow as the temporary here.
              */
-            assert(dest != SCRATCH_REG);
-            t = dest;
+            t = ENTRY_JUMP_REG;
         }
-        
+
         e.materializeImm32(t, k);
 
         switch(which)
@@ -97,12 +104,23 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
         * Degenerate case - foldable constants, lowerer should have caught it but easier 
         * to deal with it like this and is required for correctness.
         */
+        // ADD/SUB/RSUB/MUL/SHL/SHR are all done in uint32_t: isa-core.md's
+        // arithmetic wraps modulo 2^32 (matching vm.ts's `| 0`/`>>> 0`
+        // reference semantics and real ARM instructions), but accShape.imm
+        // /rhs.imm are int32_t, and signed overflow (ADD/SUB/RSUB/MUL) or
+        // shifting a negative value (SHL) is undefined behavior in C++,
+        // not just a different result -- unlike the equivalent register
+        // forms below, which land on real wrapping ARM instructions
+        // regardless of signedness. SHR is a logical shift, so it also
+        // needs the unsigned cast to avoid sign-extending a negative
+        // accShape.imm; ASR already casts (the other way) to get the
+        // sign-extension it actually wants.
         switch (op)
         {
-            case Op::ADD:  e.materializeImm32(dest, accShape.imm + rhs.imm); break;
-            case Op::SUB:  e.materializeImm32(dest, accShape.imm - rhs.imm); break;
-            case Op::RSUB: e.materializeImm32(dest, rhs.imm - accShape.imm); break;
-            case Op::MUL:  e.materializeImm32(dest, accShape.imm * rhs.imm); break;
+            case Op::ADD:  e.materializeImm32(dest, (uint32_t)accShape.imm + (uint32_t)rhs.imm); break;
+            case Op::SUB:  e.materializeImm32(dest, (uint32_t)accShape.imm - (uint32_t)rhs.imm); break;
+            case Op::RSUB: e.materializeImm32(dest, (uint32_t)rhs.imm - (uint32_t)accShape.imm); break;
+            case Op::MUL:  e.materializeImm32(dest, (uint32_t)accShape.imm * (uint32_t)rhs.imm); break;
             case Op::AND:  e.materializeImm32(dest, accShape.imm & rhs.imm); break;
             case Op::OR:   e.materializeImm32(dest, accShape.imm | rhs.imm); break;
             case Op::XOR:  e.materializeImm32(dest, accShape.imm ^ rhs.imm); break;
@@ -111,8 +129,8 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
             // required here too: an unmasked shift count of 32+ is
             // undefined behavior for C++'s own `<<`/`>>`, not just an
             // encoding-width problem.
-            case Op::SHL:  e.materializeImm32(dest, accShape.imm << (rhs.imm & 31)); break;
-            case Op::SHR:  e.materializeImm32(dest, accShape.imm >> (rhs.imm & 31)); break;
+            case Op::SHL:  e.materializeImm32(dest, (uint32_t)accShape.imm << (rhs.imm & 31)); break;
+            case Op::SHR:  e.materializeImm32(dest, (uint32_t)accShape.imm >> (rhs.imm & 31)); break;
             case Op::ASR:  e.materializeImm32(dest, (uint32_t)((int32_t)accShape.imm >> (rhs.imm & 31))); break;
             default: assert(false);
         }
