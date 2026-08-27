@@ -1,14 +1,10 @@
-// jit-armv6m/compiler — the assembler layer: code buffer, branch
-// placeholder/fixup, the literal pool (tracked by stored value, not
-// bytecode tag — flushPool() never re-decodes anything and never scans
-// its own output, so a BR_TABLE(N>2) jump table's raw halfwords are never
-// at risk of being misread as a pooled site), immediate-materialization
-// scheme selection, and — for a procedure attached to a real Runtime —
-// arena eviction/compaction and final dispatch-table registration. This
-// is the one seam between the environment-free core compiler
-// (translate_proc.cpp and everything it calls) and the runtime's own
-// dispatch/eviction machinery; nothing above this layer touches Runtime
-// directly.
+// jit-armv6m/compiler — the assembler layer: code buffer, branch fixups,
+// the literal pool, and immediate-materialization scheme selection; for a
+// procedure attached to a real Runtime, also arena eviction/compaction and
+// final dispatch-table registration. Runtime-coupling here is scoped to
+// owning the output buffer's storage (arena growth, bailout, final
+// registration) — translate_proc.cpp reads Runtime data (ProcSlot lookups,
+// liveStackFloor()) directly through its own const Runtime& parameter.
 #ifndef JIT_ARMV6M_COMPILER_ASSEMBLER_H_
 #define JIT_ARMV6M_COMPILER_ASSEMBLER_H_
 
@@ -44,10 +40,7 @@ class Assembler
 public:
     // Detached: a fixed caller-supplied buffer, no arena, no Runtime.
     // Every host unit test and QEMU pre-measurement call uses this.
-    // stackFloor is returned by stackFloor() unchanged — the detached
-    // case has no live Runtime to derive it from, so a caller that cares
-    // (translateProc's own stack-nesting guard) supplies it directly.
-    explicit Assembler(uint16_t *buf, uint32_t capacityHalfwords, uint32_t stackFloor = 0);
+    explicit Assembler(uint16_t *buf, uint32_t capacityHalfwords);
 
     // Attached: owns arena growth against a real Runtime and exits
     // directly (never returns) if it cannot free enough room — the
@@ -63,17 +56,39 @@ public:
     Assembler(const Assembler &) = delete;
     Assembler &operator=(const Assembler &) = delete;
 
+    // Suppresses emit()'s own automatic pool-reach check for its lifetime
+    // (restoring the previous state on destruction, so nesting is
+    // harmless) — for a PC-sensitive, closed-form instruction sequence
+    // (a fixed-length stub, a self-referential call record, a jump table
+    // that must sit contiguous right after its own dispatch) where a pool
+    // flush landing in the middle would corrupt it. Does not suppress
+    // ensurePoolRoom()'s own pre-existing calls (materializeImm32,
+    // abiEmitCall) — those still guard pendingSites/pendingValues from
+    // overflowing; a caller wrapping a sequence in this scope must instead
+    // reserve whatever room that sequence needs *before* entering it.
+    class AtomicScope
+    {
+    public:
+        explicit AtomicScope(Assembler &a) : a(a), prev(a.suppressPoolCheck) { a.suppressPoolCheck = true; }
+        ~AtomicScope() { a.suppressPoolCheck = prev; }
+        AtomicScope(const AtomicScope &) = delete;
+        AtomicScope &operator=(const AtomicScope &) = delete;
+    private:
+        Assembler &a;
+        bool prev;
+    };
+
     // ── raw buffer ──────────────────────────────────────────────────────
     uint32_t pc() const { return count * 2; }
     uint32_t halfwordCount() const { return count; }
-    uint32_t emit(uint16_t word);
 
-    // The live stack-recursion floor translateBody's own nesting guard
-    // checks against — for an attached Assembler this is
-    // Runtime::liveStackFloor(), read fresh every call since arenaCursor
-    // moves between compilations; for a detached one it's the fixed value
-    // given at construction.
-    uint32_t stackFloor() const;
+    // Also runs the pool-reach check below (ensurePoolRoom(0)) unless
+    // inside an AtomicScope — flushing (guarded) whenever the pending set
+    // is at risk, regardless of what specific instruction was just
+    // emitted. This is the general safety net; ensurePoolRoom's own
+    // explicit calls remain for the "about to add N new entries" case,
+    // which this can't anticipate on its own.
+    uint32_t emit(uint16_t word);
 
     // A translator-detected failure (arena exhausted with nothing left
     // to evict, or the live stack-nesting guard tripped). Calls
@@ -99,7 +114,11 @@ public:
     uint32_t readBranchTarget(uint32_t siteOffset) const;
 
     // Chain site onto label (self-linking it if label was empty) — the
-    // building block bind() below walks back through.
+    // building block bind() below walks back through. The unconditional
+    // overload also flushes the pool no-guard right after: nothing ever
+    // falls through an unconditional branch, so whatever follows in the
+    // buffer is never reached that way, and a guarded flush's own
+    // branch-around would be wasted bytes here.
     void branchTo(Label &label, ArmV6M::Condition c);
     void branchTo(Label &label);
 
@@ -108,16 +127,22 @@ public:
     // the one place a forward fixup may ever be resolved to "the current
     // position" — doing it through here rather than a bare
     // patchBranch(site, pc()) is what keeps a label's target from ever
-    // landing on top of pool words a flush inserts.
+    // landing on top of pool words a flush inserts. Always guarded
+    // (never the no-branch-around form): a bound label can be reached via
+    // fallthrough (e.g. an if-then's "end", reached both by the skip
+    // branch and by falling through the body), unlike an unconditional
+    // branch's own target.
     void bind(Label &label);
 
-    // Flush the pool (if one is open), same as bind() but with no label
-    // to resolve — blocks.cpp's raw jump-table-slot fixups (never
-    // branches, so nothing to chain onto a Label) still need "wherever
-    // we are, after any pending flush" before reading pc() for one of
-    // these.
+    // Flush the pool right now (guarded), regardless of ensurePoolRoom's
+    // own risk heuristic — the explicit, unconditional counterpart to it.
     void flushPool();
 
+    // Flush the pool with no branch-around, for a caller that already
+    // knows nothing falls through here (right after an unconditional
+    // jump, or a jump table only ever reached via its own dispatch) —
+    // blocks.cpp's raw jump-table-slot fixups also need "wherever we are,
+    // after any pending flush" before reading pc() for one of these.
     void flushPoolNoGuard();
 
     // ── raw halfword slots (BR_TABLE N>2 jump tables — never pool data) ──
@@ -139,23 +164,28 @@ public:
     // the final halfword count.
     uint32_t finalize();
 
-    void ensurePoolRoom(uint32_t poolEntries);
+    // Flush (guarded) if adding poolEntries more pool entries, plus
+    // extraBytes of additional known-upcoming code with no flush
+    // opportunity of its own (default 0 — most callers have none), would
+    // put the pending set at risk of overrunning POOL_MAX_PENDING or
+    // LITERAL_POOL_MAX_REACH.
+    void ensurePoolRoom(uint32_t poolEntries, uint32_t extraBytes = 0);
 
 private:
     uint16_t *buf;
     uint32_t capacity;
     uint32_t count = 0;
-    uint32_t detachedStackFloor;
+    bool suppressPoolCheck = false;
 
     Runtime *runtime = nullptr; // null: detached
     uint32_t procIdx = 0;
     uint32_t lruTick = 0;
 
     // The pool's whole deferral state — stored (site, value) pairs, not a
-    // bytecode tag: flushPool() patches each site directly, with no scan
-    // of the output buffer at all. pendingSites[0] doubles as the chunk's
-    // own output-start for the reach guard — always the oldest pending
-    // site, since sites are appended in emission order.
+    // bytecode tag: flushPoolImpl() patches each site directly, with no
+    // scan of the output buffer at all. pendingSites[0] doubles as the
+    // chunk's own output-start for the reach guard — always the oldest
+    // pending site, since sites are appended in emission order.
     static constexpr uint32_t POOL_MAX_PENDING = 16;
     uint32_t pendingSites[POOL_MAX_PENDING];
     uint32_t pendingValues[POOL_MAX_PENDING];

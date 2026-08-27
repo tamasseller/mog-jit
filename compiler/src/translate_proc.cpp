@@ -129,7 +129,21 @@ static uint32_t processNonControl(Ctx &ctx, const DecodedInstr &decoded, Assembl
     switch(instr.op)
     {
         case Op::CALL:
-        {           
+        {
+            // instr.calleeIndex is a wire-decoded value validateProgram is
+            // supposed to have already bounds-checked upstream — but
+            // nothing downstream of the wire bytes re-derives that
+            // guarantee, and r.slot() itself applies no bound of its own
+            // (runtime_internal.h), so an out-of-range index would
+            // otherwise read a garbage argCount here and bake a garbage
+            // dispatch-table offset into abiEmitCall below. Cheap enough
+            // to check directly rather than trust the upstream contract.
+            if(instr.calleeIndex >= r.procCount)
+            {
+                a.fail();
+                return afterInstr;
+            }
+
             uint32_t calleeArgCount = r.slot(instr.calleeIndex).argCount();
             uint32_t stackArgs = calleeArgCount > 0 ? calleeArgCount - 1 : 0;
 
@@ -156,16 +170,34 @@ static uint32_t processNonControl(Ctx &ctx, const DecodedInstr &decoded, Assembl
             return afterInstr;
         case Op::NEG:
         case Op::NOT:
+        {
+            // negs/mvns have an independent source register field — read
+            // the operand from wherever it already lives instead of
+            // forcing a flush into ACC_REG first (unlike CLZ/REVBITS
+            // below, which have no such freedom). A still-pending
+            // immediate materializes straight into dest rather than a
+            // scratch register — negs/mvns allow dest==src, so this
+            // stays a single instruction instead of a materialize-then-
+            // negate-elsewhere pair.
+            FoldResult fold = peekStoreFold(ctx.bytes, ctx.bytesLen, afterInstr, ctx.window.tos);
+            uint32_t dest = fold.redirectReg(ACC_REG);
+            uint32_t src = ctx.accState.peek().peek(a, dest);
+
+            emitUnary(a, instr.op, dest, src);
+            ctx.accState.setClean(dest);
+            return fold.redirectAfterNext(afterInstr);
+        }
         case Op::CLZ:
         case Op::REVBITS:
         {
-            // No fold axis of its own — always flush first, exactly like
-            // the general binary-op "no match" fallback.
+            // Both dispatch through a fixed helper-vector subroutine that
+            // hardcodes ACC_REG as both argument and return register —
+            // no fold axis of their own, always flush first.
             ctx.accState.flush(a, ACC_REG);
             FoldResult fold = peekStoreFold(ctx.bytes, ctx.bytesLen, afterInstr, ctx.window.tos);
             uint32_t dest = fold.redirectReg(ACC_REG);
-            
-            emitUnary(a, instr.op, dest);
+
+            emitUnary(a, instr.op, dest, ACC_REG);
             ctx.accState.setClean(dest);
             return fold.redirectAfterNext(afterInstr);
         }
@@ -194,8 +226,12 @@ static uint32_t processNonControl(Ctx &ctx, const DecodedInstr &decoded, Assembl
         case Op::STORE:
             if(!inWindow(ctx.window.tos, instr.target))
             {
-                ctx.accState.flush(a, ACC_REG);
-                a.emit(ArmV6M::strSp(R(ACC_REG), spillImm(a, ctx.window.spillOffset(instr.target))));
+                // strSp's own register field is independent of ACC_REG,
+                // and nothing downstream reads acc after this store — read
+                // the value from wherever it already lives instead of
+                // forcing a flush into ACC_REG first.
+                uint32_t r = ctx.accState.peek().peek(a, SCRATCH_REG);
+                a.emit(ArmV6M::strSp(R(r), spillImm(a, ctx.window.spillOffset(instr.target))));
                 return afterInstr;
             }
             else
@@ -334,7 +370,14 @@ static uint32_t processNonControlAndConditionalFolding(Ctx &ctx, DecodedInstr &d
     {
         bool hasLookahead = afterInstr < ctx.bytesLen;
         DecodedInstr lookahead = hasLookahead ? decodeInstr(ctx.bytes, ctx.bytesLen, afterInstr) : DecodedInstr{};
-        bool fusesIntoBrTable = hasLookahead && lookahead.instr.op == Op::BR_TABLE && lookahead.instr.imm <= 2;
+        // Must match processNonTerminators's own BR_TABLE dispatch exactly
+        // (translateIfThen/translateIfThenElse are the only two that
+        // consume a pending fused comparison) — N == 0 or negative (an
+        // overlong LEB128) falls through to translateSwitch instead, which
+        // asserts none is pending; disagreeing here would leak the fusion
+        // into whatever construct follows instead of tripping that assert.
+        bool fusesIntoBrTable = hasLookahead && lookahead.instr.op == Op::BR_TABLE
+            && (lookahead.instr.imm == 1 || lookahead.instr.imm == 2);
         bool fusesIntoLoopExit = isThisLoopCondBlock && hasLookahead && lookahead.instr.op == Op::BLOCK_END;
 
         if(fusesIntoBrTable || fusesIntoLoopExit)
@@ -420,7 +463,15 @@ static Instr processUntilTerminator(Ctx &ctx, Assembler& a, const Runtime& r, bo
         processNonTerminators(ctx, decoded, a, r, isThisLoopCondBlock);
     }
 
-    assert(false);
+    // Ran off bytesLen without finding this block's own close — same
+    // malformed/truncated-bytecode case decode_instr.h's own asserts
+    // already leave out of scope (a translator-input bug, never a
+    // legitimate runtime condition, so this doesn't get its own real
+    // check either). assert(false) compiles out under -DNDEBUG same as
+    // those; the for(;;) beneath it is unconditional either way, purely
+    // to satisfy this non-void function's return requirement — reaching
+    // it in a release build hangs rather than returning garbage.
+    assert(false); // GCOV_EXCL_LINE
     for(;;);
 }
 
@@ -574,14 +625,28 @@ static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n
 
     ctx.accState.flush(a, ACC_REG);
     a.materializeImm32(SCRATCH_REG, n);
-    a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
-    a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(HELPER_BR_TABLE_JUMP_OFFSET)));
-    a.emit(ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
 
-    uint32_t base = a.pc(); 
-    for(uint32_t i = 0; i <= n; i++)
+    // The dispatch (mov/ldr/blx, 6 bytes) and the n+1 raw table halfwords
+    // that follow must sit contiguous — the helper jumps by indexing
+    // directly off where the blx itself lands, so nothing may flush in
+    // between. n is known here, so fold the whole span's own length into
+    // the reach check up front instead of guarding unconditionally: a
+    // switch big enough for this to actually matter is rare in practice.
+    uint32_t tableBytes = 6 + (n + 1) * 2;
+    a.ensurePoolRoom(0, tableBytes);
+
+    uint32_t base;
     {
-        a.emit(0); 
+        Assembler::AtomicScope atomic(a);
+        a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
+        a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(HELPER_BR_TABLE_JUMP_OFFSET)));
+        a.emit(ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
+
+        base = a.pc();
+        for(uint32_t i = 0; i <= n; i++)
+        {
+            a.emit(0);
+        }
     }
 
     a.flushPoolNoGuard();
@@ -691,7 +756,7 @@ static void translateLoop(Ctx &ctx, Assembler& a, const Runtime& r)
 static void translateBody(Ctx &ctx, Assembler& a, const Runtime& r)
 {
     register uint32_t sp asm("sp");
-    if(sp < TRANSLATE_BODY_STACK_MARGIN || sp - TRANSLATE_BODY_STACK_MARGIN < a.stackFloor())
+    if(sp < TRANSLATE_BODY_STACK_MARGIN || sp - TRANSLATE_BODY_STACK_MARGIN < r.liveStackFloor())
     {
         a.fail();
         return;

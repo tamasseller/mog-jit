@@ -93,6 +93,16 @@ static ProgramResult enterProgramWithHeader(
     uint32_t codeArenaBase, uint32_t codeArenaSize,
     uint32_t stackLimit, uint32_t arenaOverlapsStack)
 {
+    /* A program with no procedures at all has nothing enterDispatch could
+     * ever run — Runtime::slot(idx) unconditionally returns slots[idx+1]
+     * (index 0 reserved as sentinel), so entering at procedure 0 would
+     * read one slot past what storageBytesFor(0) allocates. Rejected here,
+     * before any of that storage is even sized. */
+    if(hdr.procCount == 0)
+    {
+        return ProgramResult{ RESOURCE_ERROR_CODE, 1 };
+    }
+
     /* One flexible-array-member object, over-allocated to fit
      * hdr.procCount+1 slots (index 0 = sentinel) — sized and aligned by
      * hand since a plain `Runtime runtime;` local would only reserve the
@@ -126,7 +136,6 @@ static uint32_t requiredStackBytes(
     return Runtime::storageBytesFor(procCount)
          + operandStackBytes
          + maxCallDepth * CALL_RECORD_BYTES
-         + procCount * CALLEE_ARG_COUNTS_BYTES_PER_PROC
          + ENTER_DISPATCH_FIXED_BYTES
          + TRANSLATOR_ENTRY_WORST_CASE_BYTES
          + interruptReserve;

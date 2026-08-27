@@ -27,18 +27,6 @@ extern "C" void compileProc(uint32_t idx, Runtime *runtime)
     jitc::Proc proc{procSlot.argCount(), (const uint8_t *)(uintptr_t)procSlot.bodyPtr, procSlot.bodyBytes()};
     bool savesLR = procSlot.needsLRSave();
 
-    /* abiEmitCall needs O(1) indexing by calleeIndex; ProcSlot's own
-     * 16-byte stride doesn't give it that for free, so this dense copy —
-     * a VLA, explicitly budgeted into requiredStackBytes
-     * (dispatch_abi.h's CALLEE_ARG_COUNTS_BYTES_PER_PROC) rather than a
-     * fixed cap, since a real program's own procCount isn't bounded to
-     * any fixture-sized constant. */
-    uint32_t calleeArgCounts[runtime->procCount];
-    for(uint32_t i = 0; i < runtime->procCount; i++)
-    {
-        calleeArgCounts[i] = runtime->slot(i).argCount();
-    }
-
     register uint32_t lruTick asm("r11");
     jitc::Assembler assembler(runtime, idx, lruTick);
 

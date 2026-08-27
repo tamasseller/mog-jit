@@ -104,7 +104,6 @@ derived from the program's own wire envelope (§1) or a measured constant:
 | `Runtime` plus its dispatch table | `sizeof(Runtime) + (procCount+1)·sizeof(ProcSlot)` |
 | Operand stack | `operandStackBytes` = `totalDepth · 4`, from the program's own envelope |
 | Live call/return records | `maxCallDepth · CALL_RECORD_BYTES`, `maxCallDepth` from the same envelope |
-| compileProc's own callee-argCount lookup table | `procCount · CALLEE_ARG_COUNTS_BYTES_PER_PROC` (a VLA, not a fixed cap — §9's `ProcSlot` doesn't give O(1) indexing by callee for free) |
 | Fixed implementation overhead | `ENTER_DISPATCH_FIXED_BYTES` plus the translator's entry worst case |
 | Exception entry | `interruptReserve` |
 
@@ -1319,15 +1318,12 @@ this cleanly.
 
 ## 16. Known gaps and follow-ups
 
-- `ProgramStats.maxCallDepth` (`validate.ts`'s `depthsOf`) isn't wired into
-  replacing the caller-supplied depth parameter at `enter_program_on_stack`/
-  `_split` (§1) call sites yet — real static data available, just not
-  consumed there.
-- No build-time enforcement (e.g. a per-file `-Wstack-usage=`/
+G2 No build-time enforcement (e.g. a per-file `-Wstack-usage=`/
   `-Werror=stack-usage=` pin) catches future drift in
   `TRANSLATOR_ENTRY_WORST_CASE_BYTES` — the fixed value itself is correct,
   automatic drift detection is a follow-up.
-- `TRANSLATOR_ENTRY_WORST_CASE_BYTES`'s 488 total has two stale components,
+
+G3 `TRANSLATOR_ENTRY_WORST_CASE_BYTES`'s 488 total has two stale components,
   both flagged in `dispatch_abi.h`'s own comment: its "second chain" was
   anchored on a call site (`translate_proc.cpp`'s last-argument-fold
   `accState.flush`) that turns out to never actually reach
@@ -1337,15 +1333,8 @@ this cleanly.
   potentially under-reserving by up to 4 bytes depending on
   `REALIGN_ENTER`'s own worst case. Left as the last known-good number
   rather than an unverified guess; a correct re-derivation is still owed.
-- `runtime/compile_proc.cpp`'s `calleeArgCounts` VLA is dead — built (a
-  dense per-procedure copy, one loop reading every `ProcSlot.argCount()`)
-  but never read: `translateProc` takes `const Runtime&` and reads
-  `r.slot(instr.calleeIndex).argCount()` directly wherever it needs a
-  callee's argCount (`translate_proc.cpp:133`). Deleting it removes a
-  `procCount`-sized VLA from the tightest stack in the system, the loop
-  that fills it, and lets `CALLEE_ARG_COUNTS_BYTES_PER_PROC` come out of
-  `requiredStackBytes`/`dispatch_abi.h` entirely.
-- `translateBody`'s live stack-nesting guard (`translate_proc.cpp`) only
+
+G5 `translateBody`'s live stack-nesting guard (`translate_proc.cpp`) only
   ever runs once, at recursion depth 0 — the real recursion
   (`translateLoop`/`translateIfThen`/`translateIfThenElse`/`translateSwitch`
   → `processUntilTerminator` → `processNonTerminators`, back into those)
@@ -1358,42 +1347,3 @@ this cleanly.
   `maxSpanBytes` recurses over the same nesting with no guard at all, at
   the deepest point. The check needs to move to where the recursion
   actually is.
-- `CALL`'s callee index (`translate_proc.cpp`, `abi_strategy.cpp`) is never
-  bounds-checked against `procCount` before reaching `Runtime::slot` or
-  being baked into emitted code — `runtime.S`'s `callHelper` computes
-  `slotAddr = r8 + idx*16` and jumps to whatever it finds there, relying
-  entirely on `validateProgram` catching a bad index upstream. Related:
-  `stackArgs > window.tos` underflows `window.tos - stackArgs`, reaching
-  `windowRuns` with a huge count and writing past `RegRun::regs`
-  (`window.cpp`) — a stack buffer overflow inside the compiler itself. One
-  bounds check against `procCount` converts an arbitrary jump into a clean
-  `RESOURCE_ERROR`.
-- `decodeLeb128` (`decode_instr.cpp`) has no length bound — its `pos`/
-  `shift` guards are both debug-only asserts, compiled out in the real
-  build. A malformed trailing continuation byte walks off the program
-  buffer; `shift >= 32` is UB. Reached on untrusted wire bytes from
-  `Runtime::init` onward. Related: `processUntilTerminator`'s own
-  `assert(false); for(;;);` fallback becomes an infinite loop under
-  `-DNDEBUG` when the byte stream runs out mid-block instead of at a
-  proper close.
-- `procCount == 0` dispatches into `slots[1]`, one past what
-  `storageBytesFor(0)` allocates (only the sentinel, `slots[0]`) —
-  `Runtime::slot(idx)` returns `slots[idx+1]` unconditionally, and nothing
-  in `enter_program`'s path rejects `procCount == 0`.
-- `fusesIntoBrTable` (`translate_proc.cpp`) uses `imm <= 2`, which admits
-  `N == 0` or a negative `N` from a large LEB128 — those route to
-  `translateSwitch`, whose `assert(hasPendingComparisonCondition == false)`
-  silently leaks a pending fusion into the next construct under
-  `-DNDEBUG`. Should be `imm == 1 || imm == 2`.
-- `proc_scan.cpp`'s `instr.imm > 2` is a signed compare on `imm`
-  (`int32_t`), disagreeing with `translate_proc.cpp`'s own `switch` for
-  `N >= 2^31`: `needsLRSave` stays false while `translateSwitch` runs
-  anyway (a negative `imm` implicitly converts to a huge `uint32_t n`),
-  destroying the `lr`-borne call record.
-- `inWindow(tos, k)` (`window.cpp`) is `tos - k <= WINDOW_SIZE`, which
-  admits `k == tos` — one past the legal `k < tos` (isa-core.md §8.6).
-- Three unresolved `XXX` questions in `Assembler`'s pool logic
-  (`assembler.cpp`): whether an unconditional flush is actually necessary,
-  why `flushPoolImpl` is called with `false` at one site, and whether
-  `endOfProcedure` needs to skip the jump-around it currently always
-  takes.

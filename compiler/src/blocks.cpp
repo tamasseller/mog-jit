@@ -126,8 +126,13 @@ Cond emitComparison(Assembler &a, AccState &accState, Op op, const Shape &operan
 
 Cond testAccNonzero(Assembler &a, AccState &accState)
 {
-    accState.flush(a, ACC_REG);
-    a.emit(ArmV6M::cmp(R(ACC_REG), ArmV6M::Imm<8>(0)));
+    // No fixed-register requirement here (unlike a CALL/RETURN boundary) —
+    // every caller only consumes the returned Cond and poisons acc right
+    // after, so read the comparison operand from wherever it already
+    // lives instead of forcing a flush into ACC_REG first, same as
+    // emitComparison above.
+    uint32_t r = accState.peek().peek(a, SCRATCH_REG);
+    a.emit(ArmV6M::cmp(R(r), ArmV6M::Imm<8>(0)));
     return Cond::NE;
 }
 

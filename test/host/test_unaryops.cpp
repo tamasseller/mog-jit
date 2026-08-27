@@ -19,7 +19,7 @@ TEST(negEmitsSingleInstruction)
 {
     uint16_t buf[4];
     Assembler e(buf, 4);
-    emitUnary(e, Op::NEG, ACC_REG);
+    emitUnary(e, Op::NEG, ACC_REG, ACC_REG);
     CHECK(e.halfwordCount() == 1);
     CHECK(buf[0] == ArmV6M::negs(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ACC_REG)));
 }
@@ -28,16 +28,28 @@ TEST(notEmitsSingleInstructionAndMovesOutWhenDestDiffers)
 {
     uint16_t buf[4];
     Assembler e(buf, 4);
-    emitUnary(e, Op::NOT, 5);
+    emitUnary(e, Op::NOT, 5, ACC_REG);
     CHECK(e.halfwordCount() == 1);
     CHECK(buf[0] == ArmV6M::mvns(ArmV6M::LoReg(5), ArmV6M::LoReg(ACC_REG)));
+}
+
+TEST(negReadsSrcDirectlyWhenOperandLivesOutsideAccReg)
+{
+    // negs/mvns have an independent source register field — the caller
+    // need not flush the operand into ACC_REG first (translate_proc.cpp's
+    // NEG/NOT dispatch relies on exactly this to skip a redundant MOV).
+    uint16_t buf[4];
+    Assembler e(buf, 4);
+    emitUnary(e, Op::NEG, ACC_REG, 7);
+    CHECK(e.halfwordCount() == 1);
+    CHECK(buf[0] == ArmV6M::negs(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(7)));
 }
 
 TEST(clzEmitsHelperVectorCallSequence)
 {
     uint16_t buf[8];
     Assembler e(buf, 8);
-    emitUnary(e, Op::CLZ, ACC_REG);
+    emitUnary(e, Op::CLZ, ACC_REG, ACC_REG);
     CHECK(e.halfwordCount() == 3); // MOV r3,r10 / LDR r3,[r3,#16] / BLX r3 — no trailing MOV, dest is already ACC_REG
     CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
     CHECK(buf[1] == ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(16))); // clzHelper, index 4
@@ -48,7 +60,7 @@ TEST(revbitsEmitsHelperVectorCallSequenceAndMovesOutWhenDestDiffers)
 {
     uint16_t buf[8];
     Assembler e(buf, 8);
-    emitUnary(e, Op::REVBITS, 6);
+    emitUnary(e, Op::REVBITS, 6, ACC_REG);
     CHECK(e.halfwordCount() == 4); // MOV + LDR + BLX + trailing MOV out
     CHECK(buf[1] == ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(20))); // revbitsHelper, index 5
     CHECK(buf[2] == ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));

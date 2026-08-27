@@ -15,11 +15,15 @@ namespace jitc
 
 class Assembler;
 
-/** Emit one unary op. operand must already be materialized into ACC_REG
- *  (the caller's job — a unary op's native encoding never takes an
- *  immediate form, so there's nothing to fold, only something to flush
- *  first). dest is ACC_REG or a destination-fold target. */
-void emitUnary(Assembler &e, Op op, uint32_t dest);
+/** Emit one unary op. NEG/NOT read `src` directly — negs/mvns's native
+ *  encoding has an independent source register field, so the caller need
+ *  not flush the operand into any particular register first. CLZ/REVBITS
+ *  have no such freedom: they dispatch through a fixed helper-vector
+ *  subroutine (runtime.S's clzHelper/revbitsHelper) that hardcodes
+ *  ACC_REG as both argument and return register, so `src` must be
+ *  ACC_REG for those two (asserted). dest is ACC_REG or a
+ *  destination-fold target. */
+void emitUnary(Assembler &e, Op op, uint32_t dest, uint32_t src);
 
 } // namespace jitc
 

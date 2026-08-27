@@ -43,16 +43,6 @@ extern uint64_t enterDispatch(uint32_t argIn, Runtime *runtime); /* runtime.S */
  * not a tight count. */
 #define CALL_RECORD_BYTES 4
 
-/* compileProc's own callee-argCount lookup table: one uint32_t per
- * procedure (ProcSlot.argCount(), read once per compile and copied into a
- * dense array — abiEmitCall needs O(1) indexing by calleeIndex, and
- * ProcSlot's own 16-byte stride doesn't give it that for free), sized to
- * procCount via a VLA (the same GCC/C++ extension enter_program.cpp's own
- * runtimeStorage already relies on) rather than a fixed cap — so it has
- * to be budgeted explicitly here rather than folded into a fixed frame
- * size the way it briefly was. */
-#define CALLEE_ARG_COUNTS_BYTES_PER_PROC 4
-
 /* enterDispatch's own two prologue pushes: {r2,r4,r5,r6,r7,lr} +
  * {r4,r5,r6,r7} = 10 words. Reserved once, for the whole excursion's
  * duration. */
@@ -61,7 +51,7 @@ extern uint64_t enterDispatch(uint32_t argIn, Runtime *runtime); /* runtime.S */
 /* Fixed, one-time cost of getting from translatorTrampoline's own entry
  * down to translateBody's own first call. The recursion beyond that point
  * has no static whole-program worst case; that is policed live instead
- * (Assembler::stackFloor(), read fresh by translateBody's own guard).
+ * (Runtime::liveStackFloor(), read fresh by translateBody's own guard).
  *
  * STALE, NEEDS RE-DERIVING: the 96 below (and so the 488 total) was
  * measured against an Assembler::materializeImm32 that no longer exists
@@ -93,8 +83,9 @@ extern uint64_t enterDispatch(uint32_t argIn, Runtime *runtime); /* runtime.S */
  * REALIGN_ENTER's worst-case reservation (24, asm, unchanged from
  * before); compileProc's own static frame (224 — up from 96: it now
  * holds the Assembler object itself as a local rather than a separate
- * RuntimeArenaRoom; the calleeArgCounts VLA is still excluded, budgeted
- * separately above); translateProc's own frame (144, includes Ctx as a
+ * RuntimeArenaRoom; the calleeArgCounts VLA this frame size once excluded
+ * and budgeted separately has since been deleted entirely, dead code —
+ * nothing to account for on that front any more); translateProc's own frame (144, includes Ctx as a
  * local; translateBody's own recursive frames are a separate call, not
  * folded in here); then the deeper of — a.reserve(STUB_SIZE+2) (16) +
  * Assembler::growForAttached (48), called once before abiEmitPrologue

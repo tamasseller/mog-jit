@@ -105,7 +105,9 @@ public:
     uint32_t arenaCursor;
     uint32_t procCount;
     /* The lowest address the translator's own LOOP/BR_TABLE recursion may
-     * safely reach, checked live by translateProc's stackFloor parameter.
+     * safely reach, checked live via liveStackFloor() below by
+     * translateBody's own guard (translate_proc.cpp), reached through the
+     * const Runtime& every translateProc call already carries.
      * stackLimit is the hard, whole-execution floor. arenaOverlapsStack is
      * true only for enterProgramOnStack, whose code arena is anchored at
      * stackLimit itself and grows up from there — i.e. the same memory the

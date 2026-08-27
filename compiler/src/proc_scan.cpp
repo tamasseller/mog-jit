@@ -15,8 +15,14 @@ static constexpr uint32_t SCAN_STACK_MARGIN = 128;
 
 static bool triggersLRSave(const Instr &instr)
 {
+    // Unsigned compare: instr.imm (int32_t) carries N's raw bit pattern,
+    // and translate_proc.cpp's own dispatch passes it to translateSwitch's
+    // uint32_t n exactly as-is — an N large enough to read as negative
+    // here must still agree that it's ">2" (translateSwitch's helper-
+    // vector path, which clobbers lr), or needsLRSave comes out false for
+    // a body that actually goes on to clobber it.
     return instr.op == Op::CALL
-        || (instr.op == Op::BR_TABLE && instr.imm > 2)
+        || (instr.op == Op::BR_TABLE && (uint32_t)instr.imm > 2)
         || instr.op == Op::CLZ
         || instr.op == Op::REVBITS;
 }

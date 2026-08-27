@@ -15,6 +15,7 @@
 
 using namespace jitc;
 
+
 static constexpr uint32_t PC = 15;
 
 // The fixed 6-halfword procedure-entry stub every compiled procedure
@@ -292,18 +293,17 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 18);
+    CHECK(halfwordCount == 17);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
         ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(3)), // MOVS r7,#3 (CONST 3, folds straight into PUSH's dest r7)
         ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (openLoop's own flushLive — loopStart begins right here)
-        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (testAccNonzero's own flush of the cond block's LOAD(0))
-        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)),  // CMP r0,#0 (testAccNonzero)
+        ArmV6M::cmp(ArmV6M::LoReg(7), ArmV6M::Imm<8>(0)),  // CMP r7,#0 (testAccNonzero reads the cond block's LOAD(0) directly from r7, no flush needed)
         ArmV6M::beq(ArmV6M::Ioff<1, 8>(4)),                // BEQ +4 — exit branch (inverse of NE), skips the loop when acc==0
         ArmV6M::subs(ArmV6M::LoReg(7), ArmV6M::LoReg(7), ArmV6M::Imm<3>(1)), // SUBS r7,r7,#1 (body's LOAD(0)+SUB(1)+STORE(0), all folded in place)
         ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (LoopBody close's own flushLive, right before the back-edge)
-        ArmV6M::b(ArmV6M::Ioff<1, 11>(-14)),               // B -14 — unconditional back-edge, to loopStart (the second MOV r0,r7 above)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(-12)),               // B -12 — unconditional back-edge, to loopStart (openLoop's own flushLive above)
         ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (RETURN's flush of the post-loop LOAD(0) — the exit edge's own fresh producer)
         RETURN_VIA_LR,
     };
@@ -770,9 +770,10 @@ TEST(StoreStandaloneOutOfWindowSlot)
     // standalone out-of-window path. argCount=5's own last argument
     // (slot 4, physReg(4)=r7) is unrelated to slot 0 and gets the callee
     // prologue's usual unconditional flush regardless of never being
-    // referenced by this body — NEG then has no fold axis of its own, so
-    // it flushes unconditionally into ACC_REG too, bringing the value
-    // back from r7 to r0 before negating.
+    // referenced by this body. NEG reads that value directly from r7
+    // (negs's independent source field), and the STORE reads NEG's
+    // result directly from ACC_REG — no round-trip through ACC_REG for
+    // either.
     const Instr body[] = {bare(Op::NEG), STORE(0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
     rt.set(0, 5, /*savesLR=*/false);
@@ -781,14 +782,13 @@ TEST(StoreStandaloneOutOfWindowSlot)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 14);
+    CHECK(halfwordCount == 13);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
         ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),      // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(4)=r7, unreferenced by this body)
-        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),      // MOV r0, r7  (NEG's own unconditional flush(ACC_REG): acc was Clean at r7)
-        ArmV6M::negs(ArmV6M::LoReg(0), ArmV6M::LoReg(0)),       // NEGS r0, r0
-        ArmV6M::strSp(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(0)), // STR r0,[sp,#0]  (STORE(0): out-of-window, peekStoreFold never applies here)
+        ArmV6M::negs(ArmV6M::LoReg(0), ArmV6M::LoReg(7)),       // NEGS r0, r7  (NEG reads r7 directly, dest ACC_REG since the STORE that follows is out-of-window)
+        ArmV6M::strSp(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(0)), // STR r0,[sp,#0]  (STORE(0): out-of-window, peekStoreFold never applies here; reads NEG's result directly)
         ArmV6M::incrSp(ArmV6M::Uoff<2, 7>(4)),                  // ADD sp,#4  (discardWindow: reclaim the one spilled arg slot before returning)
         RETURN_VIA_LR,
     };
@@ -981,6 +981,13 @@ TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
     // can only close via BLOCK_END, so closeLoopBodyViaTerminator's own
     // frame.kind == LoopBody assert is genuinely unreachable, not merely
     // untested (hence its GCOV_EXCL_LINE).
+    //
+    // The empty cond block also means openLoop's own flushLive(ACC_REG)
+    // (translateLoop's join-point flush, needed so the back-edge and the
+    // fall-through agree on where acc lives) is the only producer
+    // testAccNonzero ever sees here — nothing runs between them to
+    // change it — so testAccNonzero's own read-in-place fix finds acc
+    // already Clean at ACC_REG and adds nothing further.
     const Instr body[] = {
         bare(Op::LOOP), bare(Op::BLOCK_END),
         CONST(42), bare(Op::RETURN),
@@ -998,7 +1005,7 @@ TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
     const uint16_t expected[] = {
         PROLOGUE_STUB,
         ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),        // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(0)=r7, unreferenced by this body)
-        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),        // MOV r0, r7  (testAccNonzero's own flush(ACC_REG): acc was Clean at r7, brought back for the hardcoded-r0 CMP)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),        // MOV r0, r7  (openLoop's own flushLive(ACC_REG) — the loop's join-point flush, not testAccNonzero's)
         ArmV6M::cmp(ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<8>(0)),   // CMP r0, #0  (LOOP condition: no fused comparison, testAccNonzero's fallback)
         ArmV6M::beq(ArmV6M::Ioff<1, 8>(6)),                       // BEQ exitFixup  (loop-exit branch, taken when acc==0)
         ArmV6M::movs(ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<8>(42)), // MOVS r0, #42  (RETURN's flush of CONST(42)'s pending value)
@@ -1247,8 +1254,9 @@ TEST(DeeplyNestedButWellFormedBlocksSucceedWithNoStackFloor)
 
 TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
 {
-    // stackFloor pinned at (essentially) the current sp — no margin left
-    // at all — so translateBody's very first live check already fails,
+    // rt's stackLimit pinned at (essentially) the current sp (translateBody's
+    // guard reads it via r.liveStackFloor()) — no margin left at all, so
+    // translateBody's very first live check already fails,
     // regardless of how shallow the body is (a bare RETURN, not even one
     // level of nesting). Deliberately doesn't try to calibrate "how many
     // levels of real nesting exhaust N bytes of stack": this host build
@@ -1263,11 +1271,11 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     const Instr body[] = {bare(Op::RETURN)};
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false);
+    rt.runtime().stackLimit = currentSp(); // translateBody's guard now reads r.liveStackFloor() directly
     uint8_t bodyBytes[8];
     Proc proc = makeProc(0, body, 1, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[16];
-    uint32_t floor = currentSp();
-    Assembler a(buf, 16, floor);
+    Assembler a(buf, 16);
 
     MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
     EXPECT_RESOURCE_ERROR(translateProc(proc, 0, a, rt.runtime()));
@@ -1390,6 +1398,51 @@ TEST(PooledLoadSurvivesAcrossABrTableJumpTableUnflushed)
 
     CHECK(literalSiteCount(buf, halfwordCount) == 1);
 
+    uint32_t value = 0;
+    uint32_t site = nthLiteralSite(buf, halfwordCount, 0);
+    CHECK(loadedWord(buf, halfwordCount, site, value));
+    CHECK(value == 0x12345678);
+}
+
+TEST(LargeBrTableJumpTableFlushesAPendingLiteralBeforeItsOwnTable)
+{
+    // A BR_TABLE(N)'s own dispatch+table span must stay contiguous (the
+    // helper jumps by indexing directly off where the dispatch's own blx
+    // lands), so nothing may flush while it's being emitted. For a large
+    // enough N the table alone (500 halfwords here) comfortably exceeds
+    // LITERAL_POOL_MAX_REACH on its own -- translateSwitch's own
+    // ensurePoolRoom(0, tableBytes) call folds the table's known length in
+    // *before* entering that protected span, flushing the CONST parked
+    // just before it so its pool word never has to survive the table.
+    // Cases are deliberately empty (bare BLOCK_END, no body of their own)
+    // -- this is about the table's own size, not case-body content, and
+    // each case's own branchTo(end) has a separate, much shorter reach
+    // limit (+-2048 bytes) that a real per-case body would risk crossing
+    // at this case count.
+    constexpr uint32_t kCases = 520;
+    Instr body[2 + kCases + 2];
+    uint32_t n = 0;
+    body[n++] = CONST(0x12345678); // the one literal this test is about
+    body[n++] = brTable(kCases);
+    for(uint32_t i = 0; i < kCases; i++)
+    {
+        body[n++] = bare(Op::BLOCK_END);
+    }
+    // isa-core.md §8.7: the switch's merge point starts acc poisoned
+    // regardless of which case fell through -- RETURN needs its own
+    // fresh producer.
+    body[n++] = CONST(0);
+    body[n++] = bare(Op::RETURN);
+
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/true);
+    uint8_t bodyBytes[2048];
+    Proc proc = makeProc(0, body, n, bodyBytes, sizeof(bodyBytes));
+    uint16_t buf[4096];
+    Assembler a(buf, 4096);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+
+    CHECK(literalSiteCount(buf, halfwordCount) == 1);
     uint32_t value = 0;
     uint32_t site = nthLiteralSite(buf, halfwordCount, 0);
     CHECK(loadedWord(buf, halfwordCount, site, value));

@@ -13,7 +13,7 @@ using R = ArmV6M::LoReg;
 
 bool inWindow(uint32_t tos, uint32_t k)
 {
-    return tos - k <= WINDOW_SIZE;
+    return tos - k <= WINDOW_SIZE && k < tos;
 }
 
 uint32_t physReg(uint32_t k)

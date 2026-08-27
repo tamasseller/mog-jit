@@ -3,23 +3,27 @@
 #include "registers.h"
 #include "armv6.h"
 
+#include <cassert>
+
 namespace jitc
 {
 
 using R = ArmV6M::LoReg;
 
-void emitUnary(Assembler &e, Op op, uint32_t dest)
+void emitUnary(Assembler &e, Op op, uint32_t dest, uint32_t src)
 {
     if(op == Op::NEG)
     {
-        e.emit(ArmV6M::negs(R((uint16_t)dest), R(ACC_REG)));
+        e.emit(ArmV6M::negs(R((uint16_t)dest), R((uint16_t)src)));
         return;
     }
     if(op == Op::NOT)
     {
-        e.emit(ArmV6M::mvns(R((uint16_t)dest), R(ACC_REG)));
+        e.emit(ArmV6M::mvns(R((uint16_t)dest), R((uint16_t)src)));
         return;
     }
+
+    assert(src == ACC_REG); // GCOV_EXCL_LINE — clzHelper/revbitsHelper hardcode ACC_REG, caller's job to flush there first
 
     // CLZ / REVBITS in the flash-resident helper vector (docs/design.md
     // §11). BLX rather than BX: both routines are ordinary subroutines

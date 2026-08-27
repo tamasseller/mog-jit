@@ -173,18 +173,45 @@ TEST(LabelChainsMultipleBranchesAndBindResolvesEveryOne)
     CHECK((uint32_t)(2 + 4 + delta1) == a.pc());
 }
 
-TEST(BindFlushesAnyOpenPoolChunkBeforeResolvingTheTarget)
+TEST(UnconditionalBranchToFlushesAnyOpenPoolChunkNoGuardRightAfter)
 {
+    // branchTo(Label&)'s own unconditional branch is itself a point
+    // nothing ever falls through -- so it flushes the still-open pool
+    // right there, no-guard: no separate branch-around, the pool word
+    // lands directly after the branch itself.
     uint16_t buf[16];
     Assembler a(buf, 16);
     a.materializeImm32(0, 0x12345678u); // pool site at pc=0, pc now 2
     Label label;
-    a.branchTo(label); // site 2, pc now 4
+    a.branchTo(label); // site 2, pc now 4, flushes no-guard right after
 
-    a.bind(label); // must flush the pool (branch-around + pad + word) *before* resolving label's own target
+    CHECK(a.pc() == 4 + 4); // site(2) + branch(2) + pool word(4), no branch-around
+    CHECK(buf[2] == 0x5678);
+    CHECK(buf[3] == 0x1234);
+
+    a.bind(label); // pool already empty -- only resolves the branch target
     uint16_t rawOff;
     CHECK(ArmV6M::getBranchOffset(buf[1], rawOff));
     int32_t delta = ArmV6M::signExtend(rawOff, 11) << 1;
+    CHECK((uint32_t)(2 + 4 + delta) == a.pc());
+}
+
+TEST(BindFlushesAnyOpenPoolChunkBeforeResolvingTheTarget)
+{
+    // Unlike an unconditional branchTo, a conditional one falls through
+    // when not taken, so it must not auto-flush -- the pool stays open
+    // until bind() itself flushes it (guarded: a real branch-around, since
+    // bind()'s own target can be reached via fallthrough too).
+    uint16_t buf[16];
+    Assembler a(buf, 16);
+    a.materializeImm32(0, 0x12345678u); // pool site at pc=0, pc now 2
+    Label label;
+    a.branchTo(label, ArmV6M::Condition::EQ); // site 2, pc now 4, pool still open
+
+    a.bind(label); // must flush the pool (branch-around + pad + word) *before* resolving label's own target
+    uint16_t rawOff;
+    CHECK(ArmV6M::getCondBranchOffset(buf[1], rawOff));
+    int32_t delta = ArmV6M::signExtend(rawOff, 8) << 1;
     CHECK((uint32_t)(2 + 4 + delta) == a.pc());
     // label's own target lands past the flushed branch-around and pool
     // word, never on top of either.
