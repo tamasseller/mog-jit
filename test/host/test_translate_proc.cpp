@@ -8,11 +8,40 @@
 #include "translate_proc.h"
 #include "encode_instr.h"
 #include "armv6.h"
+#include "registers.h"
 
 #include "runtime_internal.h"
 #include "host_runtime_support.h"
 
 using namespace jitc;
+
+static constexpr uint32_t PC = 15;
+
+// The fixed 6-halfword procedure-entry stub every compiled procedure
+// begins with (emitPrologueStub, abi_strategy.cpp) — bumps the LRU tick
+// and low-mirrors it, then indirects into the body via a pc-relative ADD.
+// Never varies with procIdx, argCount, or body content.
+#define PROLOGUE_STUB \
+    ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(LRU_TICK_REG)), \
+    ArmV6M::str(ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::LoReg(ENTRY_IDX_REG), ArmV6M::Uoff<2, 5>(4)), \
+    ArmV6M::adds(ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::Imm<8>(1)), \
+    ArmV6M::mov(ArmV6M::AnyReg(LRU_TICK_REG), ArmV6M::AnyReg(ENTRY_JUMP_REG)), \
+    ArmV6M::add(ArmV6M::AnyReg(ENTRY_OFFSET_REG), ArmV6M::AnyReg(PC)), \
+    ArmV6M::bx(ArmV6M::AnyReg(ENTRY_OFFSET_REG)) /* prologue stub */
+
+// abiEmitReturn's tail when the procedure saved lr on entry (savesLR,
+// initialSpilledCount == 0): dispatches through returnHelperFromStack
+// (helper-vector index 2, offset 8).
+#define RETURN_VIA_STACK \
+    ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)), \
+    ArmV6M::ldr(ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(8)), \
+    ArmV6M::bx(ArmV6M::AnyReg(ENTRY_JUMP_REG)) /* returnHelperFromStack */
+
+// ...and when it didn't save lr: returnHelperFromLr (index 1, offset 4).
+#define RETURN_VIA_LR \
+    ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)), \
+    ArmV6M::ldr(ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(4)), \
+    ArmV6M::bx(ArmV6M::AnyReg(ENTRY_JUMP_REG)) /* returnHelperFromLr */
 
 // proc0 (argCount 0): CONST(37), call(1), RETURN
 static const Instr kProc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
@@ -96,17 +125,14 @@ TEST(TranslateProc0EntryProcedure)
     CHECK(halfwordCount == 18);
 
     const uint16_t expected[] = {
-        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(11)), ArmV6M::str(ArmV6M::LoReg(3), ArmV6M::LoReg(1), ArmV6M::Uoff<2, 5>(4)),
-        ArmV6M::adds(ArmV6M::LoReg(3), ArmV6M::Imm<8>(1)), ArmV6M::mov(ArmV6M::AnyReg(11), ArmV6M::AnyReg(3)),
-        ArmV6M::add(ArmV6M::AnyReg(2), ArmV6M::AnyReg(15)), ArmV6M::bx(ArmV6M::AnyReg(2)), // prologue stub
+        PROLOGUE_STUB,
         ArmV6M::pushWithLr(ArmV6M::LoRegs{0}),           // PUSH {lr}  (savesLR — proc0 makes a CALL)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(37)), // MOVS r0, #37  (CONST 37, stays pending until CALL flushes it)
         ArmV6M::ldrPc(ArmV6M::LoReg(1), ArmV6M::Uoff<2, 8>(12)), // LDR r1,[pc,#12] — the call record, force-pooled
         ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(1)), // MOVS r2, #1  (calleeIndex=1, fits imm8)
         ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(0)),
         ArmV6M::bx(ArmV6M::AnyReg(3)),                     // MOV r3,r10; LDR r3,[r3,#0]; BX r3  (callHelper)
-        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(8)),
-        ArmV6M::bx(ArmV6M::AnyReg(3)),                     // MOV r3,r10; LDR r3,[r3,#8]; BX r3  (returnHelperFromStack, index 2)
+        RETURN_VIA_STACK,
         0x0000, 0x000F,                                    // pool word: packRecord(procIdx=0, k+1=15)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -132,12 +158,9 @@ TEST(TranslateProc1Callee)
     CHECK(halfwordCount == 10);
 
     const uint16_t expected[] = {
-        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(11)), ArmV6M::str(ArmV6M::LoReg(3), ArmV6M::LoReg(1), ArmV6M::Uoff<2, 5>(4)),
-        ArmV6M::adds(ArmV6M::LoReg(3), ArmV6M::Imm<8>(1)), ArmV6M::mov(ArmV6M::AnyReg(11), ArmV6M::AnyReg(3)),
-        ArmV6M::add(ArmV6M::AnyReg(2), ArmV6M::AnyReg(15)), ArmV6M::bx(ArmV6M::AnyReg(2)), // prologue stub
+        PROLOGUE_STUB,
         ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(0), ArmV6M::Imm<3>(5)), // ADDS r0, r0, #5  (LOAD(0)+opImm(ADD,5): LOAD elided, folded straight into acc)
-        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(4)),
-        ArmV6M::bx(ArmV6M::AnyReg(3)),                      // returnHelper tail
+        RETURN_VIA_LR,
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
@@ -185,6 +208,23 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 17);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(3)), // MOVS r7,#3 (CONST 3, folds straight into PUSH's dest r7)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (openLoop's own flushLive — loopStart begins right here)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (testAccNonzero's own flush of the cond block's LOAD(0))
+        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)),  // CMP r0,#0 (testAccNonzero)
+        ArmV6M::beq(ArmV6M::Ioff<1, 8>(4)),                // BEQ +4 — exit branch (inverse of NE), skips the loop when acc==0
+        ArmV6M::subs(ArmV6M::LoReg(7), ArmV6M::LoReg(7), ArmV6M::Imm<3>(1)), // SUBS r7,r7,#1 (body's LOAD(0)+SUB(1)+STORE(0), all folded in place)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (LoopBody close's own flushLive, right before the back-edge)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(-14)),               // B -14 — unconditional back-edge, to loopStart (the second MOV r0,r7 above)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(BrTableJumpTableHelperViaFullPipeline)
@@ -207,6 +247,30 @@ TEST(BrTableJumpTableHelperViaFullPipeline)
     Assembler a(buf, 64);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 24);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::pushWithLr(ArmV6M::LoRegs{0}),              // PUSH {lr}  (savesLR — BR_TABLE N>2 clobbers lr via BLX)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)),  // MOVS r0,#1 (CONST 1, the jump-table selector)
+        ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(3)),  // MOVS r2,#3 (n=3, into SCRATCH_REG)
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), // MOV r3,r10 (HELPER_VEC_REG)
+        ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(24)), // LDR r3,[r3,#24] — brTableJumpHelper slot
+        ArmV6M::blx(ArmV6M::AnyReg(3)),                     // BLX r3 (brTableJumpHelper — lr now points at the table right after)
+        0x0008, // -- jump table slot 0 (case0): 8 bytes past the table base
+        0x000c, // -- jump table slot 1 (case1)
+        0x0010, // -- jump table slot 2 (case2)
+        0x0012, // -- jump table slot 3 (end): past case2, at RETURN_VIA_STACK
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(10)), // MOVS r0,#10 (case0: CONST 10)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(4)),                  // B +4 — skip to end (case0 isn't the last case)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(20)), // MOVS r0,#20 (case1: CONST 20)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                  // B +0 — skip to end (case1 isn't the last case)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(30)), // MOVS r0,#30 (case2: CONST 30, last case — no skip needed)
+        RETURN_VIA_STACK,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(ComparisonFusesIntoBrTableGuard)
@@ -224,6 +288,21 @@ TEST(ComparisonFusesIntoBrTableGuard)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 15);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(5)), // MOVS r0,#5 (CONST 5)
+        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(3)),  // CMP r0,#3 (GT_U operand, fused straight into the BR_TABLE guard)
+        ArmV6M::bhi(ArmV6M::Ioff<1, 8>(2)),                // BHI +2 — GT_U's own true condition: jump straight to case1
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)), // MOVS r0,#1 (case0: CONST 1)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                 // B +0 — skip case1, to RETURN
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(2)), // MOVS r0,#2 (case1: CONST 2)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(ComparisonMaterializesAsOrdinaryValue)
@@ -238,6 +317,21 @@ TEST(ComparisonMaterializesAsOrdinaryValue)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 15);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(5)), // MOVS r0,#5 (CONST 5)
+        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(3)),  // CMP r0,#3 (GT_U operand)
+        ArmV6M::bls(ArmV6M::Ioff<1, 8>(2)),                // BLS +2 — inverse of GT_U(HI): not-taken skips straight to the r0=0 case
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)), // MOVS r0,#1 (GT_U true)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                 // B +0 — skip over the r0=0 case
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)), // MOVS r0,#0 (GT_U false)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(NegViaFullPipeline)
@@ -250,6 +344,17 @@ TEST(NegViaFullPipeline)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 11);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(5)), // MOVS r0,#5 (CONST 5)
+        ArmV6M::negs(ArmV6M::LoReg(0), ArmV6M::LoReg(0)),  // NEGS r0,r0 (NEG)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(ClzHelperViaFullPipeline)
@@ -266,6 +371,20 @@ TEST(ClzHelperViaFullPipeline)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 14);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::pushWithLr(ArmV6M::LoRegs{0}),             // PUSH {lr}  (savesLR — CLZ dispatches through the helper vector, clobbers real lr)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(5)), // MOVS r0, #5  (CONST 5)
+        // CLZ helper dispatch (clzHelper, helper-vector index 4, offset 16) — BLX not BX, since clzHelper returns via `bx lr` instead of tail-jumping
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(16)),
+        ArmV6M::blx(ArmV6M::AnyReg(3)),
+        RETURN_VIA_STACK,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(LastArgumentFoldFallsBackToEagerFlushWhenReferencedTwice)
@@ -281,6 +400,17 @@ TEST(LastArgumentFoldFallsBackToEagerFlushWhenReferencedTwice)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 11);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),                  // MOV r7, r0  (eager flush: arg referenced twice, so acc -> physReg(0)=r7 unconditionally)
+        ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(7), ArmV6M::LoReg(7)), // ADDS r0, r7, r7  (both LOAD(0)s fold to reading r7; REG_ACC ADD combines them)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(CaseClosesViaTerminatorThroughFullPipeline)
@@ -302,6 +432,21 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 17);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(5)), // MOVS r0, #5  (CONST 5)
+        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(3)),  // CMP r0, #3   (GT_U fused into the brTable guard)
+        ArmV6M::bhi(ArmV6M::Ioff<1, 8>(6)),                // BHI -> case1  (guard false: skip case0 entirely)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)), // MOVS r0, #1  (case0: CONST 1)
+        RETURN_VIA_LR,                                     // case0's own bare RETURN — closeFrameForTerminator's Case dispatch
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(2)), // MOVS r0, #2  (case1: CONST 2)
+        RETURN_VIA_LR,                                     // the trailing bare RETURN after case1's BLOCK_END
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 // The tests below cover the remaining paths in translate_proc.cpp's main
@@ -324,6 +469,17 @@ TEST(PopThroughFullPipeline)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 11);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(5)), // MOVS r7, #5  (CONST 5, folds straight into physReg(0) for the PUSH)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0, r7   (POP: window top -> acc)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(TrapAtTopLevel)
@@ -339,9 +495,17 @@ TEST(TrapAtTopLevel)
     // instead: one LDR plus a word at the end. pc lands word-aligned
     // here, so no pad halfword.
     CHECK(halfwordCount == 12);
-    CHECK(buf[6] == ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(4)));  // LDR r0,[pc,#4] — Align(12+4,4)=16, +4 -> byte 20
-    CHECK(buf[10] == 0x0003); // and the pooled word is the *sentinel*,
-    CHECK(buf[11] == 0x8000); // not TRAP's own raw decoded imm
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(4)), // LDR r0,[pc,#4] — Align(12+4,4)=16, +4 -> byte 20
+        RETURN_VIA_LR,
+        0x0003, 0x8000,                                          // pooled word: the 0x80000003 sentinel, not TRAP's own raw decoded imm
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
@@ -367,10 +531,23 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 20);
-    CHECK(buf[9] == ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(8)));  // LDR r0,[pc,#8] -- the TRAP sentinel, pooled
-    CHECK(buf[13] == ArmV6M::b(ArmV6M::Ioff<1, 11>(2))); // the flush's own branch-around, past the pool word
-    CHECK(buf[14] == 0x0009);
-    CHECK(buf[15] == 0x8000);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(5)), // MOVS r0, #5  (CONST 5)
+        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(3)),  // CMP r0, #3  (opImm(GT_U,3), fused straight into the brTable guard)
+        ArmV6M::bhi(ArmV6M::Ioff<1, 8>(12)),               // BHI -> case1's CONST(2), skipping case0's TRAP
+        ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(8)), // LDR r0,[pc,#8] — TRAP's sentinel 0x80000009, pooled
+        RETURN_VIA_LR, // TRAP's own returnSequence() dispatch — same call as an ordinary RETURN, not this procedure's final one
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(2)),                 // case0's terminator-close flush: branch-around past the pool word
+        0x0009, 0x8000,                                    // pool word: TRAP sentinel 0x80000009
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(2)), // MOVS r0, #2  (case1's CONST 2)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(LoadFromOutOfWindowSlot)
@@ -386,6 +563,17 @@ TEST(LoadFromOutOfWindowSlot)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 11);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::ldrSp(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(0)), // LDR r0,[sp,#0]  (LOAD(0): slot0 spilled, argCount=5>WINDOW_SIZE)
+        ArmV6M::incrSp(ArmV6M::Uoff<2, 7>(4)),                  // ADD sp,#4  (discardWindow: reclaim the one spilled arg slot before returning)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(StoreStandaloneInWindowWhenNotPrecededByAFoldableProducer)
@@ -402,6 +590,20 @@ TEST(StoreStandaloneInWindowWhenNotPrecededByAFoldableProducer)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 14);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)), // MOV r7, r0  (eager flush of the sole/last arg into physReg(0); body-start isn't a LOAD, so the fold doesn't elide this)
+        ArmV6M::movs(ArmV6M::LoReg(6), ArmV6M::Imm<8>(9)), // MOVS r6, #9  (CONST 9, into physReg(1) for the PUSH)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(6)), // MOV r0, r6  (POP: window top -> acc)
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)), // MOV r7, r0  (STORE(0): standalone, not preceded by a foldable producer)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0, r7  (RETURN's own acc flush, resyncing from the STORE's target)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(StoreStandaloneOutOfWindowAndLastArgFoldRefCountZero)
@@ -423,6 +625,18 @@ TEST(StoreStandaloneOutOfWindowAndLastArgFoldRefCountZero)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 12);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::negs(ArmV6M::LoReg(0), ArmV6M::LoReg(0)),       // NEGS r0, r0  (NEG: slot4 unreferenced, so the incoming arg stayed plain ACC_REG — no eager flush needed)
+        ArmV6M::strSp(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(0)), // STR r0,[sp,#0]  (STORE(0): out-of-window, peekStoreFold never applies here)
+        ArmV6M::incrSp(ArmV6M::Uoff<2, 7>(4)),                  // ADD sp,#4  (discardWindow: reclaim the one spilled arg slot before returning)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
@@ -439,6 +653,17 @@ TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 11);
     CHECK(literalSiteCount(buf, halfwordCount) == 0);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(125)),                // MOVS r0, #125  (CONST 1000's shift-trick synthesis: 125<<3)
+        ArmV6M::lsls(ArmV6M::LoReg(0), ArmV6M::LoReg(0), ArmV6M::Imm<5>(3)), // LSLS r0, r0, #3
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(ConstFoldsDirectlyIntoAFollowingStore)
@@ -451,6 +676,18 @@ TEST(ConstFoldsDirectlyIntoAFollowingStore)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 12);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(ACC_REG)), // MOV r7, r0  (callee prologue: argCount=1's incoming last-arg always flushed into physReg(0)=r7, since its only ref is a STORE, not a body-start LOAD)
+        ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(5)),       // MOVS r7, #5  (CONST 5 folds straight into STORE(0)'s target r7, overwriting the arg)
+        ArmV6M::mov(ArmV6M::AnyReg(ACC_REG), ArmV6M::AnyReg(7)), // MOV r0, r7  (RETURN's flush: acc's clean value now lives in r7, brought back to r0)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(RegRegOutOfWindowWritesBackToStackAfterComputing)
@@ -468,6 +705,20 @@ TEST(RegRegOutOfWindowWritesBackToStackAfterComputing)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 14);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::ldrSp(ArmV6M::LoReg(SCRATCH_REG), ArmV6M::Uoff<2, 8>(0)),                           // LDR r2,[sp,#0]  (reload the REG_REG operand — slot 0 is out-of-window since argCount=5>WINDOW_SIZE)
+        ArmV6M::adds(ArmV6M::LoReg(SCRATCH_REG), ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(SCRATCH_REG)), // ADDS r2, r0, r2  (REG_REG ADD: acc(r0) + reloaded operand(r2), dest is SCRATCH_REG since target is out-of-window)
+        ArmV6M::strSp(ArmV6M::LoReg(SCRATCH_REG), ArmV6M::Uoff<2, 8>(0)),                           // STR r2,[sp,#0]  (write the result back to the spilled slot)
+        ArmV6M::movs(ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<8>(1)),                                    // MOVS r0, #1  (CONST(1), flushed for RETURN)
+        ArmV6M::incrSp(ArmV6M::Uoff<2, 7>(4)),                                                      // ADD sp, #4  (discardWindow reclaims the one spilled arg slot; savesLR is false here)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(RegRegInWindowWritesBackToItsOwnRegister)
@@ -480,6 +731,18 @@ TEST(RegRegInWindowWritesBackToItsOwnRegister)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 12);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(5)),                 // MOVS r7, #5  (CONST 5, flushed into physReg(0)=r7 by PUSH)
+        ArmV6M::adds(ArmV6M::LoReg(7), ArmV6M::LoReg(7), ArmV6M::LoReg(7)), // ADDS r7, r7, r7  (REG_REG ADD, in-window: dest==operand==acc's current home, r7)
+        ArmV6M::mov(ArmV6M::AnyReg(ACC_REG), ArmV6M::AnyReg(7)),           // MOV r0, r7  (RETURN's flush: LOAD(0)'s pending producer(r7) brought into acc)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(PopAccStackComboThroughFullPipeline)
@@ -492,13 +755,28 @@ TEST(PopAccStackComboThroughFullPipeline)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 11);
-}
 
-    #include <iostream>
-#include <iomanip>
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(3)),                          // MOVS r7, #3  (CONST 3, flushed into physReg(0)=r7 by PUSH)
+        ArmV6M::adds(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(7), ArmV6M::Imm<3>(2)),  // ADDS r0, r7, #2  (POP_ACC ADD: pending CONST 2 as the constant LHS, popped r7 as RHS, dest=acc)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
+}
 
 TEST(PeekPeekStackComboThroughFullPipeline)
 {
+    // PEEK_PEEK's dest is the stack top itself (physReg(tos-1) = r7 here),
+    // computed in place with no tos change — CONST(3) materializes
+    // straight into r7 for the PUSH rather than acc, since accState.flush
+    // targets the push's own destination register directly. POP() then
+    // moves that live value from its window slot (r7) into acc (r0),
+    // exactly the MOV the fused CONST/LOAD paths elsewhere in this file
+    // never need.
     const Instr body[] = {CONST(3), PUSH(), CONST(6), opStack(Op::AND, Combo::PEEK_PEEK), POP(), bare(Op::RETURN)};
     uint32_t argCounts[] = {0};
     uint8_t bodyBytes[16];
@@ -506,7 +784,21 @@ TEST(PeekPeekStackComboThroughFullPipeline)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+
     CHECK(halfwordCount == 13);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(3)), // MOVS r7, #3  (CONST 3, into physReg(0) for the PUSH)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(6)), // MOVS r0, #6  (CONST 6, into acc)
+        ArmV6M::ands(ArmV6M::LoReg(7), ArmV6M::LoReg(0)),  // ANDS r7, r0  (PEEK_PEEK: r7 &= acc, in place)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0, r7   (POP: window top -> acc)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
@@ -532,6 +824,21 @@ TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 18);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::cmp(ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<8>(0)),   // CMP r0, #0  (LOOP condition: no fused comparison, testAccNonzero's fallback)
+        ArmV6M::beq(ArmV6M::Ioff<1, 8>(6)),                       // BEQ exitFixup  (loop-exit branch, taken when acc==0)
+        ArmV6M::movs(ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<8>(42)), // MOVS r0, #42  (RETURN's flush of CONST(42)'s pending value)
+        RETURN_VIA_LR,
+        ArmV6M::ldrPc(ArmV6M::LoReg(ACC_REG), ArmV6M::Uoff<2, 8>(4)), // LDR r0,[pc,#4]  (CONST(999) doesn't fit imm8 or the shift trick, so it pools)
+        RETURN_VIA_LR,
+        0x03e7, 0x0000,                                           // pool word: 999
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(RevbitsHelperViaFullPipeline)
@@ -546,6 +853,19 @@ TEST(RevbitsHelperViaFullPipeline)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 14);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::pushWithLr(ArmV6M::LoRegs{0}),             // PUSH {lr}  (savesLR — REVBITS needs LR save, reached via BLX like CALL)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)), // MOVS r0, #1  (CONST 1)
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(20)),
+        ArmV6M::blx(ArmV6M::AnyReg(3)),                    // MOV r3,r10; LDR r3,[r3,#20]; BLX r3  (revbitsHelper, index 5 — BLX not BX: it returns via bx lr like an ordinary subroutine)
+        RETURN_VIA_STACK,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
@@ -568,6 +888,33 @@ TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
     Assembler a(buf, 64);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 28);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::pushWithLr(ArmV6M::LoRegs{0}),              // PUSH {lr}  (savesLR — BR_TABLE N>2 needs LR save)
+        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(3)),   // CMP r0, #3  (LOAD(0) elided into acc via last-arg fold; GT_U operand=3)
+        ArmV6M::bls(ArmV6M::Ioff<1, 8>(2)),                 // BLS +2  (inverse of HI/GT_U's true condition — comparison doesn't fuse into the N>2 jump table)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)),  // MOVS r0, #1  (materialized true value)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                  // skip the false branch
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)),  // MOVS r0, #0  (materialized false value)
+        ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(3)),  // MOVS r2, #3  (materializeImm32(SCRATCH_REG, n=3) for openBrTableJump)
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(24)),
+        ArmV6M::blx(ArmV6M::AnyReg(3)),                     // MOV r3,r10; LDR r3,[r3,#24]; BLX r3  (brTableJumpHelper, index 6 — lr must point at the table right after)
+        0x0008, // jump table slot 0 (case0 start, byte offset from table base)
+        0x000c, // jump table slot 1 (case1 start)
+        0x0010, // jump table slot 2 (case2 start)
+        0x0012, // jump table slot 3 (construct end)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(10)), // CONST(10), case0
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(4)),                  // case0's skip-to-end
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(20)), // CONST(20), case1
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                  // case1's skip-to-end
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(30)), // CONST(30), case2 (last — no skip needed)
+        RETURN_VIA_STACK,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(LoopConditionClosesViaAnExplicitFusedComparison)
@@ -593,6 +940,22 @@ TEST(LoopConditionClosesViaAnExplicitFusedComparison)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 16);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(3)),              // MOVS r7, #3  (CONST 3, into physReg(0) for the PUSH)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),              // MOV r0, r7  (openLoop's own flushLive: canonicalize acc before the condition sub-block)
+        ArmV6M::cmp(ArmV6M::LoReg(7), ArmV6M::Imm<8>(0)),               // CMP r7, #0  (LOAD(0)+opImm(GT_S,0) fused: pending value read straight from r7)
+        ArmV6M::ble(ArmV6M::Ioff<1, 8>(4)),                             // BLE — inverse(GT)=LE, the loop-exit branch, patched past the back-edge
+        ArmV6M::subs(ArmV6M::LoReg(7), ArmV6M::LoReg(7), ArmV6M::Imm<3>(1)), // SUBS r7,r7,#1  (LOAD(0)+opImm(SUB,1) folds straight into STORE(0)'s target r7)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),              // MOV r0, r7  (closeBlockEnd's own flushLive before the back-edge)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(-12)),                            // unconditional back-edge to loopStart
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(ComparisonMaterializedResultFoldsDirectlyIntoAFollowingStore)
@@ -609,6 +972,23 @@ TEST(ComparisonMaterializedResultFoldsDirectlyIntoAFollowingStore)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 17);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)), // MOV r7, r0  (last-arg eager flush: STORE(0) refs slot0 but isn't a body-start LOAD)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(5)), // MOVS r0, #5  (CONST 5)
+        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(3)),  // CMP r0, #3  (GT_U operand=3)
+        ArmV6M::bls(ArmV6M::Ioff<1, 8>(2)),                // BLS — inverse of HI/GT_U's true condition
+        ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(1)), // MOVS r7, #1  (materializeComparison's fold.reg path: true value straight into STORE's target r7)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                 // skip the false branch
+        ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(0)), // MOVS r7, #0  (false value into r7)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0, r7  (RETURN's own flushLive: canonicalize acc back into r0)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 TEST(LastArgumentFoldEagerlyFlushesWhenBodyStartReferenceIsNotALoad)
@@ -626,6 +1006,17 @@ TEST(LastArgumentFoldEagerlyFlushesWhenBodyStartReferenceIsNotALoad)
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
     CHECK(halfwordCount == 11);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(6), ArmV6M::AnyReg(0)), // MOV r6, r0  (eager flush: opReg's own target(1)==lastArgSlot isn't a body-start LOAD)
+        ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(6), ArmV6M::LoReg(6)), // ADDS r0,r6,r6  (opReg(ADD,1): acc, already r6 post-flush, plus window slot1 — same r6)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(buf[i] == expected[i]);
+    }
 }
 
 static uint32_t currentSp()
@@ -709,14 +1100,11 @@ TEST(LargeConstAndLargeOperandBothPoolIntoOneChunk)
     CHECK(halfwordCount == 16); // 24 unpooled: 7 + 7 synthesis halfwords
 
     const uint16_t expected[] = {
-        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(11)), ArmV6M::str(ArmV6M::LoReg(3), ArmV6M::LoReg(1), ArmV6M::Uoff<2, 5>(4)),
-        ArmV6M::adds(ArmV6M::LoReg(3), ArmV6M::Imm<8>(1)), ArmV6M::mov(ArmV6M::AnyReg(11), ArmV6M::AnyReg(3)),
-        ArmV6M::add(ArmV6M::AnyReg(2), ArmV6M::AnyReg(15)), ArmV6M::bx(ArmV6M::AnyReg(2)), // prologue stub
+        PROLOGUE_STUB,
         ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(8)),  // LDR r0,[pc,#8]   -> byte 24
         ArmV6M::ldrPc(ArmV6M::LoReg(2), ArmV6M::Uoff<2, 8>(12)), // LDR r2,[pc,#12]  -> byte 28
         ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(0), ArmV6M::LoReg(2)), // ADDS r0,r0,r2 — operand came from the pool
-        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(4)),
-        ArmV6M::bx(ArmV6M::AnyReg(3)),                    // return sequence
+        RETURN_VIA_LR,
         0x5678, 0x1234,                                  // pool: 0x12345678
         0xDEF0, 0x0ABC,                                  // pool: 0x0ABCDEF0
     };
