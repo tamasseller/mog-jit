@@ -89,10 +89,8 @@ static void addOrSubWithImm(AddSubRsubOp which, Assembler &e, uint32_t dest, uin
     }
 }
 
-void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const Shape *operand, uint32_t dest)
+void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const Shape &rhs, uint32_t dest)
 {
-    Shape rhs = operand ? *operand : Shape::ofReg(dest);
-
     if(accShape.isImm && rhs.isImm)
     {
         /*
@@ -168,15 +166,15 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
             /*
              * Shift by literal is also well supported, some special cases here.
              */
-            assert(operand != nullptr && operand->isImm); // GCOV_EXCL_LINE
+            assert(rhs.isImm); // GCOV_EXCL_LINE
 
-            const auto m = shapeToReg(e, accShape, SCRATCH_REG);
+            const auto m = accShape.peek(e, SCRATCH_REG);
 
             switch(op)
             {
-                case Op::SHL: e.emit(ArmV6M::lsls(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)operand->imm))); break;
-                case Op::SHR: e.emit(ArmV6M::lsrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)operand->imm))); break;
-                case Op::ASR: e.emit(ArmV6M::asrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)operand->imm))); break;
+                case Op::SHL: e.emit(ArmV6M::lsls(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)rhs.imm))); break;
+                case Op::SHR: e.emit(ArmV6M::lsrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)rhs.imm))); break;
+                case Op::ASR: e.emit(ArmV6M::asrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)rhs.imm))); break;
                 default: assert(false); // GCOV_EXCL_LINE
             }
         }
@@ -186,10 +184,10 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
              * Shift by register, non-commutative, only a <<= b form isn exists, mov + shift (either order) 
              * in general, aliasing hazard.
              */
-            auto m = shapeToReg(e, rhs, SCRATCH_REG);
+            auto m = rhs.peek(e, SCRATCH_REG);
             auto t = (m == dest) ? ACC_REG : dest;
 
-            materializeShape(e, accShape, t);
+            accShape.materialize(e, t);
 
             switch(op)
             {
@@ -211,11 +209,11 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
          * Commutative register ops, only a *= b form isn exists, mov + op in that order in general, 
          * aliasing handled by swapping.
          */
-        auto m = shapeToReg(e, rhs, SCRATCH_REG);
+        auto m = rhs.peek(e, SCRATCH_REG);
 
         if(m == dest)
         {
-            const auto t = shapeToReg(e, accShape, ACC_REG);
+            const auto t = accShape.peek(e, ACC_REG);
 
             switch(op)
             {
@@ -228,7 +226,7 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
         }
         else
         {
-            materializeShape(e, accShape, dest);
+            accShape.materialize(e, dest);
 
             switch(op)
             {

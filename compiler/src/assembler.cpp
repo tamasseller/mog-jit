@@ -148,11 +148,17 @@ void Assembler::branchTo(Label &label, ArmV6M::Condition c)
 void Assembler::branchTo(Label &label)
 {
     linkIntoChain(label, placeholderBranch());
+    // XXX flush?
 }
 
 void Assembler::flushPool()
 {
     flushPoolImpl(false);
+}
+
+void Assembler::flushPoolNoGuard()
+{
+    flushPoolImpl(true);
 }
 
 void Assembler::bind(Label &label)
@@ -161,7 +167,7 @@ void Assembler::bind(Label &label)
     // resolving to a spot the flush then inserts pool words into — the
     // one ordering guarantee that makes this safe to call from anywhere
     // a fixup resolves to "wherever we are now."
-    flushPoolImpl(false);
+    flushPoolImpl(false);       /// XXX Why false?
     uint32_t target = pc();
     for(int32_t site = label.chain; site != -1;)
     {
@@ -273,7 +279,7 @@ void Assembler::patchPoolSite(uint32_t siteOffset, uint32_t word)
 // raw halfwords are never at risk of being misread as a pooled site, no
 // matter what's still open when one is emitted. Identical values dedupe
 // to one shared pool word.
-void Assembler::flushPoolImpl(bool endOfProcedure)
+void Assembler::flushPoolImpl(bool endOfProcedure)  // XXX Why endOfProcedure? doesn't need jumparound at after any non-cond B either.
 {
     if(pendingCount == 0)
     {

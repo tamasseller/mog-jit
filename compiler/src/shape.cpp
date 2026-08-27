@@ -5,26 +5,26 @@
 namespace jitc
 {
 
-void materializeShape(Assembler &a, const Shape &shape, uint32_t dstReg)
+void Shape::materialize(Assembler &a, uint32_t dstReg) const
 {
-    if(shape.isImm)
+    if(this->isImm)
     {
-        a.materializeImm32(dstReg, (uint32_t)shape.imm);
+        a.materializeImm32(dstReg, (uint32_t)this->imm);
     }
-    else if(shape.reg != dstReg)
+    else if(this->reg != dstReg)
     {
-        a.emit(ArmV6M::mov(ArmV6M::AnyReg((uint16_t)dstReg), ArmV6M::AnyReg((uint16_t)shape.reg)));
+        a.emit(ArmV6M::mov(ArmV6M::AnyReg((uint16_t)dstReg), ArmV6M::AnyReg((uint16_t)this->reg)));
     }
 }
 
-uint32_t shapeToReg(Assembler &a, const Shape &shape, uint32_t scratchReg)
+uint32_t Shape::peek(Assembler &a, uint32_t scratchReg) const
 {
-    if(!shape.isImm)
+    if(!this->isImm)
     {
-        return shape.reg;
+        return this->reg;
     }
     
-    materializeShape(a, shape, scratchReg);
+    this->materialize(a, scratchReg);
     return scratchReg;
 }
 

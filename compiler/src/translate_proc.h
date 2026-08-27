@@ -36,29 +36,17 @@ namespace jitc
 // normally with overflowed() now true; on an attached one it never
 // returns at all, unwinding straight to RESOURCE_ERROR.
 //
-// savesLROverride, if non-null, is the whole-program directory's own
-// precomputed answer (runtime/runtime_internal.h's ProcSlot) to "does this
-// body ever reach CALL/BR_TABLE(N>2)/CLZ/REVBITS" — needsLRSave(proc)
-// answers the same question by scanning the body fresh, exactly right for
-// a one-off host-test/pre-measurement call, but wasteful to redo on every
-// recompile once a directory already has the answer. Null (every existing
-// caller, unchanged) falls back to that scan.
+// savesLR is the whole-program directory's own precomputed answer
+// (runtime/runtime_internal.h's ProcSlot, via proc_scan.h's scanProcBody)
+// to "does this body ever reach CALL/BR_TABLE(N>2)/CLZ/REVBITS" — every
+// caller already has this answer up front (a Runtime's own ProcSlot, or a
+// test/pre-measurement call's own hand-derived literal), so translateProc
+// never needs to rescan the body itself.
 uint32_t translateProc(
     const Proc &proc,
     uint32_t procIdx,
-    const uint32_t *calleeArgCounts, uint32_t calleeCount,
     Assembler &a,
-    const bool *savesLROverride = nullptr);
-
-/** Whether proc's own body ever reaches an op needing lr protected before
- *  anything can clobber it: a nested CALL, blocks.h's own openBrTableJump
- *  (BR_TABLE N > 2 only), or unaryops.h's CLZ/REVBITS — all reached via
- *  BLX through the helper vector, which clobbers real hardware lr exactly
- *  like a local BL would. Exported for callers with no directory
- *  (runtime/runtime_internal.h's ProcSlot) to source the answer from
- *  instead — translateProc itself falls back to this whenever
- *  savesLROverride is null. */
-bool needsLRSave(const Proc &proc);
+    const Runtime& r);
 
 } // namespace jitc
 

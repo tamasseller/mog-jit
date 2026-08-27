@@ -21,12 +21,12 @@ void emitUnary(Assembler &e, Op op, uint32_t dest)
         return;
     }
 
-    // CLZ (index 4) / REVBITS (index 5) in the flash-resident helper vector
-    // (docs/design.md §11). BLX rather than BX: both routines are ordinary
-    // subroutines that return via `bx lr`, unlike the tail-jumping
-    // callHelper/returnHelper* this same MOV/LDR idiom also reaches
-    // (abi_strategy.cpp's own precedent).
-    uint32_t offset = (op == Op::CLZ) ? 16 : 20;
+    // CLZ / REVBITS in the flash-resident helper vector (docs/design.md
+    // §11). BLX rather than BX: both routines are ordinary subroutines
+    // that return via `bx lr`, unlike the tail-jumping callHelper/
+    // returnHelper* this same MOV/LDR idiom also reaches (abi_strategy.cpp's
+    // own precedent).
+    uint32_t offset = (op == Op::CLZ) ? HELPER_CLZ_OFFSET : HELPER_REVBITS_OFFSET;
     e.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
     e.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>((uint16_t)offset)));
     e.emit(ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));

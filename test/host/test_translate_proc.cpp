@@ -47,7 +47,6 @@ static constexpr uint32_t PC = 15;
 static const Instr kProc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
 // proc1 (argCount 1): LOAD(0), opImm(ADD, 5), RETURN
 static const Instr kProc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
-static const uint32_t kArgCounts[] = {0, 1};
 
 /** Encodes an Instr[] fixture into the raw wire bytes Proc::body expects. */
 static Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8_t *bytesOut, uint32_t bytesCap)
@@ -55,6 +54,30 @@ static Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8
     uint32_t len = encodeBody(body, count, bytesOut, bytesCap);
     return Proc{argCount, bytesOut, len};
 }
+
+// translateProc now reads two facts through a Runtime rather than a raw
+// calleeArgCounts array/savesLR bool: r.slot(procIdx).needsLRSave() for
+// the procedure under test itself (translateProc's own read), and
+// r.slot(calleeIndex).argCount() for whatever CALL targets it reaches
+// (translateBody's own CALL-case read) — nothing else. No dispatch/arena
+// ever runs on the host, so a hand-populated slot works fine here; no
+// need to walk real wire bytes through Runtime::init() the way
+// test_runtime_arena.cpp's own RuntimeStorage does.
+template<uint32_t procCount>
+class FakeRuntime
+{
+    alignas(8) uint8_t bytes[sizeof(Runtime) + (procCount + 1) * sizeof(ProcSlot)] = {};
+public:
+    FakeRuntime()
+    {
+        runtime().procCount = procCount;
+    }
+    Runtime &runtime() { return *reinterpret_cast<Runtime *>(bytes); }
+    void set(uint32_t idx, uint32_t argCount, bool savesLR)
+    {
+        runtime().slot(idx).setStaticInfo(argCount, /*bodyBytes=*/0, savesLR);
+    }
+};
 
 static uint32_t literalSiteCount(const uint16_t *buf, uint32_t halfwords)
 {
@@ -120,7 +143,10 @@ TEST(TranslateProc0EntryProcedure)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, kProc0Body, 3, bodyBytes, sizeof(bodyBytes));
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, /*procIdx=*/0, kArgCounts, 2, a);
+    FakeRuntime<2> rt;
+    rt.set(0, 0, /*savesLR=*/true);
+    rt.set(1, 1, /*savesLR=*/false);
+    uint32_t halfwordCount = translateProc(proc, /*procIdx=*/0, a, rt.runtime());
 
     CHECK(halfwordCount == 18);
 
@@ -153,7 +179,9 @@ TEST(TranslateProc1Callee)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(1, kProc1Body, 3, bodyBytes, sizeof(bodyBytes));
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, /*procIdx=*/1, kArgCounts, 2, a);
+    FakeRuntime<2> rt;
+    rt.set(1, 1, /*savesLR=*/false);
+    uint32_t halfwordCount = translateProc(proc, /*procIdx=*/1, a, rt.runtime());
 
     CHECK(halfwordCount == 10);
 
@@ -174,8 +202,11 @@ TEST(OverflowIsReportedRatherThanOverrunningTheBuffer)
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, kProc0Body, 3, bodyBytes, sizeof(bodyBytes));
     Assembler a(buf, 4);
+    FakeRuntime<2> rt;
+    rt.set(0, 0, /*savesLR=*/true);
+    rt.set(1, 1, /*savesLR=*/false);
     MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, kArgCounts, 2, a));
+    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, a, rt.runtime()));
 }
 
 // The tests below exercise LOOP/BR_TABLE/comparisons-as-values/unary ops/
@@ -201,12 +232,13 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
         bare(Op::BLOCK_END),
         bare(Op::RETURN),
     };
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 17);
 
     const uint16_t expected[] = {
@@ -240,12 +272,13 @@ TEST(BrTableJumpTableHelperViaFullPipeline)
             CONST(30), bare(Op::BLOCK_END),
         bare(Op::RETURN),
     };
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/true);
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[64];
     Assembler a(buf, 64);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 24);
 
     const uint16_t expected[] = {
@@ -281,12 +314,13 @@ TEST(ComparisonFusesIntoBrTableGuard)
             CONST(2), bare(Op::BLOCK_END),
         bare(Op::RETURN),
     };
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 15);
 
     const uint16_t expected[] = {
@@ -310,12 +344,13 @@ TEST(ComparisonMaterializesAsOrdinaryValue)
     // No BR_TABLE/LOOP-exit right after it — takes the
     // materializeComparison path, not fusion.
     const Instr body[] = {CONST(5), opImm(Op::GT_U, 3), bare(Op::RETURN)};
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 15);
 
     const uint16_t expected[] = {
@@ -337,12 +372,13 @@ TEST(ComparisonMaterializesAsOrdinaryValue)
 TEST(NegViaFullPipeline)
 {
     const Instr body[] = {CONST(5), bare(Op::NEG), bare(Op::RETURN)};
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[8];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
@@ -364,12 +400,13 @@ TEST(ClzHelperViaFullPipeline)
     // unit-tested directly in test_unaryops.cpp; this is the
     // caller-side wiring around it.
     const Instr body[] = {CONST(5), bare(Op::CLZ), bare(Op::RETURN)};
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/true);
     uint8_t bodyBytes[8];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 14);
 
     const uint16_t expected[] = {
@@ -393,12 +430,13 @@ TEST(LastArgumentFoldFallsBackToEagerFlushWhenReferencedTwice)
     // path (unconditional flush into physReg(argCount-1)), not the
     // elision TranslateProc1Callee exercises.
     const Instr body[] = {LOAD(0), LOAD(0), opReg(Op::ADD, 0), bare(Op::RETURN)};
-    uint32_t argCounts[] = {1};
+    FakeRuntime<1> rt;
+    rt.set(0, 1, /*savesLR=*/false);
     uint8_t bodyBytes[16];
     Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
@@ -425,12 +463,13 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
             CONST(2), bare(Op::BLOCK_END),
         bare(Op::RETURN),
     };
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 17);
 
     const uint16_t expected[] = {
@@ -462,12 +501,13 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
 TEST(PopThroughFullPipeline)
 {
     const Instr body[] = {CONST(5), PUSH(), POP(), bare(Op::RETURN)};
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
@@ -485,12 +525,13 @@ TEST(PopThroughFullPipeline)
 TEST(TrapAtTopLevel)
 {
     const Instr body[] = {trapInstr(3)};
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[8];
     Proc proc = makeProc(0, body, 1, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     // The 0x80000003 sentinel takes 5 synthesis halfwords, so it pools
     // instead: one LDR plus a word at the end. pc lands word-aligned
     // here, so no pad halfword.
@@ -514,22 +555,24 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
     // with TRAP as the terminator instead of RETURN — closeFrameForTerminator's
     // "frame != nullptr" guard around TRAP is a distinct source line from
     // RETURN's identically-shaped guard. trapInstr(9)'s sentinel pools
-    // (synthesis cost 5), and case0's own terminator close resolves
-    // case1's start via Assembler::bind — which flushes that pending
-    // pool entry right there (branch-around + word, already
-    // word-aligned), *before* case1 (a plain CONST(2)) ever runs.
+    // (synthesis cost 5); case0's own terminator close (returnSequence's
+    // own BX already departs unconditionally) flushes that pending pool
+    // entry with flushPoolNoGuard() right there — no branch-around
+    // needed since nothing ever falls through into it, just the usual
+    // alignment pad — *before* case1 (a plain CONST(2)) ever runs.
     const Instr body[] = {
         CONST(5), opImm(Op::GT_U, 3), brTable(2),
             CONST(1), trapInstr(9),
             CONST(2), bare(Op::BLOCK_END),
         bare(Op::RETURN),
     };
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 20);
 
     const uint16_t expected[] = {
@@ -539,7 +582,7 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
         ArmV6M::bhi(ArmV6M::Ioff<1, 8>(12)),               // BHI -> case1's CONST(2), skipping case0's TRAP
         ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(8)), // LDR r0,[pc,#8] — TRAP's sentinel 0x80000009, pooled
         RETURN_VIA_LR, // TRAP's own returnSequence() dispatch — same call as an ordinary RETURN, not this procedure's final one
-        ArmV6M::b(ArmV6M::Ioff<1, 11>(2)),                 // case0's terminator-close flush: branch-around past the pool word
+        ArmV6M::nop(),                                     // case0's terminator-close flush: alignment pad, no branch-around needed
         0x0009, 0x8000,                                    // pool word: TRAP sentinel 0x80000009
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(2)), // MOVS r0, #2  (case1's CONST 2)
         RETURN_VIA_LR,
@@ -556,12 +599,13 @@ TEST(LoadFromOutOfWindowSlot)
     // entry, so LOAD(0) must reload it via ldrSp instead of reading a
     // window register directly.
     const Instr body[] = {LOAD(0), bare(Op::RETURN)};
-    uint32_t argCounts[] = {5};
+    FakeRuntime<1> rt;
+    rt.set(0, 5, /*savesLR=*/false);
     uint8_t bodyBytes[8];
     Proc proc = makeProc(5, body, 2, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
@@ -583,12 +627,13 @@ TEST(StoreStandaloneInWindowWhenNotPrecededByAFoldableProducer)
     // dispatch, not the far-more-common fold path this file's other
     // tests exercise via peekStoreFold.
     const Instr body[] = {CONST(9), PUSH(), POP(), STORE(0), bare(Op::RETURN)};
-    uint32_t argCounts[] = {1};
+    FakeRuntime<1> rt;
+    rt.set(0, 1, /*savesLR=*/false);
     uint8_t bodyBytes[16];
     Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 14);
 
     const uint16_t expected[] = {
@@ -618,12 +663,13 @@ TEST(StoreStandaloneOutOfWindowAndLastArgFoldRefCountZero)
     // producer, the one case last-arg-fold's own dedicated tests above
     // don't otherwise reach (they all reference the last slot).
     const Instr body[] = {bare(Op::NEG), STORE(0), bare(Op::RETURN)};
-    uint32_t argCounts[] = {5};
+    FakeRuntime<1> rt;
+    rt.set(0, 5, /*savesLR=*/false);
     uint8_t bodyBytes[8];
     Proc proc = makeProc(5, body, 3, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 12);
 
     const uint16_t expected[] = {
@@ -645,12 +691,13 @@ TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
     // materializeImm32's shift-trick (MOVS + LSLS, 2 halfwords) — so this
     // also guards that nothing here may become a literal load.
     const Instr body[] = {CONST(1000), bare(Op::RETURN)};
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[8];
     Proc proc = makeProc(0, body, 2, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 11);
     CHECK(literalSiteCount(buf, halfwordCount) == 0);
 
@@ -669,12 +716,13 @@ TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
 TEST(ConstFoldsDirectlyIntoAFollowingStore)
 {
     const Instr body[] = {CONST(5), STORE(0), bare(Op::RETURN)};
-    uint32_t argCounts[] = {1};
+    FakeRuntime<1> rt;
+    rt.set(0, 1, /*savesLR=*/false);
     uint8_t bodyBytes[8];
     Proc proc = makeProc(1, body, 3, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 12);
 
     const uint16_t expected[] = {
@@ -698,12 +746,13 @@ TEST(RegRegOutOfWindowWritesBackToStackAfterComputing)
     // through binops.cpp's own lower-level tests, never through this
     // file's real dispatch.
     const Instr body[] = {opRegWriteback(Op::ADD, 0), CONST(1), bare(Op::RETURN)};
-    uint32_t argCounts[] = {5};
+    FakeRuntime<1> rt;
+    rt.set(0, 5, /*savesLR=*/false);
     uint8_t bodyBytes[16];
     Proc proc = makeProc(5, body, 3, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 14);
 
     const uint16_t expected[] = {
@@ -724,12 +773,13 @@ TEST(RegRegOutOfWindowWritesBackToStackAfterComputing)
 TEST(RegRegInWindowWritesBackToItsOwnRegister)
 {
     const Instr body[] = {CONST(5), PUSH(), opRegWriteback(Op::ADD, 0), LOAD(0), bare(Op::RETURN)};
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 12);
 
     const uint16_t expected[] = {
@@ -748,12 +798,13 @@ TEST(RegRegInWindowWritesBackToItsOwnRegister)
 TEST(PopAccStackComboThroughFullPipeline)
 {
     const Instr body[] = {CONST(3), PUSH(), CONST(2), opStack(Op::ADD, Combo::POP_ACC), bare(Op::RETURN)};
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
@@ -778,12 +829,13 @@ TEST(PeekPeekStackComboThroughFullPipeline)
     // exactly the MOV the fused CONST/LOAD paths elsewhere in this file
     // never need.
     const Instr body[] = {CONST(3), PUSH(), CONST(6), opStack(Op::AND, Combo::PEEK_PEEK), POP(), bare(Op::RETURN)};
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
 
     CHECK(halfwordCount == 13);
 
@@ -817,12 +869,13 @@ TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
         CONST(42), bare(Op::RETURN),
         CONST(999), bare(Op::RETURN),
     };
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[16];
     Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 18);
 
     const uint16_t expected[] = {
@@ -846,12 +899,13 @@ TEST(RevbitsHelperViaFullPipeline)
     // Mirrors ClzHelperViaFullPipeline above, for REVBITS's own helper
     // vector index (revbitsHelper, index 5).
     const Instr body[] = {CONST(1), bare(Op::REVBITS), bare(Op::RETURN)};
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/true);
     uint8_t bodyBytes[8];
     Proc proc = makeProc(0, body, 3, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 14);
 
     const uint16_t expected[] = {
@@ -881,12 +935,13 @@ TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
             CONST(30), bare(Op::BLOCK_END),
         bare(Op::RETURN),
     };
-    uint32_t argCounts[] = {1};
+    FakeRuntime<1> rt;
+    rt.set(0, 1, /*savesLR=*/true);
     uint8_t bodyBytes[32];
     Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[64];
     Assembler a(buf, 64);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 28);
 
     const uint16_t expected[] = {
@@ -933,12 +988,13 @@ TEST(LoopConditionClosesViaAnExplicitFusedComparison)
         bare(Op::BLOCK_END),
         bare(Op::RETURN),
     };
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 16);
 
     const uint16_t expected[] = {
@@ -965,12 +1021,13 @@ TEST(ComparisonMaterializedResultFoldsDirectlyIntoAFollowingStore)
     // comparison-as-value test in this file has the result land in
     // ACC_REG (fold.reg<0) instead.
     const Instr body[] = {CONST(5), opImm(Op::GT_U, 3), STORE(0), bare(Op::RETURN)};
-    uint32_t argCounts[] = {1};
+    FakeRuntime<1> rt;
+    rt.set(0, 1, /*savesLR=*/false);
     uint8_t bodyBytes[16];
     Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 17);
 
     const uint16_t expected[] = {
@@ -999,12 +1056,13 @@ TEST(LastArgumentFoldEagerlyFlushesWhenBodyStartReferenceIsNotALoad)
     // still take the eager-flush path, since it reads via physReg(slot)
     // rather than acc's own pending value.
     const Instr body[] = {opReg(Op::ADD, 1), bare(Op::RETURN)};
-    uint32_t argCounts[] = {2};
+    FakeRuntime<1> rt;
+    rt.set(0, 2, /*savesLR=*/false);
     uint8_t bodyBytes[8];
     Proc proc = makeProc(2, body, 2, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
@@ -1045,12 +1103,13 @@ TEST(DeeplyNestedButWellFormedBlocksSucceedWithNoStackFloor)
         body[kDepth + i] = bare(Op::BLOCK_END);
     }
     body[2 * kDepth] = bare(Op::RETURN);
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[512];
     Proc proc = makeProc(0, body, 2 * kDepth + 1, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[512];
     Assembler a(buf, 512);
-    translateProc(proc, 0, argCounts, 1, a);
+    translateProc(proc, 0, a, rt.runtime());
 }
 
 TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
@@ -1069,7 +1128,8 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     // attached Assembler's own fail() unwinds straight to
     // RESOURCE_ERROR instead of returning).
     const Instr body[] = {bare(Op::RETURN)};
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[8];
     Proc proc = makeProc(0, body, 1, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[16];
@@ -1077,7 +1137,7 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     Assembler a(buf, 16, floor);
 
     MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, argCounts, 1, a));
+    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, a, rt.runtime()));
 }
 
 // ── Literal pooling ─────────────────────────────────────────────────────
@@ -1090,12 +1150,13 @@ TEST(LargeConstAndLargeOperandBothPoolIntoOneChunk)
     // both halves of Align(pc+4,4)'s rounding, resolving to the same base
     // (16) but different pool words.
     const Instr body[] = {CONST(0x12345678), opImm(Op::ADD, 0x0ABCDEF0), bare(Op::RETURN)};
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[16];
     Proc proc = makeProc(0, body, 3, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
 
     CHECK(halfwordCount == 16); // 24 unpooled: 7 + 7 synthesis halfwords
 
@@ -1119,12 +1180,13 @@ TEST(ShiftAmountNeverPoolsEvenWhenHardToSynthesize)
     // A shift's IMM_ACC operand is consumed straight as an Imm<5>, so it
     // must stay an immediate no matter what it costs to synthesize.
     const Instr body[] = {LOAD(0), opImm(Op::SHL, 3), bare(Op::RETURN)};
-    uint32_t argCounts[] = {1};
+    FakeRuntime<1> rt;
+    rt.set(0, 1, /*savesLR=*/false);
     uint8_t bodyBytes[16];
     Proc proc = makeProc(1, body, 3, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
     CHECK(literalSiteCount(buf, halfwordCount) == 0);
 }
 
@@ -1141,12 +1203,13 @@ TEST(PooledLoadInsideGuardedRegionStillResolves)
             CONST(0x0ABCDEF0), bare(Op::BLOCK_END),
         bare(Op::RETURN),
     };
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
 
     CHECK(literalSiteCount(buf, halfwordCount) == 2);
 
@@ -1174,12 +1237,13 @@ TEST(PooledLoadSurvivesAcrossABrTableJumpTableUnflushed)
             CONST(3), bare(Op::BLOCK_END),
         bare(Op::RETURN),
     };
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/true);
     uint8_t bodyBytes[32];
     Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[64];
     Assembler a(buf, 64);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
 
     CHECK(literalSiteCount(buf, halfwordCount) == 1);
 
@@ -1209,11 +1273,12 @@ TEST(OutputReachDistanceForcesAMidProcedureFlush)
     body[n++] = bare(Op::RETURN);
 
     uint8_t bodyBytes[1024];
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
     Proc proc = makeProc(0, body, n, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[1024];
     Assembler a(buf, 1024);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
 
     CHECK(literalSiteCount(buf, halfwordCount) == 2);
 
@@ -1244,11 +1309,12 @@ TEST(OutputReachOverflowFlushesBeforeGoingOutOfRange)
     body[n++] = bare(Op::RETURN);
 
     uint8_t bodyBytes[512];
-    uint32_t argCounts[] = {0};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/true);
     Proc proc = makeProc(0, body, n, bodyBytes, sizeof(bodyBytes));
     uint16_t buf[4096];
     Assembler a(buf, 4096);
-    uint32_t halfwordCount = translateProc(proc, 0, argCounts, 1, a);
+    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
 
     uint32_t site = nthLiteralSite(buf, halfwordCount, 0);
     CHECK(site < halfwordCount);

@@ -118,6 +118,8 @@ public:
     // these.
     void flushPool();
 
+    void flushPoolNoGuard();
+
     // ── raw halfword slots (BR_TABLE N>2 jump tables — never pool data) ──
     void patchRawHalfword(uint32_t siteOffset, uint16_t value);
 

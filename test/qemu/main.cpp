@@ -13,11 +13,11 @@
 // in this same binary is the harness-only "did it even boot" canary.
 #include <stdint.h>
 #include <cassert>
-#include "runtime_host.h"
 #include "fixtures.h"
 #include "instr.h"
 #include "encode_instr.h"
 #include "translate_proc.h"
+#include "runtime_internal.h" // pulls in runtime_host.h itself (ProgramResult/enterProgram*) — it has no include guard, so it can't also be included directly here
 #include "Test.h"
 #include "semihosting_output.h"
 
@@ -210,11 +210,27 @@ TEST(OnStackRejectsBeforeTouchingAnything)
 // and later needed again (the same flash blob must reproduce the same
 // layout, or a saved resume offset would no longer point at the right
 // place).
-static uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint32_t *calleeArgCounts, uint32_t calleeCount)
+static uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint32_t *calleeArgCounts, uint32_t calleeCount, bool savesLR)
 {
     static uint16_t scratch[128];
     Assembler a(scratch, 128);
-    uint32_t n = translateProc(proc, procIdx, calleeArgCounts, calleeCount, a);
+
+    // translateProc now reads a callee's argCount and the procedure-under-
+    // measurement's own needsLRSave through a Runtime rather than raw
+    // parameters (compile_proc.cpp's own ProcSlot). This measurement never
+    // runs a real dispatch/arena, so a throwaway Runtime hand-populated
+    // with just those two facts — never bodyPtr/bodyBytes — stands in for
+    // the real one exactly the way it used to pass calleeArgCounts/savesLR
+    // directly.
+    alignas(8) uint8_t runtimeBytes[sizeof(Runtime) + (calleeCount + 1) * sizeof(ProcSlot)] = {};
+    Runtime &r = *reinterpret_cast<Runtime *>(runtimeBytes);
+    r.procCount = calleeCount;
+    for(uint32_t i = 0; i < calleeCount; i++)
+    {
+        r.slot(i).setStaticInfo(calleeArgCounts[i], /*bodyBytes=*/0, i == procIdx && savesLR);
+    }
+
+    uint32_t n = translateProc(proc, procIdx, a, r);
     assert(!a.overflowed()); // GCOV_EXCL_LINE — the scratch buffer above is already generous for this test corpus
     return n;
 }
@@ -237,11 +253,12 @@ TEST(EvictionThreeDeepCallChain)
     };
     uint32_t argCounts[] = {0, 1, 1};
 
+    bool savesLR[] = {true, true, false}; // proc0Body/proc1Body each CALL; proc2Body doesn't
     uint32_t sizes[3];
     uint32_t total = 0, smallest = UINT32_MAX;
     for(uint32_t i = 0; i < 3; i++)
     {
-        sizes[i] = measuredHalfwords(procs[i], i, argCounts, 3) * 2;
+        sizes[i] = measuredHalfwords(procs[i], i, argCounts, 3, savesLR[i]) * 2;
         total += sizes[i];
         if(sizes[i] < smallest)
         {
@@ -279,8 +296,8 @@ TEST(EvictionCallerAndCalleeNeverCoresident)
     };
     uint32_t argCounts[] = {0, 1};
 
-    uint32_t size0 = measuredHalfwords(procs[0], 0, argCounts, 2) * 2;
-    uint32_t size1 = measuredHalfwords(procs[1], 1, argCounts, 2) * 2;
+    uint32_t size0 = measuredHalfwords(procs[0], 0, argCounts, 2, /*savesLR=*/true) * 2; // proc0Body CALLs
+    uint32_t size1 = measuredHalfwords(procs[1], 1, argCounts, 2, /*savesLR=*/false) * 2; // proc1Body doesn't CALL
     uint32_t arenaSize = (size0 > size1 ? size0 : size1) + 4; // fits at most one of the two at a time
 
     ProcSource procSources[] = {{0, proc0Body, 4}, {1, proc1Body, 3}};
@@ -319,8 +336,8 @@ TEST(EvictionSlidesAProcedureHoldingAPooledLiteral)
     };
     uint32_t argCounts[] = {0, 1};
 
-    uint32_t size0 = measuredHalfwords(procs[0], 0, argCounts, 2) * 2;
-    uint32_t size1 = measuredHalfwords(procs[1], 1, argCounts, 2) * 2;
+    uint32_t size0 = measuredHalfwords(procs[0], 0, argCounts, 2, /*savesLR=*/true) * 2; // proc0Body CALLs
+    uint32_t size1 = measuredHalfwords(procs[1], 1, argCounts, 2, /*savesLR=*/false) * 2; // proc1Body doesn't CALL
     uint32_t arenaSize = (size0 > size1 ? size0 : size1) + 4; // fits at most one at a time
 
     ProcSource procSources[] = {{0, proc0Body, 4}, {1, proc1Body, 3}};
@@ -353,7 +370,7 @@ TEST(ResourceErrorSingleProcedureLargerThanArena)
     Proc proc = makeProc(0, body, 42, bytes, sizeof(bytes));
     uint32_t argCounts[] = {0};
 
-    uint32_t size = measuredHalfwords(proc, 0, argCounts, 1) * 2;
+    uint32_t size = measuredHalfwords(proc, 0, argCounts, 1, /*savesLR=*/false) * 2; // plain arithmetic body, no CALL
     uint32_t arenaSize = size > 24 ? size - 24 : 4; // deliberately smaller than this one procedure's own size
 
     ProcSource procSources[] = {{0, body, 42}};

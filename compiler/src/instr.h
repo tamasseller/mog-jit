@@ -21,13 +21,8 @@ enum class Op : uint8_t
     RETURN, TRAP,
     CALL,
     ADD, SUB, RSUB, MUL, AND, OR, XOR, SHL, SHR, ASR,
-    // Comparisons (isa-core.md §4.2) — same Combo dimension as arithmetic,
-    // minus REG_REG/PEEK_PEEK (isa-core.md §4.2's own table has no
-    // write-back-in-place form for a comparison).
     EQ, NE, LT_S, LE_S, GT_S, GE_S, LT_U, LE_U, GT_U, GE_U,
-    // Unary (isa-core.md §4.3) — no Combo of their own, always Combo::NONE.
     NEG, NOT, CLZ, REVBITS,
-    // Local flow control (isa-core.md §7.1/§7.2).
     BLOCK_END, LOOP, BR_TABLE,
 };
 
@@ -41,17 +36,6 @@ struct Instr
     Op op;
     Combo combo = Combo::NONE;
 
-    /** One 32-bit auxiliary slot under three names. isa-core.md §5.4 gives
-     *  every core instruction form at most one trailing operand, and which
-     *  of these three it is follows from op/combo alone — so they alias
-     *  deliberately rather than sitting side by side, and the name a read
-     *  site picks documents which meaning applies there.
-     *
-     *  imm is the member everything writes through (both the builders below
-     *  and decode_instr.cpp); target/calleeIndex are read-side views of the
-     *  same bits, which is exact because a slot index and a procedure index
-     *  are never negative. Only CONST and an IMM_ACC operand are genuinely
-     *  signed, and those read imm. */
     union
     {
         int32_t imm = 0;      // CONST's value / IMM_ACC operand / TRAP's code / BR_TABLE's N
@@ -60,8 +44,6 @@ struct Instr
     };
 };
 
-// Builder helpers — 1:1 with packages/machine/src/rtl.ts's constructors, so
-// a transcribed fixture reads like its TS source line for line.
 constexpr Instr CONST(int32_t v)
 {
     return Instr{Op::CONST, Combo::NONE, v};
@@ -141,6 +123,11 @@ constexpr bool isComparisonOp(Op op)
 constexpr bool isShiftOp(Op op)
 {
     return op == Op::SHL || op == Op::SHR || op == Op::ASR;
+}
+
+constexpr bool isTerminator(Op op)
+{
+    return op == Op::BLOCK_END || op == Op::RETURN || op == Op::TRAP;
 }
 
 } // namespace jitc

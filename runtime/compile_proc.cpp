@@ -42,5 +42,5 @@ extern "C" void compileProc(uint32_t idx, Runtime *runtime)
     register uint32_t lruTick asm("r11");
     jitc::Assembler assembler(runtime, idx, lruTick);
 
-    jitc::translateProc(proc, idx, calleeArgCounts, runtime->procCount, assembler, &savesLR);
+    jitc::translateProc(proc, idx, assembler, *runtime);
 }

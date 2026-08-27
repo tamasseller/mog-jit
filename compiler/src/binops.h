@@ -14,7 +14,7 @@ namespace jitc
 
 class Assembler;
 
-void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const Shape *operand, uint32_t dest);
+void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const Shape &rhs, uint32_t dest);
 
 } // namespace jitc
 

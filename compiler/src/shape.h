@@ -14,27 +14,26 @@ class Assembler;
 struct Shape
 {
     bool isImm = true;
-    int32_t imm = 0;  // valid iff isImm
-    uint32_t reg = 0; // valid iff !isImm
+
+    union 
+    {
+        int32_t imm = 0;
+        uint32_t reg;   
+    };
 
     static constexpr Shape ofImm(int32_t v)
     {
-        return Shape{true, v, 0};
+        return Shape{.isImm = true, .imm = v};
     }
 
     static constexpr Shape ofReg(uint32_t r)
     {
-        return Shape{false, 0, r};
+        return Shape{.isImm = false, .reg = r};
     }
+
+    void materialize(Assembler &a, uint32_t dstReg) const;
+    uint32_t peek(Assembler &a, uint32_t scratchReg) const;
 };
-
-/** Turn any Shape into a concrete value sitting in dstReg — a no-op when
- *  shape is already dstReg itself. */
-void materializeShape(Assembler &a, const Shape &shape, uint32_t dstReg);
-
-/** A Shape as a register, materializing into scratchReg only if it isn't
- *  one already. */
-uint32_t shapeToReg(Assembler &a, const Shape &shape, uint32_t scratchReg);
 
 } // namespace jitc
 

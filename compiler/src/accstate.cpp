@@ -1,6 +1,5 @@
 #include "accstate.h"
 #include "assembler.h"
-#include "binops.h"
 
 #include <cassert>
 
@@ -15,23 +14,10 @@ Shape AccState::peek() const
 
 void AccState::flush(Assembler &e, uint32_t dstReg)
 {
-    materializeShape(e, peek(), dstReg);
+    peek().materialize(e, dstReg);
     kind = Kind::Clean;
     reg = dstReg;
-}
-
-void AccState::emitBinary(Assembler &e, Op op, Combo combo, const Shape *operand, uint32_t dest, bool clobbersAcc)
-{
-    emitBinaryOp(e, op, combo, peek(), operand, dest);
-
-    if(clobbersAcc)
-    {
-        poison();
-    }
-    else
-    {
-        setClean(dest);
-    }
+    shape = Shape::ofReg(dstReg);
 }
 
 } // namespace jitc

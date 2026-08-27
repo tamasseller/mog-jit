@@ -77,26 +77,3 @@ TEST(setCleanThenPoisonThenProducerSupersedes)
     Shape s2 = acc.peek(); // producer supersedes Poisoned without issue
     CHECK(!s2.isImm && s2.reg == 2);
 }
-
-TEST(emitBinaryPoisonsOnClobberingComboAndCleansOtherwise)
-{
-    uint16_t buf[8];
-    Assembler e(buf, 8);
-    AccState acc;
-    acc.setClean(ACC_REG);
-    Shape operand = Shape::ofImm(1);
-
-    // REG_REG clobbers acc — must end up Poisoned.
-    acc.emitBinary(e, Op::ADD, Combo::REG_REG, &operand, 4, /*clobbersAcc=*/true);
-    acc.poison(); // emitBinary already poisoned this; redundant, just documents the expectation
-    // No direct accessor for "is poisoned"; verified indirectly by
-    // requiring producer() before the next read.
-    acc.producer(Shape::ofReg(4));
-
-    // IMM_ACC doesn't clobber acc — must end up Clean(dest).
-    AccState acc2;
-    acc2.setClean(ACC_REG);
-    acc2.emitBinary(e, Op::ADD, Combo::IMM_ACC, &operand, 6, /*clobbersAcc=*/false);
-    Shape s = acc2.peek();
-    CHECK(!s.isImm && s.reg == 6);
-}

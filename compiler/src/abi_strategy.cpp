@@ -61,7 +61,7 @@ void abiEmitCall(Assembler &a, uint32_t procIdx, uint32_t calleeIndex)
     a.materializeImm32(ENTRY_IDX_REG, record, false);
     a.materializeImm32(ENTRY_OFFSET_REG, calleeIndex, false);
     a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
-    a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(0))); // callHelper, index 0
+    a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(HELPER_CALL_OFFSET)));
     a.emit(ArmV6M::bx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
 }
 
@@ -81,12 +81,12 @@ void abiEmitReturn(Assembler &a, bool savesLR, uint32_t initialSpilledCount)
     {
         a.materializeImm32(ENTRY_OFFSET_REG, 4 * initialSpilledCount);
         a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
-        a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(28))); // returnHelperFromStackReclaim, index 7
+        a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(HELPER_RETURN_FROM_STACK_RECLAIM_OFFSET)));
         a.emit(ArmV6M::bx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
         return;
     }
     a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
-    a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(savesLR ? 8 : 4))); // returnHelperFromStack / returnHelperFromLr
+    a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(savesLR ? HELPER_RETURN_FROM_STACK_OFFSET : HELPER_RETURN_FROM_LR_OFFSET)));
     a.emit(ArmV6M::bx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
 }
 
