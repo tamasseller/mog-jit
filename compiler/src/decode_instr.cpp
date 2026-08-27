@@ -108,6 +108,7 @@ uint32_t decodeLeb128(const uint8_t *bytes, uint32_t offset, uint32_t &next)
     for(;;)
     {
         assert(pos < UINT32_MAX); // GCOV_EXCL_LINE — caller already bounds-checked offset itself
+        assert(shift < 32); // GCOV_EXCL_LINE — a canonical u32 LEB128 never needs more than 5 bytes; a non-canonical, overlong one is malformed, same as any other decode failure this file asserts on rather than checks
         uint8_t byte = bytes[pos];
         value += (uint32_t)(byte & 0x7f) << shift;
         pos++;

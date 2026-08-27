@@ -106,9 +106,14 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
             case Op::AND:  e.materializeImm32(dest, accShape.imm & rhs.imm); break;
             case Op::OR:   e.materializeImm32(dest, accShape.imm | rhs.imm); break;
             case Op::XOR:  e.materializeImm32(dest, accShape.imm ^ rhs.imm); break;
-            case Op::SHL:  e.materializeImm32(dest, accShape.imm << rhs.imm); break;
-            case Op::SHR:  e.materializeImm32(dest, accShape.imm >> rhs.imm); break;
-            case Op::ASR:  e.materializeImm32(dest, (int32_t)accShape.imm >> rhs.imm); break;
+            // Same 0..31 masking as the register-destination shift path
+            // below (isa-core.md's shift semantics, vm.ts's `R & 31`) --
+            // required here too: an unmasked shift count of 32+ is
+            // undefined behavior for C++'s own `<<`/`>>`, not just an
+            // encoding-width problem.
+            case Op::SHL:  e.materializeImm32(dest, accShape.imm << (rhs.imm & 31)); break;
+            case Op::SHR:  e.materializeImm32(dest, accShape.imm >> (rhs.imm & 31)); break;
+            case Op::ASR:  e.materializeImm32(dest, (uint32_t)((int32_t)accShape.imm >> (rhs.imm & 31))); break;
             default: assert(false);
         }
     }
@@ -170,11 +175,29 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
 
             const auto m = accShape.peek(e, SCRATCH_REG);
 
+            // isa-core.md's shift semantics mask the amount to 0..31
+            // (vm.ts's own evalBinary: `R & 31`), same as a real ARM
+            // register-shift would -- but bytecode carries a full u32
+            // immediate with no such bound, so this always has to mask
+            // before it ever reaches Imm<5>'s own 5-bit field. LSR/ASR's
+            // *immediate* encoding is the one wrinkle: imm5==0 means
+            // "shift by 32" there (unlike LSL, where imm5==0 already means
+            // a genuine no-op) -- so a masked shift of 0 has to become a
+            // plain register move instead of lsrs/asrs #0.
+            uint32_t shift = (uint32_t)rhs.imm & 31u;
             switch(op)
             {
-                case Op::SHL: e.emit(ArmV6M::lsls(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)rhs.imm))); break;
-                case Op::SHR: e.emit(ArmV6M::lsrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)rhs.imm))); break;
-                case Op::ASR: e.emit(ArmV6M::asrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)rhs.imm))); break;
+                case Op::SHL:
+                    e.emit(ArmV6M::lsls(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift)));
+                    break;
+                case Op::SHR:
+                    if(shift == 0) e.emit(ArmV6M::mov(ArmV6M::AnyReg(dest), ArmV6M::AnyReg(m)));
+                    else e.emit(ArmV6M::lsrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift)));
+                    break;
+                case Op::ASR:
+                    if(shift == 0) e.emit(ArmV6M::mov(ArmV6M::AnyReg(dest), ArmV6M::AnyReg(m)));
+                    else e.emit(ArmV6M::asrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift)));
+                    break;
                 default: assert(false); // GCOV_EXCL_LINE
             }
         }
