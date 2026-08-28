@@ -27,8 +27,8 @@ Every candidate is gated through `validateProgram` first (over a Unix
 socket, so Node starts once rather than per test case), so a crash is a
 real "runtime+compiler stability" bug by construction: the JIT is never
 supposed to see anything else. The other acceptable outcome is
-`Assembler::fail()`'s `RESOURCE_ERROR` bail, which the harness treats as a
-pass.
+`Assembler::fail()`'s bail, which the harness treats as a pass (it ignores
+the `RESOURCE_*` code — only whether control escaped matters here).
 
 Input is one whole program envelope — `encodeJitProgram`'s
 `max_call_depth`/`total_depth`/`proc_count` header, then each procedure.
@@ -64,12 +64,14 @@ diffs. `minimize_exec.ts` shrinks a mismatching program by deleting whole
 instructions and re-encoding, so every candidate stays validator-approved —
 one QEMU boot per pass, not per candidate.
 
-One thing it deliberately does not compare: a `RESOURCE_ERROR`, a
-legitimate outcome with no reference counterpart. Everything else is
-comparable, traps at any call depth included —
+One thing it deliberately does not compare: a resource error, a legitimate
+outcome with no reference counterpart. It is still counted and now bucketed
+by its own `RESOURCE_*` code (design.md §12), which is what tells an arena
+that wants growing from a corpus this target cannot compile at any size.
+Everything else is comparable, traps at any call depth included —
 `ProgramResult.trapped`'s own `LANDING_*` tag distinguishes the three
-outcomes, so nothing is encoded in the result value
-(`docs/target-profile.md`).
+outcomes, so nothing is encoded in the result value for the two that are
+compared (`docs/target-profile.md`).
 
 ## Seeds
 
@@ -85,6 +87,16 @@ the old hand-encoded `loop` seed had been doing exactly that.
 ./dump_seeds.sh
 TS_NODE_PROJECT=tsconfig.json npx ts-node --transpile-only make_seeds.ts
 ```
+
+Every seed is run with a real argument vector, not zeros —
+`fuzz/entry_args.ts` owns the one generator all three consumers share
+(`oracle_server.ts`, `qemu_exec.ts`, `minimize_exec.ts`), because a
+disagreement between any two of them would manufacture mismatches
+indistinguishable from miscompilations. Values are distinct per index so a
+permuted window changes the answer, and deliberately small: a wide value in
+a slot some program uses as a loop counter turns a short countdown into
+billions of steps, which the reference VM's watchdog then reports as "does
+not terminate" and the sweep silently discards.
 
 Beyond those, `make_seeds.ts` authors the multi-procedure/`CALL` shapes no
 single-procedure format can express, and large shapes aimed at specific

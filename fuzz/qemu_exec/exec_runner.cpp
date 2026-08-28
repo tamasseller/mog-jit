@@ -31,13 +31,21 @@
  * Batch format at BATCH_ADDR (little-endian, as qemu_exec.ts writes it):
  *     u32 magic == BATCH_MAGIC
  *     u32 count
- *     count × ( u32 length, length bytes of one whole program envelope )
+ *     count × ( u32 length, u32 argCount, argCount × u32 entry argument,
+ *               length bytes of one whole program envelope )
+ *
+ * The argument words carry the entry procedure's own arguments, which
+ * enterProgram* requires to match its declared arg_count exactly. They
+ * precede the program bytes so the variable-length part stays last, and
+ * they are copied into an aligned local before use — see readU32 below on
+ * why nothing in flash can be word-loaded in place.
  *
  * Output, one line per program, in order:
  *     R:xxxxxxxx   normal return, the entry procedure's own result
  *     T:xxxxxxxx   bytecode TRAP, the trap code
- *     E:xxxxxxxx   RESOURCE_ERROR (arena/stack budget) — a legitimate
- *                  outcome, not comparable against the reference VM
+ *     E:xxxxxxxx   resource bail, the RESOURCE_* code saying which
+ *                  (runtime_host.h) — a legitimate outcome, not
+ *                  comparable against the reference VM
  *     X:xxxxxxxx   rejected before running (length past PROGRAM_MAX)
  * then
  *     DONE:xxxxxxxx  how many programs were run
@@ -93,6 +101,10 @@ static constexpr uint32_t BATCH_MAGIC = 0x50504C42u; /* "PPLB" */
  * check. Running out is still a legitimate outcome the comparison skips
  * rather than a failure — there just shouldn't be that much of it. */
 static constexpr uint32_t PROGRAM_MAX = 4096;
+/* oracle_server.ts's own REALISTIC_MAX_ARG_COUNT — the entry-argument
+ * staging buffer below is sized off it, so a batch naming more is rejected
+ * rather than truncated. */
+static constexpr uint32_t ENTRY_ARGS_MAX = 16;
 static constexpr uint32_t CODE_ARENA_BYTES = 3072;
 
 static uint8_t g_codeArena[CODE_ARENA_BYTES] __attribute__((aligned(4)));
@@ -137,6 +149,32 @@ int main(void)
             break; /* framing is unusable from here on, don't walk off flash */
         }
 
+        if(cursor + 4 > end) break;
+        const uint32_t argCount = readU32(cursor);
+        cursor += 4;
+
+        if(argCount > ENTRY_ARGS_MAX || (uint32_t)(end - cursor) / 4 < argCount)
+        {
+            semihostWriteTagged("X:", argCount);
+            break; /* framing is unusable from here on, don't walk off flash */
+        }
+
+        /* Copied, not aliased: these words sit at whatever alignment the
+         * preceding program's length left them at, and a uint32_t load off
+         * an unaligned address faults on a Cortex-M0. */
+        uint32_t entryArgs[ENTRY_ARGS_MAX];
+        for(uint32_t a = 0; a < argCount; a++)
+        {
+            entryArgs[a] = readU32(cursor);
+            cursor += 4;
+        }
+
+        if(len > (uint32_t)(end - cursor))
+        {
+            semihostWriteTagged("X:", len);
+            break;
+        }
+
         const uint8_t *programBytes = cursor;
         cursor += len;
 
@@ -151,7 +189,7 @@ int main(void)
          *
          * interruptReserve 0: no interrupts are enabled in this image. */
         ProgramResult r = enterProgramSplit(
-            /*argIn=*/0,
+            entryArgs, argCount,
             programBytes, len,
             (uint32_t)(uintptr_t)g_codeArena, CODE_ARENA_BYTES,
             /*stackLimit=*/(uint32_t)(uintptr_t)(g_codeArena + CODE_ARENA_BYTES),

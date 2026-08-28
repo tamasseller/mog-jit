@@ -225,8 +225,7 @@ TEST(EmitPastCapacityBailsOnADetachedAssembler)
     uint16_t buf[1];
     Assembler a(buf, 1);
     a.emit(0);
-    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    EXPECT_RESOURCE_ERROR(a.emit(0)); // past capacity -- escapes, never writes buf[1]
+    EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_ARENA, a.emit(0)); // past capacity -- escapes, never writes buf[1]
 }
 
 TEST(PatchBranchBailsOnAnUnencodableUnconditionalDelta)
@@ -237,8 +236,7 @@ TEST(PatchBranchBailsOnAnUnencodableUnconditionalDelta)
     uint16_t buf[1];
     Assembler a(buf, 1);
     uint32_t site = a.placeholderBranch(); // site 0, pc now 2
-    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    EXPECT_RESOURCE_ERROR(a.patchBranch(site, 3000)); // delta 2996 > Ioff<1,11>::maxValue
+    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_BRANCH_RANGE, a.patchBranch(site, 3000)); // delta 2996 > Ioff<1,11>::maxValue
 }
 
 TEST(PatchBranchBailsOnAnUnencodableConditionalDelta)
@@ -246,8 +244,7 @@ TEST(PatchBranchBailsOnAnUnencodableConditionalDelta)
     uint16_t buf[1];
     Assembler a(buf, 1);
     uint32_t site = a.placeholderCondBranch(ArmV6M::Condition::EQ); // site 0, pc now 2
-    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    EXPECT_RESOURCE_ERROR(a.patchBranch(site, 400)); // delta 396 > Ioff<1,8>::maxValue
+    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_BRANCH_RANGE, a.patchBranch(site, 400)); // delta 396 > Ioff<1,8>::maxValue
 }
 
 TEST(PatchBranchAcceptsTheMaxEncodableUnconditionalDelta)

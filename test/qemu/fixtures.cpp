@@ -361,12 +361,13 @@ static Program f28Prog;
 static Program f29Prog;
 
 // ---- Fixture 30: LOOP nested inside a BR_TABLE case — the mirror image of
-// fixture 29. A single-argument entry procedure can only receive one value
-// via argIn (enterDispatch's own boot call passes argIn through acc alone,
-// with no caller-side PUSH shuffle to also populate window slots for a
-// second argument — unlike an ordinary in-program CALL), so selector and n
-// both travel packed into that one argIn: selector in bits[15:8], n in
-// bits[7:0]. Case 0 runs a full sum(1..n) LOOP using two extra PUSHed
+// fixture 29. Selector and n both travel packed into this fixture's single
+// argument: selector in bits[15:8], n in bits[7:0]. That packing was once
+// forced — enterDispatch's boot call passed one word through acc alone,
+// with no caller-side shuffle to populate a window slot for a second
+// argument — and is now merely how this fixture happens to be written; a
+// two-argument entry procedure would work fine (fixtures 41-48). Kept as
+// is because the packing is incidental to what it tests. Case 0 runs a full sum(1..n) LOOP using two extra PUSHed
 // locals, then POPs them off again before the case's own BLOCK_END so tos
 // returns to its pre-brTable value (1), matching case 1 (which never
 // touches tos) — POP() mirrors PUSH() by loading the popped slot's own
@@ -565,22 +566,135 @@ static constexpr uint32_t SCRATCH_CAPACITY = 3072;
 static uint8_t scratch[SCRATCH_CAPACITY];
 static uint32_t scratchUsed = 0;
 
-// max_call_depth/total_depth are both 0 for every fixture here: main.cpp's
-// fixture loop does run every one of them through enterProgramSplit's own
-// real up-front stack-budget check, but a zeroed envelope makes that check
-// see no operand-stack/call-record cost at all, leaving only the fixed-cost
-// floor (Runtime/dispatch-table size, ENTER_DISPATCH_FIXED_BYTES,
-// TRANSLATOR_ENTRY_WORST_CASE_BYTES) — nowhere near tight enough to reject
-// anything real. Exercising the check against real, hand-derived
-// max_call_depth/total_depth values is what enterProgramOnStack/
-// enterProgramSplit's own dedicated scenarios in main.cpp are for instead.
+// max_call_depth is 0 for every fixture here, and total_depth is the entry
+// procedure's own arg_count rather than a real whole-program figure:
+// main.cpp's fixture loop does run every one of them through
+// enterProgramSplit's own real up-front stack-budget check, but so slack an
+// envelope makes that check see almost no operand-stack/call-record cost,
+// leaving essentially the fixed-cost floor (Runtime/dispatch-table size,
+// ENTER_DISPATCH_FIXED_BYTES, TRANSLATOR_ENTRY_WORST_CASE_BYTES) — nowhere
+// near tight enough to reject anything real. Exercising the check against
+// real, hand-derived max_call_depth/total_depth values is what
+// enterProgramOnStack/enterProgramSplit's own dedicated scenarios in
+// main.cpp are for instead.
+//
+// Not zero, though, which it used to be: enterProgramCore refuses to push a
+// multi-argument entry procedure's out-of-window arguments past whatever
+// total_depth claims (RESOURCE_PROGRAM_ENTRY_DEPTH), since that figure is
+// what sized the reservation they land in. arg_count is the lower bound
+// validateProgram itself guarantees for a real program — seeding every
+// procedure's local peak at its own arg_count — so using it here keeps the
+// envelope deliberately slack overall while staying honest about the one
+// relationship that is load-bearing.
 static Program finishProgram(const ProcSource *procs, uint32_t count)
 {
     uint8_t *slot = scratch + scratchUsed;
-    uint32_t len = encodeJitProgram(0, 0, procs, count, slot, SCRATCH_CAPACITY - scratchUsed);
+    uint32_t len = encodeJitProgram(0, procs[0].argCount, procs, count, slot, SCRATCH_CAPACITY - scratchUsed);
     scratchUsed += len;
-    return Program{slot, len};
+    return Program{slot, len, procs[0].argCount};
 }
+
+// ---- Fixtures 41-48: multi-argument ENTRY procedures.
+//
+// Everything above reaches an out-of-window argument through proc1 or
+// deeper, never through proc0, because until enterDispatch learned to
+// marshal an argument vector there was no way to give the entry procedure
+// more than the single acc-borne word. Both halves of that gap are covered
+// here: 2..4 arguments (window registers enterDispatch never used to
+// initialize, so they arrived holding the caller's r8-r11) and 5+ (where the
+// epilogue also reclaimed a frame nobody had pushed, landing .Lresume on a
+// shifted sp — a deterministic hang, not a wrong answer).
+//
+// Bodies pack their arguments into nibbles rather than summing them: a sum
+// is invariant under any permutation of the window, which is precisely the
+// error class most likely here. args {1,2,3,...} therefore expect 0x123...,
+// and any swapped register or mis-ordered spill slot changes the result.
+static const uint32_t entryArgs2[] = {1, 2};
+static const uint32_t entryArgs4[] = {1, 2, 3, 4};
+static const uint32_t entryArgs5[] = {1, 2, 3, 4, 5};
+static const uint32_t entryArgs6[] = {1, 2, 3, 4, 5, 6};
+static const uint32_t entryArgs8[] = {1, 2, 3, 4, 5, 6, 7, 8};
+
+// Nibble-pack k = 0..N-1: acc = arg0, then (acc << 4) | arg_k.
+#define PACK_ARG(k) opImm(Op::SHL, 4), opReg(Op::OR, k)
+
+// Fixture 41: two arguments — entirely in-window. arg0 lands in
+// physReg(0) = r7, which enterDispatch had no way to write at all. expect
+// 0x12.
+static const Instr f41Proc0[] = {LOAD(0), PACK_ARG(1), bare(Op::RETURN)};
+static Program f41Prog;
+
+// Fixture 42: four arguments — exactly fills the window, and exactly
+// fillCalleeArgs's WINDOW_SIZE-1 cap (r7/r6/r5 supplied by the caller, r4
+// from acc). Still nothing spilled. expect 0x1234.
+static const Instr f42Proc0[] = {LOAD(0), PACK_ARG(1), PACK_ARG(2), PACK_ARG(3), bare(Op::RETURN)};
+static Program f42Prog;
+
+// Fixture 43: five arguments — one spilled word, read through
+// spillOffset(0) == 0. Leaf, so the whole frame comes back via
+// discardWindow's single ADD sp. expect 0x12345.
+static const Instr f43Proc0[] = {
+    LOAD(0), PACK_ARG(1), PACK_ARG(2), PACK_ARG(3), PACK_ARG(4), bare(Op::RETURN),
+};
+static Program f43Prog;
+
+// Fixture 44: six arguments — TWO spilled words, the smallest shape in
+// which their order is observable at all (five spills exactly one, so a
+// reversed push loop looks identical there). expect 0x123456.
+static const Instr f44Proc0[] = {
+    LOAD(0), PACK_ARG(1), PACK_ARG(2), PACK_ARG(3), PACK_ARG(4), PACK_ARG(5), bare(Op::RETURN),
+};
+static Program f44Prog;
+
+// Fixture 45: eight arguments — the post-wrap window phase (slots 4..6 in
+// r7/r6/r5, slot 7 from acc into physReg(7) = r4) with four spilled words.
+// expect 0x12345678.
+static const Instr f45Proc0[] = {
+    LOAD(0), PACK_ARG(1), PACK_ARG(2), PACK_ARG(3),
+    PACK_ARG(4), PACK_ARG(5), PACK_ARG(6), PACK_ARG(7), bare(Op::RETURN),
+};
+static Program f45Prog;
+
+// Fixture 46: six arguments AND a nested CALL, so the entry procedure is
+// savesLR. Its own push{lr} lands above the words enterDispatch placed,
+// which is exactly the +4 shift Window::spillOffset applies to
+// k < initialSpilledCount — and the return goes through
+// returnHelperFromStackReclaim with r2 = 8, on an *entry* frame. This is
+// the shape that hangs deterministically without the fix; fixtures 27/37
+// only ever reached it via proc1. expect 0x123456 + 1000.
+static const Instr f46Proc0[] = {
+    LOAD(0), PACK_ARG(1), PACK_ARG(2), PACK_ARG(3), PACK_ARG(4), PACK_ARG(5),
+    PUSH(),           // keep the packed value while the callee runs
+    CONST(0),
+    call(1),
+    opReg(Op::ADD, 6), // += the packed value
+    bare(Op::RETURN),
+};
+static const Instr f46Proc1[] = {CONST(1000), bare(Op::RETURN)};
+static Program f46Prog;
+
+// Fixture 47: six arguments, body TRAPs. trapHelper restores sp from
+// runtime->savedSp, which is only correct if savedSp was captured *before*
+// enterDispatch pushed the arguments. Captured after, .Lresume would pop
+// those words as the caller's r8-r11 and return to a garbage pc — a hang,
+// so this fixture reports a wrong outcome rather than a wrong value.
+static const Instr f47Proc0[] = {
+    LOAD(0), PACK_ARG(1), PACK_ARG(2), PACK_ARG(3), PACK_ARG(4), PACK_ARG(5),
+    trapInstr(0x123456),
+};
+static Program f47Prog;
+
+// Fixture 48: six-argument entry whose callee traps — the same unwind one
+// level down, with the entry procedure's own out-of-window arguments live
+// below the frame being discarded.
+static const Instr f48Proc0[] = {
+    LOAD(0), PACK_ARG(1), PACK_ARG(2), PACK_ARG(3), PACK_ARG(4), PACK_ARG(5),
+    call(1), bare(Op::RETURN),
+};
+static const Instr f48Proc1[] = {trapInstr(4242)};
+static Program f48Prog;
+
+#undef PACK_ARG
 
 // Instr[]'s own element count, paired with its own argCount — one
 // ProcSource per procedure, exactly what fixtures.cpp already had to
@@ -750,6 +864,38 @@ void initFixtures()
         ProcSource procs[] = {PROC(0, f40Proc0), PROC(5, f40Proc1), PROC(1, f40Proc2)};
         f40Prog = finishProgram(procs, 3);
     }
+    {
+        ProcSource procs[] = {PROC(2, f41Proc0)};
+        f41Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(4, f42Proc0)};
+        f42Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(5, f43Proc0)};
+        f43Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(6, f44Proc0)};
+        f44Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(8, f45Proc0)};
+        f45Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(6, f46Proc0), PROC(0, f46Proc1)};
+        f46Prog = finishProgram(procs, 2);
+    }
+    {
+        ProcSource procs[] = {PROC(6, f47Proc0)};
+        f47Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(6, f48Proc0), PROC(0, f48Proc1)};
+        f48Prog = finishProgram(procs, 2);
+    }
 }
 
 Fixture fixtures[] = {
@@ -845,5 +991,17 @@ Fixture fixtures[] = {
     {"nested TRAP unwinds instead of returning its code", &f38Prog, LANDING_TRAP, 754},
     {"TRAP in the entry procedure, five live locals deep", &f39Prog, LANDING_TRAP, 41},
     {"TRAP two levels down, out-of-window args below a pushed record", &f40Prog, LANDING_TRAP, 1000},
+
+    // Multi-argument entry procedures. argIn is unused for all of these (the
+    // count comes from Program::entryArgCount), so each names its own vector
+    // in the `args` field instead.
+    {"entry procedure, 2 args (in-window only)", &f41Prog, false, 0x12u, 0, entryArgs2},
+    {"entry procedure, 4 args (fills the window exactly)", &f42Prog, false, 0x1234u, 0, entryArgs4},
+    {"entry procedure, 5 args (one spilled word)", &f43Prog, false, 0x12345u, 0, entryArgs5},
+    {"entry procedure, 6 args (two spilled words — order observable)", &f44Prog, false, 0x123456u, 0, entryArgs6},
+    {"entry procedure, 8 args (post-wrap window phase)", &f45Prog, false, 0x12345678u, 0, entryArgs8},
+    {"entry procedure, 6 args + nested CALL (savesLR reclaim)", &f46Prog, false, 0x123456u + 1000u, 0, entryArgs6},
+    {"entry procedure, 6 args, TRAPs (savedSp precedes the arg pushes)", &f47Prog, LANDING_TRAP, 0x123456u, 0, entryArgs6},
+    {"entry procedure, 6 args, callee TRAPs (unwind over live entry args)", &f48Prog, LANDING_TRAP, 4242u, 0, entryArgs6},
 };
 const uint32_t fixtureCount = sizeof(fixtures) / sizeof(fixtures[0]);

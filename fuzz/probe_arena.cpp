@@ -68,10 +68,10 @@ int main(int argc, char **argv)
             alignas(8) uint8_t storage[512] = {};
             Runtime &rt = *reinterpret_cast<Runtime *>(storage);
             memset((void *)(uintptr_t)ARENA_BASE, 0, arenaSize);
-            if(!rt.init(data, (uint32_t)in.size(), bodyOffset, procCount,
-                ARENA_BASE, arenaSize, 0, 0))
+            if(uint32_t code = rt.init(data, (uint32_t)in.size(), bodyOffset, procCount,
+                ARENA_BASE, arenaSize, 0, 0); code != 0)
             {
-                printf("    arena %5u: init rejected\n", arenaSize);
+                printf("    arena %5u: init rejected %08x\n", arenaSize, code);
                 continue;
             }
 

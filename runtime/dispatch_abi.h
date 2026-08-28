@@ -13,6 +13,7 @@
 
 #include <stdint.h>
 #include "runtime_internal.h"
+#include "entry_args.h"
 
 extern "C" {
 extern void translatorTrampoline(void); /* runtime.S */
@@ -25,7 +26,7 @@ extern const uint16_t revbitsHelper[];           /* runtime.S */
 extern const uint16_t brTableJumpHelper[];       /* runtime.S */
 extern const uint16_t returnHelperFromStackReclaim[]; /* runtime.S */
 extern const uint16_t trapHelper[];              /* runtime.S */
-extern uint64_t enterDispatch(uint32_t argIn, Runtime *runtime); /* runtime.S */
+extern uint64_t enterDispatch(const EntryArgs *entryArgs, Runtime *runtime); /* runtime.S */
 }
 
 /* This ABI's own fixed costs, for the stack-usage accounting
@@ -46,8 +47,32 @@ extern uint64_t enterDispatch(uint32_t argIn, Runtime *runtime); /* runtime.S */
 
 /* enterDispatch's own two prologue pushes: {r2,r4,r5,r6,r7,lr} +
  * {r4,r5,r6,r7} = 10 words. Reserved once, for the whole excursion's
- * duration. */
+ * duration.
+ *
+ * Deliberately does NOT include the entry procedure's own out-of-window
+ * arguments, which enterDispatch also pushes: those are operand-stack
+ * words like any other frame slot, and operandStackBytes already charges
+ * 4 bytes for every slot of totalDepth with no window credit, while
+ * validateProgram seeds totalDepth at each procedure's own argCount. The
+ * relationship that makes that true is enforced, not assumed — see
+ * enter_program.cpp's RESOURCE_PROGRAM_ENTRY_DEPTH check. */
 #define ENTER_DISPATCH_FIXED_BYTES 40
+
+/* enterProgramCore's own frame — the one C frame that is established
+ * *after* enterProgram*'s up-front stack check has already run, so unlike
+ * either public entry point's frame (which sp already reflects when
+ * currentSp() reads it) this one has to come out of the reservation. It
+ * covers the staged EntryArgs descriptor (entry_args.h, 28 bytes) and the
+ * inlined Runtime::init that builds the per-procedure directory.
+ *
+ * GCC-measured at -Os with test/qemu's own flags, not estimated, and
+ * enforced on every build by test/qemu/check_stack_usage.py the same way
+ * TRANSLATOR_ENTRY_WORST_CASE_BYTES's own chain is — this replaced a
+ * hand-guessed 32-byte "staging" term that undercounted the real frame by
+ * 56 bytes. The VLA enterProgramWithHeader allocates just above it is
+ * accounted separately and exactly, by requiredStackBytes' own
+ * storageBytesFor(procCount) term. */
+#define ENTER_PROGRAM_CORE_FRAME_BYTES 88
 
 /* Fixed, one-time cost of getting from translatorTrampoline's own entry
  * down to the point where the real per-level recursion begins

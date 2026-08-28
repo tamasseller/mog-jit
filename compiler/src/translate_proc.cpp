@@ -59,7 +59,7 @@ static bool checkStackFloor(Assembler &a, const Runtime &r)
     register uint32_t sp asm("sp");
     if(sp < TRANSLATE_BODY_STACK_MARGIN || sp - TRANSLATE_BODY_STACK_MARGIN < r.liveStackFloor())
     {
-        a.fail();
+        a.fail(RESOURCE_EXHAUSTED_TRANSLATOR_STACK);
         return false;
     }
     return true;
@@ -102,7 +102,7 @@ static ArmV6M::Uoff<2, 8> spillImm(Assembler &a, uint32_t byteOffset)
 {
     if(!ArmV6M::Uoff<2, 8>::isInRange(byteOffset))
     {
-        a.fail();
+        a.fail(RESOURCE_LIMIT_SPILL_OFFSET);
     }
     return ArmV6M::Uoff<2, 8>((uint16_t)byteOffset);
 }
@@ -181,7 +181,7 @@ static uint32_t processNonControl(Ctx &ctx, const DecodedInstr &decoded, Assembl
             // to check directly rather than trust the upstream contract.
             if(instr.calleeIndex >= r.procCount)
             {
-                a.fail();
+                a.fail(RESOURCE_PROGRAM_CALLEE_RANGE);
                 return afterInstr;
             }
 
@@ -861,7 +861,7 @@ static void translateLoop(Ctx &ctx, Assembler& a, const Runtime& r)
         int32_t delta = (int32_t)start - (int32_t)(a.pc() + 4);
         if(!ArmV6M::Ioff<1, 11>::isInRange(delta))
         {
-            a.fail();
+            a.fail(RESOURCE_LIMIT_LOOP_BACK_EDGE);
             return;
         }
         a.emit(ArmV6M::b(ArmV6M::Ioff<1, 11>((int16_t)delta)));

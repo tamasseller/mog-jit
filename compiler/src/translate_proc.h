@@ -31,11 +31,9 @@ namespace jitc
 // pool chunk, and — for an attached Assembler — committing the arena
 // allocation and registering the result with Runtime) and returns the
 // final halfword count; a caller never needs a separate a.finalize()
-// call of its own. A translator-detected failure (arena exhaustion
-// beyond what Assembler::reserve() could free, or the live stack-nesting
-// guard tripping) calls a.fail(): on a detached Assembler this returns
-// normally with overflowed() now true; on an attached one it never
-// returns at all, unwinding straight to RESOURCE_ERROR.
+// call of its own. A translator-detected failure calls a.fail() with the
+// RESOURCE_* code naming which one (runtime_host.h): it never returns,
+// unwinding straight to the landing.
 //
 // savesLR is the whole-program directory's own precomputed answer
 // (runtime/runtime_internal.h's ProcSlot, via proc_scan.h's scanProcBody)

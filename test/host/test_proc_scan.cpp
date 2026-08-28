@@ -157,4 +157,20 @@ TEST(ScanProcBodyStackFloorReachedReportsNotOk)
     register uint32_t sp asm("sp");
     BodyScanResult r = scanProcBody(bytes, len, 0, sp); // floor pinned at the current sp: no margin at all
     CHECK(!r.ok);
+    CHECK(r.stackFloorHit); // ran out of stack, not a malformed body — the caller reports these differently
+}
+
+TEST(ScanProcBodyRunningOffTheEndIsNotAStackFloorHit)
+{
+    // A LOOP with nothing closing it: the walk runs off maxBytes with a
+    // level still open. Same !ok as the floor case above, and the other
+    // half of the distinction stackFloorHit exists to draw — a body that
+    // was never well-formed, which no amount of stack would fix.
+    const Instr body[] = {bare(Op::LOOP), CONST(1)};
+    uint8_t bytes[16];
+    uint32_t len = encodeBody(body, 2, bytes, sizeof(bytes));
+
+    BodyScanResult r = scanProcBody(bytes, len, 0);
+    CHECK(!r.ok);
+    CHECK(!r.stackFloorHit);
 }

@@ -32,6 +32,10 @@ import * as net from "net"
 import * as fs from "fs"
 import { decodeJitProgram, encodeLeb128, encodeProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "../../packages/machine/src/index"
 import type { RtlProgram } from "../../packages/machine/src/index"
+// One generator for the entry procedure's arguments, shared with the
+// execution oracle: if the two differed, this server's reference result
+// would not be the one qemu_exec.ts compares against.
+import { entryArgsFor } from "./entry_args"
 
 const SOCK_PATH = process.argv[2] || "/tmp/ppl-jit-oracle.sock"
 
@@ -54,9 +58,9 @@ const SOCK_PATH = process.argv[2] || "/tmp/ppl-jit-oracle.sock"
 //                       §4.1 leaves unspecified — also legal, also not a
 //                       finding, and specifically not something to
 //                       compare a translator result against
-// u8  refVmRan       — 1 iff `run()` was actually invoked (skipped when
-//                       procedure 0's argCount != 0 — vm.ts's own run()
-//                       only supports a zero-arg entry procedure today)
+// u8  refVmRan       — 1 iff `run()` was actually invoked (it is skipped
+//                       only when an earlier stage already failed; every
+//                       entry procedure is runnable, arguments included)
 // u8  refVmOk        — VmResult.ok (meaningless if refVmRan == 0)
 // i32 refVmAcc       LE
 // i32 refVmTrapCode  LE, -1 when null
@@ -189,14 +193,14 @@ function handleRequest(payload: Buffer): Buffer
 
     resp[0] = 1
 
-    if(program.procedures[0]!.argCount !== 0)
-    {
-        return resp // refVmRan stays 0
-    }
+    // Every entry procedure has a reference result now that enterProgram*
+    // takes a whole argument vector; this used to bail for any entry
+    // procedure taking arguments at all, which was stricter than even
+    // qemu_exec.ts's own (already too strict) gate.
 
     try
     {
-        const result = run(program)
+        const result = run(program, undefined, entryArgsFor(program.procedures[0]!.argCount))
         resp[2] = 1
         resp[3] = result.ok ? 1 : 0
         resp.writeInt32LE(result.acc | 0, 4)

@@ -13,6 +13,8 @@ SOURCES += test_decode_encode.cpp
 SOURCES += test_blocks.cpp
 SOURCES += test_unaryops.cpp
 SOURCES += test_proc_scan.cpp
+SOURCES += test_entry_args.cpp
+SOURCES += test_enter_program.cpp
 
 # Test support
 SOURCES += main.cpp
@@ -32,6 +34,12 @@ SOURCES += ../../compiler/src/blocks.cpp
 SOURCES += ../../compiler/src/unaryops.cpp
 SOURCES += ../../compiler/src/proc_scan.cpp
 SOURCES += ../../compiler/src/translate_proc.cpp
+
+# The runtime's own entry layer. Compiles and links cleanly on the host —
+# its only target-specific dependency is enterDispatch, which
+# test_enter_program.cpp fakes so the descriptor it is handed can be
+# inspected without booting an emulator.
+SOURCES += ../../runtime/enter_program.cpp
 
 # 1test library
 SOURCES += ../../vendor/1test/TestRunner.cpp

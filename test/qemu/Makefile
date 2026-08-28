@@ -89,6 +89,15 @@ CXXFLAGS += -fstack-usage
 # unbounded alloca/VLA into a tracked function, -fstack-usage reports it as
 # "dynamic" with an unreliable byte count, silently voiding the whole
 # per-level budget this build's stack-safety strategy depends on.
+#
+# Not on enter_program.cpp, and it cannot be: that file has one deliberate,
+# load-bearing VLA (the Runtime storage, sized to the program's own
+# procCount and already the first term of requiredStackBytes), and this
+# flag's "stack usage might be unbounded" diagnostic fires regardless of
+# the byte limit given, with no way to exempt a single known allocation.
+# check_stack_usage.py's own whole-image scan covers that file instead —
+# and covers every other translation unit too, including the ones this
+# per-file flag was never attached to.
 # -Werror=stack-usage=N fails the build immediately in that case instead —
 # N is deliberately generous (double the largest tracked frame today) so
 # this never fires on an ordinary size change, only on genuinely unbounded

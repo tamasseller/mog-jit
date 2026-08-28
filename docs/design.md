@@ -20,15 +20,30 @@ JIT-compile and execute one Generic Core program injected at runtime
 ```c
 typedef struct { uint32_t value; uint32_t trapped; } ProgramResult;
 
-ProgramResult enter_program_on_stack(uint32_t argIn, const uint8_t *programBytes,
+ProgramResult enter_program_on_stack(const uint32_t *args, uint32_t argCount,
+                                     const uint8_t *programBytes,
                                      uint32_t programSize, uint32_t codeArenaSize,
                                      uint32_t stackLimit, uint32_t interruptReserve);
 
-ProgramResult enter_program_split(uint32_t argIn, const uint8_t *programBytes,
+ProgramResult enter_program_split(const uint32_t *args, uint32_t argCount,
+                                  const uint8_t *programBytes,
                                   uint32_t programSize, uint32_t codeArenaBase,
                                   uint32_t codeArenaSize, uint32_t stackLimit,
                                   uint32_t interruptReserve);
 ```
+
+`args`/`argCount` is the entry procedure's whole argument vector, in
+frame-slot order — the same shape `packages/machine`'s own
+`run(program, extension, args)` takes, so the two sides of a differential
+comparison are handed identical inputs. `argCount` must equal the entry
+procedure's declared `arg_count` exactly; a mismatch is
+`RESOURCE_PROGRAM_ENTRY_ARG_COUNT` (§12) rather than a clamp, since the
+procedure reads exactly the slots it declared and the frame it reclaims on
+the way out is sized from that same number. This replaced a single
+`argIn` word, which could only ever express the acc-borne last argument
+(§6) and left an entry procedure declaring two or more reading
+uninitialized window registers — or, past four, reclaiming a frame nobody
+had pushed.
 
 No bare arena-less entry point: both variants take an explicit `stackLimit`
 and are checked against it up front. A caller that just wants a plain
@@ -49,8 +64,8 @@ and `validateProgram` already computes both, once, before the program is
 ever serialized.
 
 `trapped` is 0 for a normal return, nonzero for a `TRAP` code (isa-core.md
-§4.5) propagated out or a `RESOURCE_ERROR` (§12). None of these return
-until the program terminates.
+§4.5) propagated out or a resource error, whose own `value` names which one
+(§12). None of these return until the program terminates.
 
 Constraints: the target is ARMv6-M (Cortex-M0/M0+ baseline Thumb, no
 Thumb-2). The code arena may be too small to hold every procedure's
@@ -113,8 +128,8 @@ construction, and hitting `codeLimit` is the same evict-and-compact trigger
 §8 already has, anchored to a precomputed line rather than a detected
 collision. The check runs once, before any of that memory is touched,
 against a caller-supplied `stackLimit` (the lowest address the excursion
-must never reach); on failure `RESOURCE_ERROR` comes back with nothing set
-up.
+must never reach); on failure `RESOURCE_EXHAUSTED_STACK_BUDGET` comes back
+with nothing set up.
 
 **`operandStackBytes` is `totalDepth · 4`, uncredited.** The tempting
 `max(0, totalDepth − 4) · 4`, on the theory that the 4-register window (§5)
@@ -135,8 +150,8 @@ stack usage (C recursion, or an explicit `alloca`-grown array, coexisting
 with the translator's own call stack) checked *live* against whatever of
 `codeLimit`'s margin remains. The translator is the one thing allowed to
 encroach on `codeLimit`, provided it tracks that and fails into
-`RESOURCE_ERROR` once there is no room for both the code still to emit and
-this procedure's nesting depth. `alloca` overflow is undefined behavior
+`RESOURCE_EXHAUSTED_TRANSLATOR_STACK` once there is no room for both the
+code still to emit and this procedure's nesting depth. `alloca` overflow is undefined behavior
 rather than graceful failure, so the check happens before growing. The
 translator's *fixed* prologue footprint, paid on entry before it can check
 anything, belongs in the static helper-stack term above; only depth beyond
@@ -521,7 +536,7 @@ So the eviction loop runs over the whole table with no exclusions, evicting
 the global LRU minimum each round until either enough room appears or the
 table empties with the new procedure still not fitting, which can only
 happen when that one procedure alone is larger than the entire arena. There
-is no smarter recovery at that point: `RESOURCE_ERROR` (§12). Worst case the
+is no smarter recovery at that point: `RESOURCE_EXHAUSTED_ARENA` (§12). Worst case the
 loop is O(n²) in the resident-procedure count, fine given how small `n` is
 on any real embedded target and that this is already the rare, expensive
 path.
@@ -707,8 +722,23 @@ the compiler either way, and as a real function it needs no clobber list, no
 saves `r4`-`r7` and (mirrored through low registers) `r8`-`r11`, sets up
 `r9` (runtime pointer), `r8` (`runtime + RUNTIME_DISPATCH_TABLE_OFFSET`),
 `r10` (`g_helperVec`) and `r11` (tick 0), writes its own resume address into
-the sentinel slot, then tail-branches into `callHelper` with a boot record of
-`proc_idx = 0xffff` and `Q_idx = 0`. The result comes back as a `uint64_t`
+the sentinel slot, marshals the entry procedure's arguments, then
+tail-branches into `callHelper` with a boot record of `proc_idx = 0xffff`
+and `Q_idx = 0`.
+
+The marshalling makes `enter_dispatch` the entry procedure's *caller*: a
+compiled prologue and epilogue draw no distinction between arriving here
+and arriving from a compiled `CALL`, so the arguments have to land exactly
+where `spillForCall`/`fillCalleeArgs` would have left them (§6) — out-of-
+window slots pushed ascending so slot 0 is furthest from `sp`, slots
+`N-4..N-2` in their `physReg` window registers, slot `N-1` in acc. Which
+value goes in which register depends on `N mod WINDOW_SIZE`, a four-way
+branch in assembly and one array index in C, so the split is deliberate:
+`runtime/entry_args.h` computes a small descriptor (using the translator's
+own `physReg`, not a second copy of the formula) and the asm is a push loop
+plus five loads. It sits after the `savedSp` store, because `trapHelper`
+and `runtimeBail` both restore `sp` from there and must discard the pushed
+arguments along with everything else. The result comes back as a `uint64_t`
 (value in `r0`, trapped flag in `r1`) rather than a two-word struct: AAPCS32
 returns a composite in registers only up to 4 bytes, while a double-word
 integer goes in `r0:r1` directly, with nothing needing to survive the call.
@@ -1076,8 +1106,8 @@ directly, so it was retired. An *attached* `Assembler`
 is always a worst-case upper bound, so evicting everything resident and
 still coming up short is a normal outcome, not a failure — only a later
 real overflow at `emit()` is genuine, and *that* exits directly
-(`Assembler::fail()` → `runtimeBail`, `runtime/dispatch_abi.cpp`) rather
-than propagating a flag, since the caller (`compileProc`,
+(`Assembler::fail(RESOURCE_EXHAUSTED_ARENA)` → `runtimeBail`,
+`runtime/dispatch_abi.cpp`) rather than propagating a flag, since the caller (`compileProc`,
 `runtime/compile_proc.cpp`) has nothing useful left to do once arena
 exhaustion is real. `Runtime::evict` (`runtime/runtime_internal.h`) is
 unchanged: it still takes an `inProgressLenBytes` parameter (default 0,
@@ -1096,15 +1126,47 @@ grow it in place, then finalizes it (flush the pool, `Runtime::allocate`,
 ---
 ## 12. Report and error model
 
-`RESOURCE_ERROR` is a failure mode this target introduces, distinct from
-anything isa-core.md §9's static guarantees cover. Stack overflow shouldn't
-happen, since §2's regions are sized from `validateProgram`'s own figures
-and checked before use. The real runtime failure is **arena exhaustion
-where a single procedure's code and its own in-progress translator
-bookkeeping don't together fit** even after evicting everything (§8): one
-procedure larger than the whole arena, or a still-too-fragmented arena
-pre-compaction. `TRAPPED` carries the ISA's own `TRAP #code` value
-unchanged.
+`LANDING_RESOURCE_ERROR` is a failure mode this target introduces, distinct
+from anything isa-core.md §9's static guarantees cover. The tag is the
+discriminator; `value` names which of fourteen ways it happened, as a
+`RESOURCE_*` code from `runtime/runtime_host.h` (`0x5245` signature, class
+nibble, reason nibble, low byte reserved for a future detail payload).
+`TRAPPED` carries the ISA's own `TRAP #code` value unchanged.
+
+Three classes, split by what the caller can do about it — the only part
+worth branching on. `PROGRAM`: the input is out of contract, fix the
+program. `EXHAUSTED`: genuinely out of room, give it more memory. `LIMIT`:
+unencodable at any size, this backend cannot compile it at all.
+
+| code | value | site | predicate |
+|---|---|---|---|
+| `RESOURCE_PROGRAM_NO_PROCS` | `0x52451100` | `enter_program.cpp` `enterProgramWithHeader` | `proc_count == 0` |
+| `RESOURCE_PROGRAM_BODY_UNTERMINATED` | `0x52451200` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | ran off the blob with a block still open |
+| `RESOURCE_PROGRAM_CALLEE_RANGE` | `0x52451300` | `translate_proc.cpp` `processNonControl` | `calleeIndex >= procCount` |
+| `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` | `0x52451500` | `enter_program.cpp` `enterProgramCore` | `argCount != slot(0).argCount()` |
+| `RESOURCE_PROGRAM_ENTRY_DEPTH` | `0x52451600` | `enter_program.cpp` `enterProgramCore` | the entry procedure's out-of-window args exceed `total_depth` |
+| `RESOURCE_EXHAUSTED_ARENA` | `0x52452100` | `assembler.cpp` `emit` | buffer full and nothing left to evict (§8) |
+| `RESOURCE_EXHAUSTED_STACK_BUDGET` | `0x52452200` | `enter_program.cpp`, both variants | the up-front §2 check; nothing was touched |
+| `RESOURCE_EXHAUSTED_TRANSLATOR_STACK` | `0x52452300` | `translate_proc.cpp` `checkStackFloor` | translator recursion reached the live floor |
+| `RESOURCE_EXHAUSTED_SCAN_STACK` | `0x52452400` | `proc_scan.cpp` `scanBody` | ditto, in the directory pre-pass |
+| `RESOURCE_LIMIT_WINDOW_RECLAIM` | `0x52453100` | `window.cpp` `discardWindow`/`restoreWindow` | reclaim past `Uoff<2,7>` — TOS depth over 131 |
+| `RESOURCE_LIMIT_SPILL_OFFSET` | `0x52453200` | `translate_proc.cpp` `spillImm` | spill slot past `Uoff<2,8>` |
+| `RESOURCE_LIMIT_BRANCH_RANGE` | `0x52453300` | `assembler.cpp` `patchBranch` | fixup past `Ioff<1,8>`/`Ioff<1,11>` |
+| `RESOURCE_LIMIT_LOOP_BACK_EDGE` | `0x52453400` | `translate_proc.cpp` `translateLoop` | back-edge past `Ioff<1,11>` |
+| `RESOURCE_LIMIT_ARG_COUNT` | `0x52453500` | `Runtime::init` | `arg_count` over `ProcSlot`'s field width |
+| `RESOURCE_LIMIT_BODY_BYTES` | `0x52453600` | `Runtime::init` | body size over `ProcSlot`'s field width |
+
+Two things this deliberately does not cover. Stack overflow proper still
+shouldn't happen — §2's regions are sized from `validateProgram`'s own
+figures and checked before use; the two `EXHAUSTED_*_STACK` codes are the
+*translator's own* C recursion against a live floor, not the compiled
+program's operand stack. And malformed wire bytes stay asserted rather
+than reported, the convention `decode_instr.h` and `proc_scan.h` already
+document: `PROGRAM_BODY_UNTERMINATED` and `PROGRAM_CALLEE_RANGE` are the
+two malformedness checks that exist because the walk needs them anyway,
+not the start of a validating decoder. `0x52451400` is reserved for a
+truncated program envelope, which `parseProgramHeader` cannot currently
+report at all — it runs before there is anywhere to report to.
 
 ---
 

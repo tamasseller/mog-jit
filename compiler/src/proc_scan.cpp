@@ -154,7 +154,7 @@ BodyScanResult scanProcBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t st
     bool stop = false;
     bool foundEnd = false;
     scanBody(bytes, maxBytes, pc, needsLRSave, nullptr, stackFloor, stop, foundEnd);
-    return BodyScanResult{pc - startOffset, needsLRSave, foundEnd};
+    return BodyScanResult{pc - startOffset, needsLRSave, foundEnd, stop && !foundEnd};
 }
 
 } // namespace jitc

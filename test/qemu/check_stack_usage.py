@@ -31,6 +31,20 @@ TRANSLATOR_ENTRY_WORST_CASE_BYTES:
 - SCAN_CLUSTER: proc_scan.cpp's own pre-compilation recursion (scanBody),
   independent of the above — see proc_scan.cpp's own SCAN_STACK_MARGIN
   comment for why this is never a proxy for RECURSIVE_CLUSTER.
+- ENTRY_LAYER: enter_program.cpp's own frames, which feed
+  requiredStackBytes rather than either constant above. Two of them are
+  *deliberately* dynamic — see EXPECTED_DYNAMIC below.
+
+On top of the per-group checks, ALL_DYNAMIC_ALLOWED enumerates every frame
+in the whole image that GCC cannot statically bound. That is the check
+`-Werror=stack-usage=` was standing in for, done properly: the flag is
+per-file (five files carry it) and cannot express "this one VLA is
+intentional", so enter_program.cpp — which has exactly such a VLA — could
+never carry it at all. Scanning the .su set instead covers every
+translation unit, including the ones no flag reaches, and turns "no
+unbounded frames in five files" into "these three frames are unbounded and
+nothing else is."
+
 
 Every entry is checked for an EXACT match, not just a ceiling: a value
 that's silently gotten *smaller* than expected is exactly what went wrong
@@ -84,10 +98,42 @@ SCAN_CLUSTER = [
     ("scanBody", "jitc::scanBody(", 72),
 ]
 
+# enter_program.cpp's own frames. enterProgramCore's is the one C frame
+# established *after* stackHasRoom has already read sp, so it has to come
+# out of the reservation — dispatch_abi.h's ENTER_PROGRAM_CORE_FRAME_BYTES
+# is exactly this number, and a drift here means that constant is wrong.
+# The two public entry points' own frames are below the measured sp by the
+# time it is read, so their size is not budgeted; they are tracked anyway
+# because a sudden jump would mean something moved across the check.
+ENTRY_LAYER = [
+    ("enterProgramCore",    "enterProgramCore(",     88),
+    ("enterProgramOnStack", "enterProgramOnStack(",  80),
+    ("enterProgramSplit",   "enterProgramSplit(",    80),
+]
+
+# The frames GCC cannot statically bound, and why each one is allowed to be.
+# Anything dynamic that is not on this list fails the build.
+#
+# Keyed by the demangled substring that identifies the function, same
+# matching rule as everywhere else here.
+EXPECTED_DYNAMIC = {
+    "enterProgramOnStack(":
+        "the Runtime storage VLA (enter_program.cpp's enterProgramWithHeader, "
+        "inlined here) — sized to storageBytesFor(procCount), which is "
+        "requiredStackBytes' own first term and is checked against the live sp "
+        "before the VLA is entered",
+    "enterProgramSplit(":
+        "the same VLA, inlined into the other public entry point",
+    "measuredHalfwords(":
+        "test-only (test/qemu/main.cpp) — a pre-measurement helper that sizes a "
+        "scratch buffer from its own argument, outside any excursion",
+}
+
 ALL_GROUPS = [
-    ("fixed one-time chain (TRANSLATOR_ENTRY_WORST_CASE_BYTES)", FIXED_CHAIN),
-    ("recursive cluster (TRANSLATE_BODY_STACK_MARGIN's per-level cost)", RECURSIVE_CLUSTER),
-    ("proc_scan's own recursion (SCAN_STACK_MARGIN)", SCAN_CLUSTER),
+    ("fixed one-time chain (TRANSLATOR_ENTRY_WORST_CASE_BYTES)", FIXED_CHAIN, False),
+    ("recursive cluster (TRANSLATE_BODY_STACK_MARGIN's per-level cost)", RECURSIVE_CLUSTER, False),
+    ("proc_scan's own recursion (SCAN_STACK_MARGIN)", SCAN_CLUSTER, False),
+    ("entry layer (requiredStackBytes)", ENTRY_LAYER, True),
 ]
 
 
@@ -120,7 +166,7 @@ def _load_su_lines(objdir):
     return lines
 
 
-def _find(su_lines, prefix, display_name):
+def _find(su_lines, prefix, display_name, allow_dynamic=False):
     matches = []
     for raw_name, byte_count, qualifiers, path in su_lines:
         demangled = _demangle(raw_name) if raw_name.startswith("_Z") else raw_name
@@ -145,13 +191,60 @@ def _find(su_lines, prefix, display_name):
         print("  Narrow the prefix so it picks out exactly one function.")
         return None
     demangled, byte_count, qualifiers, path = matches[0]
-    if "dynamic" in qualifiers:
+    if "dynamic" in qualifiers and not allow_dynamic:
         print(f"FAIL: '{display_name}' is qualified '{qualifiers}' — its frame")
         print("  has a run-time-dependent component (alloca/unbounded VLA)")
         print("  GCC can't statically bound. The whole point of this check is")
         print("  a static byte budget; an unbounded frame here voids it.")
+        print("  If the allocation is deliberate AND its size is separately")
+        print("  accounted for in requiredStackBytes, add it to")
+        print("  EXPECTED_DYNAMIC with the reason — don't just widen this.")
         return None
+    # The reported byte count is the *static* part either way; for a dynamic
+    # frame the run-time part is unquantified here and has to be accounted
+    # for by name elsewhere (EXPECTED_DYNAMIC says where).
     return byte_count
+
+
+def _check_no_unexpected_dynamic_frames(su_lines):
+    """Every frame GCC cannot statically bound must be one we know about.
+
+    This is the check `-Werror=stack-usage=` cannot express. That flag fires
+    on "stack usage might be unbounded" regardless of the limit given, so a
+    file containing one deliberate VLA can never carry it — which is why
+    enter_program.cpp has no such flag and why this exists instead. Here the
+    intent is recorded per function, and the scan covers every translation
+    unit rather than the five the flag is attached to.
+    """
+    print("-- unbounded frames (whole image) --")
+    ok = True
+    seen = set()
+    for raw_name, byte_count, qualifiers, path in su_lines:
+        if "dynamic" not in qualifiers:
+            continue
+        demangled = _demangle(raw_name) if raw_name.startswith("_Z") else raw_name
+        reason = next((r for key, r in EXPECTED_DYNAMIC.items() if key in demangled), None)
+        if reason is None:
+            print(f"FAIL: '{demangled}' has an unbounded frame ({byte_count} bytes static, "
+                  f"'{qualifiers}')")
+            print(f"  in {path}")
+            print("  Nothing in requiredStackBytes accounts for it, so the whole")
+            print("  up-front stack check is void for any path reaching it. Either")
+            print("  give it a static bound, or — if the allocation is deliberate")
+            print("  and separately budgeted — add it to EXPECTED_DYNAMIC with the")
+            print("  reason and say where its size is accounted for.")
+            ok = False
+        else:
+            seen.add(next(k for k in EXPECTED_DYNAMIC if k in demangled))
+            print(f"  OK: {demangled.split('(')[0].split()[-1]} — {reason}")
+
+    for key in EXPECTED_DYNAMIC:
+        if key not in seen:
+            print(f"FAIL: EXPECTED_DYNAMIC lists '{key}', but no frame in the image is")
+            print("  dynamic any more. If the VLA/alloca is genuinely gone, drop the")
+            print("  entry — a stale exemption is a hole waiting for the next one.")
+            ok = False
+    return ok
 
 
 def _read_margin_constant():
@@ -169,10 +262,10 @@ def main():
         return 1
 
     ok = True
-    for group_name, entries in ALL_GROUPS:
+    for group_name, entries, allow_dynamic in ALL_GROUPS:
         print(f"-- {group_name} --")
         for display_name, prefix, expected in entries:
-            actual = _find(su_lines, prefix, display_name)
+            actual = _find(su_lines, prefix, display_name, allow_dynamic)
             if actual is None:
                 ok = False
                 continue
@@ -186,6 +279,9 @@ def main():
                 ok = False
             else:
                 print(f"  OK: {display_name} = {actual} bytes")
+
+    if not _check_no_unexpected_dynamic_frames(su_lines):
+        ok = False
 
     if ok:
         fixed_total = sum(e[2] for e in FIXED_CHAIN) + FIXED_CHAIN_ASM_BYTES

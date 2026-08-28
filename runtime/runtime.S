@@ -12,7 +12,7 @@
 .cpu cortex-m0
 .thumb
 
-#include "runtime_host.h" // RUNTIME_DISPATCH_TABLE_OFFSET / DISPATCH_SENTINEL_OFFSET
+#include "runtime_host.h" // RUNTIME_DISPATCH_TABLE_OFFSET / DISPATCH_SENTINEL_OFFSET / ENTRY_ARGS_*_OFFSET
 
 // in: r1 = packed record (P_idx | K+1<<16), r2 = Q_idx
 // out: never returns — tail-jumps into Q's resident code or the translator
@@ -237,7 +237,7 @@ translatorTrampoline:
     ldr  r3, [r1, #0]          @ r3 = the codePtr compileProc just wrote
     bx   r3
 
-// uint64_t enterDispatch(uint32_t argIn, Runtime *runtime)
+// uint64_t enterDispatch(const EntryArgs *entryArgs, Runtime *runtime)
 //
 // runtime_host.cpp's own entry into the ABI: an ordinary AAPCS function,
 // not C inline asm — the raw BX-chain that follows (callHelper/the
@@ -246,7 +246,7 @@ translatorTrampoline:
 // expressed as a real function here it needs no clobber list and no
 // staging array.
 //
-// Only two inputs: runtime (r9 from here on) is the whole story —
+// Two inputs. runtime (r9 from here on) is the whole dispatch context —
 // dispatchBase (r8) is runtime + RUNTIME_DISPATCH_TABLE_OFFSET, and there's
 // no separate control-stack base to pass at all. r10 (helper vector base)
 // isn't a parameter either: helperVec (dispatch_abi.cpp, 9 entries:
@@ -254,6 +254,17 @@ translatorTrampoline:
 // clzHelper, revbitsHelper, brTableJumpHelper,
 // returnHelperFromStackReclaim, trapHelper) is link-time const, so it's
 // loaded here by name.
+//
+// entryArgs is the entry procedure's own incoming argument layout, already
+// split into "push these" / "load these into the window" / "this one is acc"
+// by entry_args.h's buildEntryArgs. This routine is the entry procedure's
+// *caller*, and a callee's prologue and epilogue make no distinction between
+// being reached from here and being reached from a compiled CALL site — so
+// the words below have to land exactly where window.cpp's spillForCall +
+// fillCalleeArgs would have left them. They did not, before: r4-r7 arrived
+// holding whatever the mirrors below put there, and for arg_count > 4 the
+// epilogue reclaimed a frame this routine never pushed, landing .Lresume on
+// a shifted sp.
 //
 // Result comes back as a uint64_t (r0 = value, r1 = trapped), not a 2-word
 // struct: AAPCS32 returns composites over 4 bytes through a hidden pointer,
@@ -296,6 +307,52 @@ enterDispatch:
                                    @ .thumb_func-tagged, so nothing else supplies the
                                    @ Thumb bit here
     str   r3, [r2, #0]             @ ...gets this function's own landing address
+
+    @ ── the entry procedure's arguments ───────────────────────────────
+    @
+    @ Placement is load-bearing three times over, so don't move this:
+    @
+    @  * Not one instruction earlier. r2 has been dispatchBase since the
+    @    adds above and the sentinel address since the subs, and the str
+    @    right above stores through it — clobbering r2 before that turns
+    @    this function's own landing-address write into a wild store.
+    @    r1/r2/r3 are all dead from here (reloaded just below, and by
+    @    callHelper), and r0 has been untouched since the push, so this is
+    @    the first point where there are registers to work with at all.
+    @
+    @  * After runtime->savedSp was recorded above, not before. savedSp is
+    @    where trapHelper and runtimeBail put sp back, and both must
+    @    discard these words: a TRAP or a bail unwinds the whole
+    @    excursion, arguments included. Recorded the other way round, the
+    @    words would be stranded and .Lresume would pop them as the
+    @    caller's r8-r11 and return to a garbage pc.
+    @
+    @  * Before the boot branch, obviously — but note nothing between here
+    @    and the entry procedure's own body touches r0 or r4-r7:
+    @    callHelper uses lr/r1/r2/r3, and the prologue stub r1/r2/r3/r11.
+    @
+    @ An odd spilledCount leaves sp 4-mod-8 for the excursion, where it
+    @ used to be 8-aligned throughout. That is fine and not worth
+    @ correcting: REALIGN_ENTER already realigns on the one path into
+    @ independently-compiled C, and an ordinary CALL site has always been
+    @ able to produce either alignment.
+    ldr   r2, [r0, #ENTRY_ARGS_SPILLED_OFFSET]       @ &args[0]
+    ldr   r3, [r0, #ENTRY_ARGS_SPILLED_COUNT_OFFSET] @ max(0, arg_count - WINDOW_SIZE)
+    cmp   r3, #0                   @ no CBZ on ARMv6-M, so this guard is real work
+    beq   .LentryWindow
+.LentrySpill:                      @ ascending slot order, so slot 0 ends up
+    ldr   r1, [r2, #0]             @ furthest from sp — what rawSpillOffset expects
+    push  {r1}
+    adds  r2, #4
+    subs  r3, #1
+    bne   .LentrySpill
+.LentryWindow:                     @ the rotation by arg_count mod WINDOW_SIZE already
+    ldr   r4, [r0, #(ENTRY_ARGS_WINDOW_OFFSET + 0)]  @ happened in C — window[i] is
+    ldr   r5, [r0, #(ENTRY_ARGS_WINDOW_OFFSET + 4)]  @ addressed to WINDOW_BASE + i, so
+    ldr   r6, [r0, #(ENTRY_ARGS_WINDOW_OFFSET + 8)]  @ these four are a straight copy
+    ldr   r7, [r0, #(ENTRY_ARGS_WINDOW_OFFSET + 12)]
+    ldr   r0, [r0, #ENTRY_ARGS_ACC_OFFSET] @ acc last: it overwrites the descriptor pointer
+
     ldr   r1, =0xffff              @ boot record: procIdx=-1, tag=0 (LANDING_SUCCESS)
     movs  r2, #0                   @ Q_idx = entry procedure (index 0)
     b     callHelper               @ tail-branch — callHelper never returns via bx lr

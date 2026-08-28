@@ -301,9 +301,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     // harness never touches arena allocation, only the static per-proc
     // directory init() also builds (argCount/bodyBytes/needsLRSave, via
     // the real scanProcBody, not a hand-rolled substitute).
-    bool scanOk = rt.init(data, (uint32_t)size, bodyOffset, procCount,
+    // Compared against 0 explicitly: init() reports which rejection
+    // happened as a RESOURCE_* code, so 0 is success and any truthy value
+    // is a failure -- the opposite sense to a bool.
+    uint32_t initCode = rt.init(data, (uint32_t)size, bodyOffset, procCount,
         /*codeArenaBase=*/0x10000, /*codeArenaSize=*/0x10000, /*stackLimit=*/0, /*arenaOverlapsStack=*/0);
-    if(!scanOk) return 0; // JIT's own static ceiling (arg/body-size limits) rejected it -- graceful, not a bug
+    if(initCode != 0) return 0; // JIT's own static ceiling (arg/body-size limits) rejected it -- graceful, not a bug
 
     // Every procedure, not just the entry one: a CALL site's own
     // translation reads the *callee's* slot (argCount, for the argument
@@ -372,8 +375,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     const uint32_t arenaSize = arenaSizeFor(data, size, bodyOffset);
     memset(g_arena, 0, arenaSize);
 
-    if(!rt.init(data, (uint32_t)size, bodyOffset, procCount,
-        ARENA_BASE, arenaSize, /*stackLimit=*/0, /*arenaOverlapsStack=*/0))
+    if(rt.init(data, (uint32_t)size, bodyOffset, procCount,
+        ARENA_BASE, arenaSize, /*stackLimit=*/0, /*arenaOverlapsStack=*/0) != 0)
     {
         return 0;
     }

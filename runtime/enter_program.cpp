@@ -18,6 +18,7 @@
 #include <cassert>
 #include "runtime_internal.h"
 #include "dispatch_abi.h"
+#include "entry_args.h"
 
 /* The jit-armv6m-specific wire envelope (packages/machine/src/bytecode.ts's
  * encodeJitProgram) every enterProgram* variant now takes in place of a
@@ -57,24 +58,69 @@ static ProgramHeader parseProgramHeader(const uint8_t *bytes, uint32_t size)
  * bytes.
  *
  * Runtime::init() doing the whole-program directory walk can itself fail
- * (a procedure's own scan overflowed, or its arg_count/body length doesn't
- * fit ProcSlot's packed fields) — reported as RESOURCE_ERROR without ever
- * reaching enterDispatch, the same as the stack-budget checks below
- * already do for a different reason. */
+ * four ways (a procedure's own scan overflowed the stack or ran off the
+ * blob, or its arg_count/body length doesn't fit ProcSlot's packed
+ * fields). It names which as a RESOURCE_* code, forwarded verbatim
+ * without ever reaching enterDispatch — the same shape as the
+ * stack-budget checks below, which report their own.
+ *
+ * The two entry-argument checks here can only run after that walk: both
+ * compare against the entry procedure's own declared arg_count, which is
+ * exactly what init() just recorded in slot 0. */
 static ProgramResult enterProgramCore(
-    uint32_t argIn,
+    const uint32_t *args, uint32_t argCount,
     Runtime *runtime,
     const uint8_t *programBytes, uint32_t programSize, const ProgramHeader &hdr,
     uint32_t codeArenaBase, uint32_t codeArenaSize,
     uint32_t stackLimit, uint32_t arenaOverlapsStack)
 {
-    if(!runtime->init(programBytes, programSize, hdr.bodyOffset, hdr.procCount,
-        codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack))
+    if(uint32_t code = runtime->init(programBytes, programSize, hdr.bodyOffset, hdr.procCount,
+        codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack); code != 0)
     {
-        return ProgramResult{ RESOURCE_ERROR_CODE, LANDING_RESOURCE_ERROR };
+        return ProgramResult{ code, LANDING_RESOURCE_ERROR };
     }
 
-    uint64_t packed = enterDispatch(argIn, runtime);
+    const uint32_t declared = runtime->slot(0).argCount();
+
+    /* No clamping and no zero-filling: the entry procedure reads exactly
+     * the slots it declared, and the frame it reclaims on the way out is
+     * sized from that same number, so a count that disagrees with the
+     * program is not a value this can pick a default for. Reported rather
+     * than asserted because it is a caller mistake, not malformed wire
+     * bytes. */
+    if(argCount != declared)
+    {
+        return ProgramResult{ RESOURCE_PROGRAM_ENTRY_ARG_COUNT, LANDING_RESOURCE_ERROR };
+    }
+
+    /* enterDispatch is about to push the entry procedure's out-of-window
+     * arguments — everything below its 4-register window. Those words are
+     * covered by operandStackBytes (= totalDepth * 4, charged per abstract
+     * TOS slot with no window credit) *only* because validateProgram seeds
+     * every procedure's own local peak at its argCount, so a well-formed
+     * envelope never reports a totalDepth below procedures[0].argCount.
+     * That is a property of the producer, and totalDepth arrives as
+     * trusted wire data, so check it rather than assume it: arg_count is
+     * 11 bits (ProcSlot), which unchecked would let a forged envelope
+     * drive sp ~8KB below a reservation sized from the forged number.
+     *
+     * Deliberately bounds the *pushed words*, not argCount itself. The
+     * stronger `declared > totalDepth` reads better as a restatement of
+     * the producer's contract, but it is stricter than the safety
+     * requirement and would reject a deliberately understated envelope
+     * that is nonetheless in no danger — test/qemu's own fixtures encode
+     * max_call_depth/total_depth as 0 on purpose (fixtures.cpp's
+     * finishProgram), and every one of them pushes nothing here. */
+    const uint32_t entrySpilled = declared > jitc::WINDOW_SIZE ? declared - jitc::WINDOW_SIZE : 0;
+    if(entrySpilled > hdr.totalDepth)
+    {
+        return ProgramResult{ RESOURCE_PROGRAM_ENTRY_DEPTH, LANDING_RESOURCE_ERROR };
+    }
+
+    EntryArgs entryArgs;
+    buildEntryArgs(&entryArgs, args, declared);
+
+    uint64_t packed = enterDispatch(&entryArgs, runtime);
     return ProgramResult{ (uint32_t)packed, (uint32_t)(packed >> 32) };
 }
 
@@ -88,7 +134,7 @@ static ProgramResult enterProgramCore(
  * decision first, since those are the one thing that genuinely differs
  * between the two. */
 static ProgramResult enterProgramWithHeader(
-    uint32_t argIn,
+    const uint32_t *args, uint32_t argCount,
     const uint8_t *programBytes, uint32_t programSize, const ProgramHeader &hdr,
     uint32_t codeArenaBase, uint32_t codeArenaSize,
     uint32_t stackLimit, uint32_t arenaOverlapsStack)
@@ -100,7 +146,7 @@ static ProgramResult enterProgramWithHeader(
      * before any of that storage is even sized. */
     if(hdr.procCount == 0)
     {
-        return ProgramResult{ RESOURCE_ERROR_CODE, LANDING_RESOURCE_ERROR };
+        return ProgramResult{ RESOURCE_PROGRAM_NO_PROCS, LANDING_RESOURCE_ERROR };
     }
 
     /* One flexible-array-member object, over-allocated to fit
@@ -108,7 +154,7 @@ static ProgramResult enterProgramWithHeader(
      * hand since a plain `Runtime runtime;` local would only reserve the
      * fixed header. */
     alignas(Runtime) unsigned char runtimeStorage[Runtime::storageBytesFor(hdr.procCount)];
-    return enterProgramCore(argIn, reinterpret_cast<Runtime *>(runtimeStorage),
+    return enterProgramCore(args, argCount, reinterpret_cast<Runtime *>(runtimeStorage),
         programBytes, programSize, hdr,
         codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack);
 }
@@ -128,7 +174,18 @@ static ProgramResult enterProgramWithHeader(
  * = totalDepth * 4 — the whole tight TOS-depth bound, not a
  * window-credited fraction of it, since the window's actual absorption
  * depends on call-boundary argument shuffling that abstract depth alone
- * doesn't capture). */
+ * doesn't capture).
+ *
+ * What is and isn't in here follows from *when* stackHasRoom reads sp.
+ * currentSp() runs inside whichever public entry point called it, with
+ * that function's own frame already established — so its frame is below
+ * the measured sp and already spent, and parseProgramHeader's has come and
+ * gone. Everything taken afterwards has to fit in what this returns: the
+ * VLA enterProgramWithHeader allocates (storageBytesFor, the first term),
+ * enterProgramCore's frame (ENTER_PROGRAM_CORE_FRAME_BYTES), enterDispatch's
+ * two pushes plus the entry procedure's own out-of-window arguments
+ * (ENTER_DISPATCH_FIXED_BYTES and operandStackBytes respectively), and the
+ * translator's worst case if a slot turns out to be cold. */
 static uint32_t requiredStackBytes(
     uint32_t procCount, uint32_t operandStackBytes, uint32_t maxCallDepth,
     uint32_t interruptReserve)
@@ -137,6 +194,7 @@ static uint32_t requiredStackBytes(
          + operandStackBytes
          + maxCallDepth * CALL_RECORD_BYTES
          + ENTER_DISPATCH_FIXED_BYTES
+         + ENTER_PROGRAM_CORE_FRAME_BYTES
          + TRANSLATOR_ENTRY_WORST_CASE_BYTES
          + interruptReserve;
 }
@@ -174,11 +232,11 @@ static bool stackHasRoom(uint32_t needed, uint32_t stackLimit)
  *
  * The checked total is unchanged either way — codeArenaSize still counts
  * against stackLimit below; only where, within that already-reserved
- * range, the arena sits is different. On failure, reports RESOURCE_ERROR
- * directly — enterDispatch/Runtime were never set up, so there's nothing
- * else to unwind. */
+ * range, the arena sits is different. On failure, reports
+ * RESOURCE_EXHAUSTED_STACK_BUDGET directly — enterDispatch/Runtime were
+ * never set up, so there's nothing else to unwind. */
 extern "C" ProgramResult enterProgramOnStack(
-    uint32_t argIn,
+    const uint32_t *args, uint32_t argCount,
     const uint8_t *programBytes, uint32_t programSize,
     uint32_t codeArenaSize, uint32_t stackLimit, uint32_t interruptReserve)
 {
@@ -189,10 +247,10 @@ extern "C" ProgramResult enterProgramOnStack(
                      + codeArenaSize;
     if(!stackHasRoom(needed, stackLimit))
     {
-        return ProgramResult{ RESOURCE_ERROR_CODE, LANDING_RESOURCE_ERROR };
+        return ProgramResult{ RESOURCE_EXHAUSTED_STACK_BUDGET, LANDING_RESOURCE_ERROR };
     }
 
-    return enterProgramWithHeader(argIn, programBytes, programSize, hdr,
+    return enterProgramWithHeader(args, argCount, programBytes, programSize, hdr,
         stackLimit, codeArenaSize, stackLimit, /*arenaOverlapsStack=*/1);
 }
 
@@ -203,7 +261,7 @@ extern "C" ProgramResult enterProgramOnStack(
  * check below — that memory isn't on this stack at all, so it's the
  * caller's own responsibility to have sized it correctly. */
 extern "C" ProgramResult enterProgramSplit(
-    uint32_t argIn,
+    const uint32_t *args, uint32_t argCount,
     const uint8_t *programBytes, uint32_t programSize,
     uint32_t codeArenaBase, uint32_t codeArenaSize,
     uint32_t stackLimit, uint32_t interruptReserve)
@@ -214,9 +272,9 @@ extern "C" ProgramResult enterProgramSplit(
     uint32_t needed = requiredStackBytes(hdr.procCount, operandStackBytes, hdr.maxCallDepth, interruptReserve);
     if(!stackHasRoom(needed, stackLimit))
     {
-        return ProgramResult{ RESOURCE_ERROR_CODE, LANDING_RESOURCE_ERROR };
+        return ProgramResult{ RESOURCE_EXHAUSTED_STACK_BUDGET, LANDING_RESOURCE_ERROR };
     }
 
-    return enterProgramWithHeader(argIn, programBytes, programSize, hdr,
+    return enterProgramWithHeader(args, argCount, programBytes, programSize, hdr,
         codeArenaBase, codeArenaSize, stackLimit, /*arenaOverlapsStack=*/0);
 }

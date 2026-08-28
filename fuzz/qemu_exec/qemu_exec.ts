@@ -20,6 +20,7 @@ import * as path from "path"
 import { spawnSync } from "child_process"
 import { decodeJitProgram, encodeJitProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "../../../packages/machine/src/index"
 import type { RtlProgram } from "../../../packages/machine/src/index"
+import { entryArgsFor } from "../entry_args"
 
 const HERE = __dirname
 const ELF = path.join(HERE, "exec_runner.elf")
@@ -55,6 +56,9 @@ interface Candidate
     file: string
     bytes: Buffer
     expected: Expected
+    /** The entry procedure's own arguments, as fed to both the reference VM
+     *  and the guest — one array, so the two cannot disagree. */
+    entryArgs: number[]
 }
 
 const skipped: Record<string, number> = {}
@@ -96,13 +100,13 @@ function classify(file: string): Candidate | null
     catch { skip("does not re-encode"); return null }
     if(bytes.length === 0 || bytes.length > PROGRAM_MAX) { skip(`size (>${PROGRAM_MAX}B or empty)`); return null }
 
-    // exec_runner.cpp enters with argIn = 0, and enterProgram* passes that
-    // single word as the entry procedure's own one argument — so an entry
-    // procedure taking 0 or 1 arguments has a reference result, and one
-    // taking more has no counterpart on the emulated side at all.
-    const entryArgCount = program.procedures[0]!.argCount
-    if(entryArgCount > 1) { skip("entry procedure takes more than one argument"); return null }
-    const entryArgs = entryArgCount === 1 ? [0] : []
+    // Every entry procedure is runnable now: enterProgram* takes the whole
+    // argument vector, and the batch record carries it per program. This
+    // used to skip anything declaring more than one argument, on the
+    // grounds that the emulated side had no counterpart — which was true,
+    // and hid a deterministic hang for every entry procedure declaring five
+    // or more (docs/fuzzing-campaign.md).
+    const entryArgs = entryArgsFor(program.procedures[0]!.argCount)
 
     let expected: Expected
     try
@@ -140,7 +144,7 @@ function classify(file: string): Candidate | null
         skip("reference VM threw"); return null
     }
 
-    return { file, bytes, expected }
+    return { file, bytes, expected, entryArgs }
 }
 
 function collect(targets: string[]): string[]
@@ -171,7 +175,7 @@ function chunk(cands: Candidate[]): Candidate[][]
     let bytes = 8 // magic + count
     for(const c of cands)
     {
-        const need = 4 + c.bytes.length
+        const need = 4 + 4 + 4 * c.entryArgs.length + c.bytes.length
         if(bytes + need > BATCH_LIMIT && current.length > 0)
         {
             chunks.push(current)
@@ -193,9 +197,13 @@ function writeBatch(cands: Candidate[]): void
     const parts: Buffer[] = [header]
     for(const c of cands)
     {
-        const len = Buffer.alloc(4)
-        len.writeUInt32LE(c.bytes.length, 0)
-        parts.push(len, c.bytes)
+        // u32 length, u32 argCount, argCount x u32, then the program bytes —
+        // exec_runner.cpp's own cursor walk, in that order.
+        const prefix = Buffer.alloc(8 + 4 * c.entryArgs.length)
+        prefix.writeUInt32LE(c.bytes.length, 0)
+        prefix.writeUInt32LE(c.entryArgs.length, 4)
+        c.entryArgs.forEach((v, i) => prefix.writeUInt32LE(v >>> 0, 8 + 4 * i))
+        parts.push(prefix, c.bytes)
     }
     fs.writeFileSync(BATCH_PATH, Buffer.concat(parts))
 }
@@ -268,6 +276,10 @@ if(candidates.length === 0) process.exit(0)
 
 let matched = 0, resourceError = 0, rejected = 0
 const resourceExamples: string[] = []
+// Bucketed by the RESOURCE_* code the runner printed (runtime_host.h).
+// Keyed on the raw value, deliberately: mirroring the table here is a
+// second copy to keep in sync, and the class nibble is readable as-is.
+const resourceByCode = new Map<number, number>()
 const mismatches: string[] = []
 const hangs: string[] = []
 // A work queue rather than a fixed list: a batch cut short by a hang
@@ -336,7 +348,11 @@ for(let bi = 0; bi < pending.length; bi++)
             // RESOURCE_ERROR is a harness-tuning signal, and "which ones"
             // is the only way to tell an arena that is too small from a
             // corpus whose programs genuinely cannot fit an 8KB target.
+            // The per-code split answers exactly that: 0x524521xx is an
+            // arena that wants growing, 0x524531xx and 0x524511xx are
+            // programs this target cannot compile at any size.
             resourceError++
+            resourceByCode.set(value, (resourceByCode.get(value) ?? 0) + 1)
             if(resourceExamples.length < 5) resourceExamples.push(c.file)
             return
         }
@@ -368,7 +384,9 @@ for(let bi = 0; bi < pending.length; bi++)
 
 process.stderr.write("\n")
 console.log(`matched            ${matched}`)
-console.log(`RESOURCE_ERROR     ${resourceError}   (arena/stack budget — legitimate, not comparable)`)
+console.log(`RESOURCE_ERROR     ${resourceError}   (resource/limit bail — legitimate, not comparable)`)
+for(const [code, n] of Array.from(resourceByCode).sort((a, b) => b[1] - a[1]))
+    console.log(`  ${code.toString(16).padStart(8, "0")}  ${n}`)
 if(resourceExamples.length > 0)
     console.log(`  e.g. ${resourceExamples.join("\n       ")}`)
 if(rejected) console.log(`rejected by runner ${rejected}`)

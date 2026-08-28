@@ -13,8 +13,10 @@
 
 /* LANDING_SUCCESS/LANDING_TRAP/LANDING_RESOURCE_ERROR live in
  * runtime_host.h — they are part of ProgramResult's own contract, and
- * runtime.S needs LANDING_TRAP under __ASSEMBLER__. */
-#define RESOURCE_ERROR_CODE 0x52455343u /* "RESC", arbitrary/distinct */
+ * runtime.S needs LANDING_TRAP under __ASSEMBLER__. So do the RESOURCE_*
+ * codes one of them carries in ProgramResult::value: the host is who
+ * reads them. There is deliberately no blanket code here for a new bail
+ * site to reach for. */
 
 class Runtime;
 
@@ -162,13 +164,14 @@ public:
      * envelope a caller's own parseProgramHeader already stripped);
      * bodyOffset is where procedure 0's own arg_count LEB128 begins.
      *
-     * Returns false — never touching arenaCursor/dispatch state past
-     * whichever procedure it failed on — if any procedure's own scan
-     * overflows (scanProcBody's live stack-floor check) or doesn't fit
-     * ProcSlot's packed field widths; the caller reports RESOURCE_ERROR
-     * without ever reaching enterDispatch. Doesn't allocate codeArenaBase's
-     * own storage; where that lives is the caller's choice. */
-    bool init(const uint8_t *programBytes, uint32_t programSize, uint32_t bodyOffset, uint32_t procCount,
+     * Returns 0 on success, else the RESOURCE_* code (runtime_host.h) for
+     * whichever of the four ways a procedure can be rejected happened —
+     * never touching arenaCursor/dispatch state past the procedure it
+     * failed on. The caller returns that code as its own ProgramResult
+     * without ever reaching enterDispatch. Doesn't allocate
+     * codeArenaBase's own storage; where that lives is the caller's
+     * choice. */
+    uint32_t init(const uint8_t *programBytes, uint32_t programSize, uint32_t bodyOffset, uint32_t procCount,
         uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit, uint32_t arenaOverlapsStack)
     {
         /* Rounded down, mirroring arenaCursor's own rounding up just below:
@@ -205,9 +208,20 @@ public:
             uint32_t argCount = jitc::decodeLeb128(programBytes, pos, pos);
             uint32_t bodyStart = pos;
             jitc::BodyScanResult scan = jitc::scanProcBody(programBytes, programSize, bodyStart, stackLimit);
-            if(!scan.ok || argCount > ProcSlot::MAX_ARG_COUNT || scan.bodyBytes > ProcSlot::MAX_BODY_BYTES)
+            /* Four separate rejections, not one: "this program is malformed"
+             * and "this deployment is out of stack" want different answers
+             * from whoever gets the ProgramResult back. */
+            if(!scan.ok)
             {
-                return false;
+                return scan.stackFloorHit ? RESOURCE_EXHAUSTED_SCAN_STACK : RESOURCE_PROGRAM_BODY_UNTERMINATED;
+            }
+            if(argCount > ProcSlot::MAX_ARG_COUNT)
+            {
+                return RESOURCE_LIMIT_ARG_COUNT;
+            }
+            if(scan.bodyBytes > ProcSlot::MAX_BODY_BYTES)
+            {
+                return RESOURCE_LIMIT_BODY_BYTES;
             }
 
             ProcSlot &s = slot(i);
@@ -218,7 +232,7 @@ public:
 
             pos = bodyStart + scan.bodyBytes;
         }
-        return true;
+        return 0;
     }
 
     /* Procedure idx's own slot — [0] is the sentinel, so every real

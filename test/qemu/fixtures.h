@@ -23,6 +23,12 @@ struct Program
 {
     const uint8_t *bytes;
     uint32_t size;
+    /* procs[0].argCount, recorded by finishProgram rather than restated
+     * per fixture row: enterProgram* now requires the argument count it is
+     * handed to equal the entry procedure's own declared arg_count
+     * exactly, and deriving it here from the same ProcSource the bytes
+     * were encoded from is what keeps the two from ever disagreeing. */
+    uint32_t entryArgCount;
 };
 
 struct Fixture
@@ -36,7 +42,15 @@ struct Fixture
     // LANDING_SUCCESS.
     uint32_t expectLanding;
     uint32_t expectValue;
-    uint32_t argIn = 0;       // fed to enterProgramSplit as its own argIn — only meaningful when procs[0].argCount >= 1
+    // The entry procedure's sole argument, for the one-argument case that
+    // is nearly every row here — main.cpp passes &argIn as a one-element
+    // vector when the program declares exactly one. Ignored (but harmless)
+    // when it declares none.
+    uint32_t argIn = 0;
+    // Entry procedures taking two or more arguments point this at their
+    // own vector instead; main.cpp prefers it over &argIn when non-null.
+    // The count always comes from Program::entryArgCount, never from here.
+    const uint32_t *args = nullptr;
     uint32_t arenaSize = 400; // generous by default — no fixture currently overrides it; main.cpp's separate eviction/resource-error TEST cases construct their own tiny programs instead of using this array
 };
 

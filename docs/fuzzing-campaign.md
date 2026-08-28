@@ -120,7 +120,10 @@ Three consequences fell out, each simplifying something:
   program may return any `uint32_t` and trap with any code without the two
   aliasing. `runtimeBail` took a distinct tag
   (`LANDING_RESOURCE_ERROR`), since "the program chose to stop" and "this
-  implementation ran out of room" are different answers to the caller.
+  implementation ran out of room" are different answers to the caller. The
+  same argument one level down later split that tag's own `value` into the
+  `RESOURCE_*` codes (design.md §12): "out of memory", "this program is
+  malformed" and "no arena size would help" are three more.
 - **`fuzz/qemu_exec` lost two skip categories** — the `trapDepth > 0`
   set-aside and the "result ambiguous under the high-bit trap encoding"
   one. On the seed corpus that moved 30 comparable programs to 32 of 34,
@@ -616,21 +619,27 @@ framed it. Ungated, **84% of a real fuzz corpus landed above it**, so 84% of
 the budget went to programs that could only ever bail and whose emitted code
 neither half could look at. Gated at `REALISTIC_MAX_TOTAL_DEPTH = 128`;
 `RESOURCE_ERROR` went 84% → 0.5%, and 13 mismatches surfaced immediately in
-the newly reachable region.
+the newly reachable region. That 84% was all one reason
+(`RESOURCE_LIMIT_WINDOW_RECLAIM`), which took this whole section to work
+out; `qemu_exec.ts` now buckets its bail count by code, so the same
+diagnosis is a line of output rather than an investigation.
 
 **`spillImm`'s guard is unreachable.** It checks an SP-relative offset
 against `Uoff<2, 8>`'s 1020 bytes (255 words), which `discardWindow`'s much
 tighter ceiling bails before reaching. Defence in depth with nothing behind
 it. Left in place — the two ceilings are independent things that could move —
 but the `deep_spill` seed was aiming at it with depth 300 and only ever
-exercised the bail; reduced to 128, where it compiles and runs.
+exercised the bail; reduced to 128, where it compiles and runs. It has its
+own code (`RESOURCE_LIMIT_SPILL_OFFSET`), so "unreachable" is now a corpus
+check — a nonzero bucket for it means one of the two ceilings moved —
+rather than an argument from their relative tightness.
 
 **The `argCount ≤ 131` "open question" was already closed.**
 `target-profile.md` recorded it as an unfixed assert; `discardWindow` and
 `restoreWindow` both carry the `fail()` guard now. Measured directly with
 `dump_code.sh`: 131 compiles, 132 / 500 / 972 / 2047 all bail with
-`RESOURCE_ERROR`. Doc corrected — what remains is a capability limit, not a
-crash.
+`RESOURCE_LIMIT_WINDOW_RECLAIM`. Doc corrected — what remains is a
+capability limit, not a crash.
 
 ## Environment notes
 
@@ -654,9 +663,18 @@ Recorded because each cost real time and none is discoverable from the docs.
 
 ## Not covered
 
-- Entry procedures taking more than one argument — `enterProgram*` passes a
-  single `argIn`, so there is no counterpart on the emulated side (~1% of
-  corpus).
+- ~~Entry procedures taking more than one argument~~ — recorded here as a
+  harness limitation, which it was not. `enterProgram*` passing a single
+  `argIn` meant the *runtime* could not run such a program: an entry
+  procedure declaring 2-4 arguments read window registers `enterDispatch`
+  never initialized, and one declaring 5 or more also reclaimed a frame
+  nobody had pushed, landing `.Lresume` on a shifted `sp` — a deterministic
+  hang. Measured over 8,000 validator-approved programs: 0.04% in the first
+  band, **2.56% in the second**. The skip was hiding it, and `test/qemu`'s
+  own out-of-window-argument fixtures (27, 37) only ever covered `proc1`
+  and `proc2`, never `proc0`. Fixed by giving `enterProgram*` a real
+  argument vector (`runtime/entry_args.h`, `design.md` §9); the skip is
+  gone and every entry procedure is now compared.
 - Non-terminating programs — legal per §9, and fatal to a batch.
 - `EXT` opcodes — excluded from this target by design.
 

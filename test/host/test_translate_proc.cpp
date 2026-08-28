@@ -216,8 +216,24 @@ TEST(OverflowIsReportedRatherThanOverrunningTheBuffer)
     FakeRuntime<2> rt;
     rt.set(0, 0, /*savesLR=*/true);
     rt.set(1, 1, /*savesLR=*/false);
-    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, a, rt.runtime()));
+    EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_ARENA, translateProc(proc, 0, a, rt.runtime()));
+}
+
+TEST(CallToAProcedureIndexTheProgramDoesntHaveIsReported)
+{
+    // calleeIndex comes off the wire and Runtime::slot() applies no bound
+    // of its own, so this is the one program-shape rejection the
+    // translator itself has to make. Reported as a PROGRAM code, not an
+    // EXHAUSTED one: no arena size makes a call to procedure 5 of a
+    // one-procedure program work.
+    const Instr body[] = {CONST(1), call(5), bare(Op::RETURN)};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/true);
+    uint8_t bodyBytes[16];
+    Proc proc = makeProc(0, body, 3, bodyBytes, sizeof(bodyBytes));
+    uint16_t buf[64];
+    Assembler a(buf, 64);
+    EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_CALLEE_RANGE, translateProc(proc, 0, a, rt.runtime()));
 }
 
 TEST(LoopBackEdgeBailsWhenTheBodyExceedsTheEncodableBranchRange)
@@ -244,8 +260,7 @@ TEST(LoopBackEdgeBailsWhenTheBodyExceedsTheEncodableBranchRange)
     uint16_t buf[4096]; // generous -- the failure under test must come from
                          // the branch-range check, not emit()'s own capacity check
     Assembler a(buf, 4096);
-    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, a, rt.runtime()));
+    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_LOOP_BACK_EDGE, translateProc(proc, 0, a, rt.runtime()));
 }
 
 TEST(SpillLoadBailsWhenTheOffsetExceedsTheEncodableRange)
@@ -263,8 +278,7 @@ TEST(SpillLoadBailsWhenTheOffsetExceedsTheEncodableRange)
     Proc proc = makeProc(261, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
     uint16_t buf[32];
     Assembler a(buf, 32);
-    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, a, rt.runtime()));
+    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_SPILL_OFFSET, translateProc(proc, 0, a, rt.runtime()));
 }
 
 // The tests below exercise LOOP/BR_TABLE/comparisons-as-values/unary ops/
@@ -1266,12 +1280,12 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     // levels of real nesting exhaust N bytes of stack": this host build
     // is -O0, nothing like the real target's -Os, so any such number
     // wouldn't transfer — this instead proves the mechanism itself (the
-    // comparison, and Assembler::fail() latching overflowed() on a
-    // detached Assembler) fires correctly whenever the floor genuinely
-    // can't be satisfied, which is exactly the property a genuinely deep
-    // recursion needs to trigger for real, on real hardware (where an
-    // attached Assembler's own fail() unwinds straight to
-    // RESOURCE_ERROR instead of returning).
+    // comparison, and the fail() it reaches) fires correctly whenever the
+    // floor genuinely can't be satisfied, which is exactly the property a
+    // genuinely deep recursion needs to trigger for real, on real
+    // hardware. Pinning RESOURCE_EXHAUSTED_TRANSLATOR_STACK is what
+    // separates this from an arena overflow, which the same escape used to
+    // be indistinguishable from.
     const Instr body[] = {bare(Op::RETURN)};
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false);
@@ -1281,8 +1295,7 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     uint16_t buf[16];
     Assembler a(buf, 16);
 
-    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, a, rt.runtime()));
+    EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_TRANSLATOR_STACK, translateProc(proc, 0, a, rt.runtime()));
 }
 
 TEST(FlatBodySucceedsWithSlackThatOnlyCoversTranslateBodysOwnDepthZeroCheck)
@@ -1343,8 +1356,7 @@ TEST(NestedIfChainReportsOverflowWithTheSameSlackADepthZeroBodyTolerates)
     uint16_t buf[512];
     Assembler a(buf, 512);
 
-    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, a, rt.runtime()));
+    EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_TRANSLATOR_STACK, translateProc(proc, 0, a, rt.runtime()));
 }
 
 // ── Literal pooling ─────────────────────────────────────────────────────

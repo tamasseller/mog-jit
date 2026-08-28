@@ -62,7 +62,7 @@ uint32_t Assembler::emit(uint16_t word)
     {
         if(!this->growForAttached())
         {
-            fail();
+            fail(RESOURCE_EXHAUSTED_ARENA);
             return at; // host's mocked runtimeBail() returns normally; every call site, including this one, must return right after per fail()'s own contract
         }
     }
@@ -79,9 +79,9 @@ uint32_t Assembler::emit(uint16_t word)
     return at;
 }
 
-void Assembler::fail()
+void Assembler::fail(uint32_t code)
 {
-    runtimeBail(runtime, RESOURCE_ERROR_CODE);
+    runtimeBail(runtime, code);
 }
 
 // ── branches ────────────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ void Assembler::patchBranch(uint32_t siteOffset, uint32_t targetOffset)
     bool cond = ArmV6M::isCondBranch(isn);
     if(cond ? !ArmV6M::Ioff<1, 8>::isInRange(delta) : !ArmV6M::Ioff<1, 11>::isInRange(delta))
     {
-        fail();
+        fail(RESOURCE_LIMIT_BRANCH_RANGE);
         return;
     }
     buf[idx] = cond

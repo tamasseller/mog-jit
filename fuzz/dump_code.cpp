@@ -22,7 +22,11 @@
 using namespace jitc;
 
 static jmp_buf g_escape;
-extern "C" [[noreturn]] void runtimeBail(Runtime *, uint32_t) { longjmp(g_escape, 1); }
+// Records the code, unlike the other drivers' stubs: this tool is what
+// target-profile.md cites for the argCount ceiling measurement, and which
+// RESOURCE_* code a bail reported is exactly what that measurement claims.
+static uint32_t g_bailCode = 0;
+extern "C" [[noreturn]] void runtimeBail(Runtime *, uint32_t code) { g_bailCode = code; longjmp(g_escape, 1); }
 extern const uint32_t trampolineAddr = 0xDEADBEEFu;
 
 int main(int argc, char **argv)
@@ -43,9 +47,9 @@ int main(int argc, char **argv)
 
     alignas(8) uint8_t storage[1024] = {};
     Runtime &rt = *reinterpret_cast<Runtime *>(storage);
-    if(!rt.init(data, (uint32_t)in.size(), bodyOffset, procCount, 0x10000, 0x10000, 0, 0))
+    if(uint32_t code = rt.init(data, (uint32_t)in.size(), bodyOffset, procCount, 0x10000, 0x10000, 0, 0); code != 0)
     {
-        fprintf(stderr, "Runtime::init rejected this program\n");
+        fprintf(stderr, "Runtime::init rejected this program: %08x\n", code);
         return 1;
     }
 
@@ -61,6 +65,7 @@ int main(int argc, char **argv)
         Assembler a(buf, sizeof(buf) / sizeof(buf[0]));
         uint32_t halfwords = 0;
         bool bailed = false;
+        g_bailCode = 0;
         if(setjmp(g_escape) == 0) halfwords = translateProc(proc, i, a, rt);
         else bailed = true;
 
@@ -68,9 +73,11 @@ int main(int argc, char **argv)
         snprintf(path, sizeof(path), "%s.proc%u.bin", prefix, i);
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         out.write((const char *)buf, (std::streamsize)halfwords * 2);
+        char bail[32] = "";
+        if(bailed) snprintf(bail, sizeof(bail), " BAILED %08x", g_bailCode);
         printf("proc %u: argCount=%u bodyBytes=%u needsLRSave=%d -> %u halfwords (%u bytes)%s -> %s\n",
             i, argCount, bodyBytes, (int)rt.slot(i).needsLRSave(), halfwords, halfwords * 2,
-            bailed ? " BAILED" : "", path);
+            bail, path);
     }
     return 0;
 }

@@ -10,9 +10,10 @@
  * Assembler (compiler/src/assembler.h, layer 3b) is now the only seam
  * between this and Runtime: an attached Assembler owns arena growth/
  * eviction/compaction and final dispatch-table registration internally
- * (translateProc's own Assembler::finalize() call), and exits directly to
- * RESOURCE_ERROR (Assembler::fail() -> dispatch_abi.cpp's runtimeBail) if
- * even evicting everything resident couldn't free enough room — this file
+ * (translateProc's own Assembler::finalize() call), and exits directly
+ * (Assembler::fail() -> dispatch_abi.cpp's runtimeBail) with
+ * RESOURCE_EXHAUSTED_ARENA if even evicting everything resident couldn't
+ * free enough room — this file
  * no longer needs its own scratch buffer, ArenaRoom implementor, or
  * post-hoc overflow check.
  */

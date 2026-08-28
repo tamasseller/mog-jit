@@ -313,6 +313,15 @@ const longLoopBackEdge: RtlProgram = {
                         { op: "CONST", imm: 0x20000 + i },
                         { op: "STORE", target: 0 },
                     ]),
+                    // Clear the condition slot so the loop runs exactly one
+                    // iteration whatever the entry argument is. Without this
+                    // the body leaves slot 0 non-zero and the loop never
+                    // exits — which the execution oracle used to hide rather
+                    // than hit, because it passed 0 as the argument and the
+                    // body therefore never ran at all. The 400-instruction
+                    // body this seed exists for is untouched.
+                    { op: "CONST", imm: 0 },
+                    { op: "STORE", target: 0 },
                     { op: "BLOCK_END" },
                 { op: "LOAD", target: 0 },
                 { op: "RETURN" },
@@ -632,7 +641,18 @@ const pushInLoopCondition: RtlProgram = {
             argCount: 1,
             body: [
                 { op: "PUSH" }, { op: "PUSH" }, { op: "PUSH" },
+                // Counter from a constant, not from the incoming argument:
+                // the condition below reads slot 0 and nothing in the loop
+                // decrements it, so keying it to the argument made this
+                // non-terminating for every value except the 0 the harness
+                // happened to pass. The shape under test — a PUSH inside the
+                // condition sub-block, four slots deep so it spills — is
+                // unchanged.
+                { op: "CONST", imm: 3 }, { op: "STORE", target: 0 },
                 { op: "LOOP" },
+                    { op: "LOAD", target: 0 },
+                    { op: "SUB", combo: "IMM_ACC", imm: 1 },
+                    { op: "STORE", target: 0 },
                     { op: "LOAD", target: 0 },
                     { op: "PUSH" },
                     { op: "BLOCK_END" },
@@ -644,7 +664,39 @@ const pushInLoopCondition: RtlProgram = {
     ],
 }
 
+/** Entry procedures taking more than one argument. Both harness halves used
+ *  to discard these — qemu_exec.ts skipped anything declaring more than one,
+ *  oracle_server.ts anything declaring any at all — so a shape that hung the
+ *  emulator deterministically for every count of five or more went unseen
+ *  through a whole campaign (docs/fuzzing-campaign.md). Three counts, chosen
+ *  for what each one reaches:
+ *
+ *   2  in-window only, so purely the window registers enterDispatch never
+ *      used to initialize
+ *   5  one out-of-window word — the smallest count whose frame the epilogue
+ *      reclaims but nobody used to push
+ *   6  two of them, the smallest count in which their *order* is observable
+ *      at all
+ *
+ *  Bodies fold every argument in with a distinct shift so a permuted window
+ *  changes the answer; a sum would not. */
+const entryArgs = (argCount: number): RtlProgram => ({
+    procedures: [{
+        argCount,
+        body: ret([
+            { op: "LOAD", target: 0 },
+            ...Array.from({ length: argCount - 1 }, (_, i) => [
+                { op: "SHL", combo: "IMM_ACC", imm: 4 } as RtlInstr,
+                { op: "OR", combo: "REG_ACC", target: i + 1 } as RtlInstr,
+            ]).flat(),
+        ]),
+    }],
+})
+
 const authored: [string, RtlProgram][] = [
+    ["entry_args_two", entryArgs(2)],
+    ["entry_args_spilled", entryArgs(5)],
+    ["entry_args_spilled_pair", entryArgs(6)],
     ["push_in_loop_condition", pushInLoopCondition],
     ["br_table2_default", brTable2Default],
     ["br_table1_default", brTable1Default],

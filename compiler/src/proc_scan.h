@@ -16,6 +16,10 @@ struct BodyScanResult
     uint32_t bodyBytes;  // this procedure's own body length, discovered by walking it
     bool needsLRSave;    // true iff the body contains CALL, BR_TABLE(imm>2), CLZ, or REVBITS
     bool ok;             // false: hit stackFloor, or ran off maxBytes with something still open
+    bool stackFloorHit;  // which of those two, when !ok: true = stackFloor, false = ran off maxBytes.
+                         // The caller reports them as different things (runtime_host.h's
+                         // RESOURCE_EXHAUSTED_SCAN_STACK vs RESOURCE_PROGRAM_BODY_UNTERMINATED —
+                         // out of room here, versus a program that was never well-formed).
 };
 
 /** Finds one procedure's own body boundary and whether it needs `lr`
@@ -27,8 +31,8 @@ struct BodyScanResult
  *  LOOP/BR_TABLE) rather than an explicit frame-stack array — the same
  *  shape translate_proc.cpp's own translateBody uses for the identical
  *  nesting-tracking problem, checked live against stackFloor for the same
- *  reason (this runs before any Runtime exists to report RESOURCE_ERROR
- *  through the usual compileProc path, so the caller checks `ok` itself).
+ *  reason (this runs before any Runtime exists to bail through the usual
+ *  compileProc path, so the caller checks `ok` itself).
  *  Defaults to 0 (no limit) for callers with no real embedded stack in
  *  play. Malformed/truncated bytecode is out of scope here, same as
  *  everywhere else in this translator (decode_instr.h's own asserts,

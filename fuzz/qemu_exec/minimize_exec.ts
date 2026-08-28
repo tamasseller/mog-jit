@@ -33,6 +33,7 @@ import * as path from "path"
 import { spawnSync } from "child_process"
 import { decodeJitProgram, encodeJitProgram, validateProgram, run, StepLimitExceeded } from "../../../packages/machine/src/index"
 import type { RtlProgram } from "../../../packages/machine/src/index"
+import { entryArgsFor } from "../entry_args"
 
 const HANG_MODE = process.argv.includes("--hang")
 
@@ -44,7 +45,7 @@ const BATCH_ADDR = 0x4000
 const BATCH_LIMIT = 0x6000
 const PROGRAM_MAX = 4096
 
-interface Variant { program: RtlProgram; bytes: Buffer; expected: { trap: boolean; value: number } }
+interface Variant { program: RtlProgram; bytes: Buffer; expected: { trap: boolean; value: number }; entryArgs: number[] }
 
 /** A candidate worth testing at all: encodes canonically, validates, has a
  *  runnable entry procedure, and terminates under the reference VM. */
@@ -57,14 +58,16 @@ function prepare(program: RtlProgram): Variant | null
 
     try { validateProgram(program) } catch { return null }
 
-    const entryArgCount = program.procedures[0]!.argCount
-    if(entryArgCount > 1) return null
+    // The same vector qemu_exec.ts uses, imported rather than reproduced:
+    // a minimizer that fed the guest different arguments than the sweep did
+    // would shrink towards a different program than the one that failed.
+    const entryArgs = entryArgsFor(program.procedures[0]!.argCount)
 
     try
     {
-        const r = run(program, undefined, entryArgCount === 1 ? [0] : [])
+        const r = run(program, undefined, entryArgs)
         const value = (r.ok ? r.acc : (r.trapCode ?? 0)) >>> 0
-        return { program, bytes, expected: { trap: !r.ok, value } }
+        return { program, bytes, expected: { trap: !r.ok, value }, entryArgs }
     }
     catch(e)
     {
@@ -90,11 +93,16 @@ function reproduces(variants: Variant[]): boolean[]
     const included: Variant[] = []
     for(const v of variants)
     {
-        if(total + 4 + v.bytes.length > BATCH_LIMIT) break
-        const len = Buffer.alloc(4)
-        len.writeUInt32LE(v.bytes.length, 0)
-        parts.push(len, v.bytes)
-        total += 4 + v.bytes.length
+        // u32 length, u32 argCount, argCount x u32, then the bytes —
+        // exec_runner.cpp's record layout, same as qemu_exec.ts writes.
+        const prefixBytes = 8 + 4 * v.entryArgs.length
+        if(total + prefixBytes + v.bytes.length > BATCH_LIMIT) break
+        const prefix = Buffer.alloc(prefixBytes)
+        prefix.writeUInt32LE(v.bytes.length, 0)
+        prefix.writeUInt32LE(v.entryArgs.length, 4)
+        v.entryArgs.forEach((x, i) => prefix.writeUInt32LE(x >>> 0, 8 + 4 * i))
+        parts.push(prefix, v.bytes)
+        total += prefixBytes + v.bytes.length
         included.push(v)
     }
     header.writeUInt32LE(included.length, 4)

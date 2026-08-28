@@ -61,15 +61,19 @@ or a bailout), it just asserts.
 
 | | value | meaning |
 |---|---|---|
-| Hard ABI ceiling | `argCount ≤ 131` | above this, `discardWindow`'s single-instruction reclaim can't encode the byte count at all and the translator bails with `RESOURCE_ERROR` (see below) — a capability limit, not a policy choice |
+| Hard ABI ceiling | `argCount ≤ 131` | above this, `discardWindow`'s single-instruction reclaim can't encode the byte count at all and the translator bails with `RESOURCE_LIMIT_WINDOW_RECLAIM` (see below) — a capability limit, not a policy choice |
 | Realistic-profile cap | `argCount ≤ 16` | `oracle_server.ts`'s own extra gate (`REALISTIC_MAX_ARG_COUNT`) — no real procedure needs more than a handful of parameters; keeping the fuzz search inside this band means every crash it finds is worth investigating on its own terms, not "well, nobody would ever call it with 900 arguments anyway" |
 
 **Closed:** `discardWindow` now range-checks the reclaim and calls
-`Assembler::fail()` instead of asserting, so the hard ceiling is a clean
-`RESOURCE_ERROR` rather than an abort. Measured directly
-(`fuzz/dump_code.sh` on hand-built one-instruction procedures):
-`argCount = 131` compiles, and 132 / 500 / 972 / 2047 all bail.
-`restoreWindow` carries the same guard on the same encoding.
+`Assembler::fail(RESOURCE_LIMIT_WINDOW_RECLAIM)` instead of asserting, so
+the hard ceiling is a clean, specifically-named bail rather than an abort.
+Measured directly (`fuzz/dump_code.sh` on hand-built one-instruction
+procedures): `argCount = 131` compiles, and 132 / 500 / 972 / 2047 all
+bail. `restoreWindow` carries the same guard on the same encoding, and
+reports the same code — which of the two fired is a detail-payload
+question, not a separate reason. Note `RESOURCE_LIMIT_ARG_COUNT` is a
+different answer for a different ceiling: past 2047 a procedure is rejected
+by `Runtime::init` and never reaches translation at all.
 
 What remains is a *capability* limit, not a crash: `ProcSlot::MAX_ARG_COUNT`
 (2047) still admits far more than this ABI sequence can reclaim, so a
@@ -156,16 +160,20 @@ names which by carrying one of `runtime_host.h`'s `LANDING_*` tags:
 |---|---|---|
 | `LANDING_SUCCESS` (0) | the entry procedure's own `RETURN`, resolved against the boot record's `procIdx = -1` | the returned value |
 | `LANDING_TRAP` (1) | `runtime.S`'s `trapHelper`, helper slot 8 — a bytecode `TRAP` at any call depth | the trap code |
-| `LANDING_RESOURCE_ERROR` (2) | `dispatch_abi.cpp`'s `runtimeBail` — the translator could not free arena room, or the up-front stack budget failed | `RESOURCE_ERROR_CODE` |
+| `LANDING_RESOURCE_ERROR` (2) | `dispatch_abi.cpp`'s `runtimeBail` from a translation in progress, or `enter_program.cpp` directly for a pre-execution rejection (`proc_count == 0`, a `Runtime::init` failure, the up-front stack budget) | one of the `RESOURCE_*` codes — design.md §12 |
 
 All three land at the same place: the sentinel slot's `codePtr`, parked at
 `dispatchBase - DISPATCH_SENTINEL_OFFSET` by `enterDispatch` before it
 enters procedure 0, which is `.Lresume` — the point that restores the
 caller's `r4-r11` and returns an ordinary AAPCS result.
 
-**Nothing is encoded in `value`.** A program may return any `uint32_t` and
-trap with any `uint32_t` code without the two aliasing, because the tag is
-a separate word. This was not always so: a bytecode trap used to be
+**Nothing is encoded in `value` under `LANDING_SUCCESS` or
+`LANDING_TRAP`.** A program may return any `uint32_t` and trap with any
+`uint32_t` code without the two aliasing, because the tag is a separate
+word. (Under `LANDING_RESOURCE_ERROR` the value *is* a structured
+`RESOURCE_*` code — design.md §12. Same reason it costs nothing: a
+legitimate `TRAP 0x52453400` still reports distinctly, since the tag, not
+the value, is what says which of the three happened.) This was not always so: a bytecode trap used to be
 sentinel-encoded as `0x80000000 | code` into `value`, which was lossy in
 both directions (a `RETURN` with bit 31 set was indistinguishable from a
 trap; `TRAP 0x80000005` and `TRAP 5` reported identically) and, worse, only
@@ -229,6 +237,28 @@ on hundred-procedure programs whose procedures are one instruction each,
 which exercises `Runtime::init`'s loop and nothing else.
 `harness.cpp` mirrors the constant, since its `Runtime` storage buffer is
 sized off it.
+
+## The entry procedure's own arg_count
+
+Nothing above is entry-specific, and that is now true of the runtime too:
+`enterProgram*` takes the entry procedure's whole argument vector
+(`design.md` §9), so procedure 0's `arg_count` behaves exactly like any
+callee's. The `argCount <= 131` hard ceiling and
+`RESOURCE_LIMIT_WINDOW_RECLAIM` apply to it unchanged — it is the same
+compiled prologue and epilogue either way — and
+`REALISTIC_MAX_ARG_COUNT = 16` already bounds the fuzz search. No separate
+cap was added.
+
+Worth recording because it did not used to be true. A single `argIn` word
+could only express the acc-borne last argument (isa-core.md §4.6), so an
+entry procedure declaring 2-4 arguments read window registers
+`enterDispatch` never initialized, and one declaring 5 or more also
+reclaimed a frame nobody had pushed — a deterministic hang, on 2.56% of a
+validator-approved fuzz corpus. Two `PROGRAM`-class codes now police the
+pairing instead: `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` when the caller's count
+disagrees with the program's declaration, and
+`RESOURCE_PROGRAM_ENTRY_DEPTH` when a program's own `total_depth` does not
+cover the out-of-window arguments the runtime is about to push for it.
 
 ## Adding another entry
 

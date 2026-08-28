@@ -144,8 +144,7 @@ TEST(discardWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
     uint16_t buf[4];
     Assembler e(buf, 4);
     Window w(4 + 128); // 128 words spilled -> 512 bytes, one word past the limit
-    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    EXPECT_RESOURCE_ERROR(w.discardWindow(e));
+    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_WINDOW_RECLAIM, w.discardWindow(e));
 }
 
 TEST(restoreWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
@@ -153,8 +152,7 @@ TEST(restoreWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
     uint16_t buf[4];
     Assembler e(buf, 4);
     Window w(4 + 128);
-    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
-    EXPECT_RESOURCE_ERROR(restoreWindow(e, w, 0));
+    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_WINDOW_RECLAIM, restoreWindow(e, w, 0));
 }
 
 TEST(callShuffleWithStackArgsExceedingWindowSize)

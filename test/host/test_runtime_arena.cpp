@@ -60,8 +60,9 @@ public:
         uint32_t len = encodeProgram(procs, procCount, programBytes, sizeof(programBytes));
         uint32_t bodyOffset;
         decodeLeb128(programBytes, 0, bodyOffset); // past proc_count's own LEB128
-        bool ok = (*this)->init(programBytes, len, bodyOffset, procCount, base, size, 0, 0);
-        assert(ok); // GCOV_EXCL_LINE — this file's own encoding setup, not the thing under test
+        uint32_t code = (*this)->init(programBytes, len, bodyOffset, procCount, base, size, 0, 0);
+        assert(code == 0); // GCOV_EXCL_LINE — this file's own encoding setup, not the thing under test
+        (void)code;
     }
 };
 
@@ -166,9 +167,11 @@ TEST(InitFailsWithoutTouchingDispatchStateWhenAProcedureCantBeScanned)
     // A stack floor pinned at the current sp makes scanProcBody's own live
     // check fail immediately (test_proc_scan.cpp's own
     // ScanProcBodyStackFloorReachedReportsNotOk) — init() must propagate
-    // that as a plain false, the same way it would a packed-field
-    // overflow, rather than asserting or leaving the caller to find out
-    // only once enterDispatch is already running.
+    // that rather than asserting or leaving the caller to find out only
+    // once enterDispatch is already running. Checked as the specific code:
+    // running out of stack here and a body that was never well-formed are
+    // the two halves of scanProcBody's !ok, and the whole point of
+    // stackFloorHit is that they no longer arrive as the same answer.
     const Instr body[] = {bare(Op::RETURN)};
     ProcSource procs[] = {ProcSource{0, body, 1}};
     uint8_t programBytes[16];
@@ -180,6 +183,46 @@ TEST(InitFailsWithoutTouchingDispatchStateWhenAProcedureCantBeScanned)
     Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
 
     register uint32_t sp asm("sp");
-    bool ok = runtime->init(programBytes, len, bodyOffset, 1, ARENA_BASE, ARENA_SIZE, sp, 0);
-    CHECK(!ok);
+    CHECK(runtime->init(programBytes, len, bodyOffset, 1, ARENA_BASE, ARENA_SIZE, sp, 0)
+        == RESOURCE_EXHAUSTED_SCAN_STACK);
+}
+
+TEST(InitReportsAnUnterminatedBodySeparatelyFromRunningOutOfStack)
+{
+    // The other half of scanProcBody's !ok: a LOOP with nothing closing
+    // it, so the walk runs off the blob. Same rejection point as the
+    // stack-floor case above, deliberately a different answer — this one
+    // is a program that was never well-formed, and no arena or stack size
+    // changes that.
+    const Instr body[] = {bare(Op::LOOP), CONST(1)};
+    ProcSource procs[] = {ProcSource{0, body, 2}};
+    uint8_t programBytes[16];
+    uint32_t len = encodeProgram(procs, 1, programBytes, sizeof(programBytes));
+    uint32_t bodyOffset;
+    decodeLeb128(programBytes, 0, bodyOffset);
+
+    alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
+    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
+
+    CHECK(runtime->init(programBytes, len, bodyOffset, 1, ARENA_BASE, ARENA_SIZE, 0, 0)
+        == RESOURCE_PROGRAM_BODY_UNTERMINATED);
+}
+
+TEST(InitReportsAnArgCountPastProcSlotsOwnFieldWidth)
+{
+    // MAX_ARG_COUNT is ProcSlot's packed staticInfo field, not an ISA
+    // limit: the program is perfectly well-formed, this implementation
+    // just can't record it. Hence a LIMIT code rather than a PROGRAM one.
+    const Instr body[] = {bare(Op::RETURN)};
+    ProcSource procs[] = {ProcSource{ProcSlot::MAX_ARG_COUNT + 1, body, 1}};
+    uint8_t programBytes[16];
+    uint32_t len = encodeProgram(procs, 1, programBytes, sizeof(programBytes));
+    uint32_t bodyOffset;
+    decodeLeb128(programBytes, 0, bodyOffset);
+
+    alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
+    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
+
+    CHECK(runtime->init(programBytes, len, bodyOffset, 1, ARENA_BASE, ARENA_SIZE, 0, 0)
+        == RESOURCE_LIMIT_ARG_COUNT);
 }

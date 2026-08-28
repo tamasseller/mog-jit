@@ -141,7 +141,7 @@ TEST(DeepNestingStaysWithinStackBudget)
     uint32_t progLen = encodeJitProgram(/*maxCallDepth=*/0, /*totalDepth=*/0, procs, 1, progBytes, sizeof(progBytes));
 
     static uint8_t arena[512];
-    ProgramResult r = enterProgramSplit(0, progBytes, progLen,
+    ProgramResult r = enterProgramSplit(nullptr, 0, progBytes, progLen,
         (uint32_t)(uintptr_t)arena, sizeof(arena), stackLimitAboveBss(), /*interruptReserve=*/0);
 
     // Either outcome is healthy and worth distinguishing in the report:

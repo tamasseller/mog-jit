@@ -65,9 +65,10 @@ static constexpr uint32_t SHARED_ARENA_CAPACITY = 512;
 static uint8_t sharedArena[SHARED_ARENA_CAPACITY];
 
 static ProgramResult enterProgramWithSharedArena(
-    uint32_t argIn, const uint8_t *programBytes, uint32_t programSize, uint32_t arenaSize)
+    const uint32_t *args, uint32_t argCount,
+    const uint8_t *programBytes, uint32_t programSize, uint32_t arenaSize)
 {
-    return enterProgramSplit(argIn, programBytes, programSize,
+    return enterProgramSplit(args, argCount, programBytes, programSize,
         (uint32_t)(uintptr_t)sharedArena, arenaSize, stackLimitAboveBss(), /*interruptReserve=*/0);
 }
 
@@ -94,7 +95,13 @@ TEST(HandTranscribedFixturesMatchExpectedResults)
     {
         const Fixture &fx = fixtures[f];
 
-        ProgramResult r = enterProgramWithSharedArena(fx.argIn, fx.program->bytes, fx.program->size, fx.arenaSize);
+        // The count comes from the program, never from the row: enterProgram*
+        // requires it to equal procs[0].argCount exactly. A row supplies only
+        // the value(s) — &argIn for the one-argument case (and harmlessly for
+        // the zero-argument one, where nothing reads it), or its own vector.
+        const uint32_t *argv = fx.args != nullptr ? fx.args : &fx.argIn;
+        ProgramResult r = enterProgramWithSharedArena(argv, fx.program->entryArgCount,
+            fx.program->bytes, fx.program->size, fx.arenaSize);
 
         bool ok = r.trapped == fx.expectLanding && r.value == fx.expectValue;
         allOk = allOk && ok;
@@ -138,7 +145,7 @@ TEST(OnStackGenerousSucceeds)
     uint32_t len = makeProgram(/*maxCallDepth=*/1, /*totalDepth=*/1, procs, 2, bytes, sizeof(bytes));
 
     uint32_t stackLimit = stackLimitAboveBss();
-    ProgramResult r = enterProgramOnStack(0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -161,7 +168,7 @@ TEST(SplitThreeDeepCallChainSucceeds)
 
     static uint8_t arena[GENEROUS_ARENA];
     uint32_t stackLimit = stackLimitAboveBss();
-    ProgramResult r = enterProgramSplit(0, bytes, len,
+    ProgramResult r = enterProgramSplit(nullptr, 0, bytes, len,
         (uint32_t)(uintptr_t)arena, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
@@ -178,8 +185,10 @@ TEST(OnStackRejectsBeforeTouchingAnything)
     // stackLimit == (about) the entry sp itself — any nonzero requirement
     // fails the check immediately, before enterDispatch (or compileProc)
     // ever runs; OnStackGenerousSucceeds already proved these programs
-    // compile fine given room, so a RESOURCE_ERROR here can only be the
-    // stack-usage pre-check, not a translator/runtime problem.
+    // compile fine given room. The code checked below is what pins that
+    // down rather than leaving it argued: the pre-check reports
+    // RESOURCE_EXHAUSTED_STACK_BUDGET, a translator/runtime problem could
+    // not.
     const Instr proc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
     const Instr proc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
     ProcSource procs[] = {{0, proc0Body, 3}, {1, proc1Body, 3}};
@@ -187,7 +196,7 @@ TEST(OnStackRejectsBeforeTouchingAnything)
     uint32_t len = makeProgram(/*maxCallDepth=*/1, /*totalDepth=*/1, procs, 2, bytes, sizeof(bytes));
 
     uint32_t stackLimit = currentSp(); // measured before this callee's own prologue — strictly higher than sp once inside it
-    ProgramResult r = enterProgramOnStack(0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -198,7 +207,22 @@ TEST(OnStackRejectsBeforeTouchingAnything)
         writeHexResult(r.value);
     }
     CHECK(r.trapped);
-    CHECK(r.value == 0x52455343u); // RESOURCE_ERROR_CODE, "RESC"
+    CHECK(r.value == RESOURCE_EXHAUSTED_STACK_BUDGET);
+}
+
+TEST(AProgramWithNoProceduresIsRejected)
+{
+    // Hand-encoded rather than built with makeProgram: the whole point is
+    // a proc_count of zero, which no real ProcSource array produces.
+    // max_call_depth:0 total_depth:0 proc_count:0, one LEB128 byte each.
+    // Entering procedure 0 would read one ProcSlot past what
+    // storageBytesFor(0) sizes, so this is rejected before that storage is
+    // even measured — well before any stack budget or arena is involved.
+    const uint8_t bytes[] = {0x00, 0x00, 0x00};
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, sizeof(bytes), GENEROUS_ARENA, 0, /*interruptReserve=*/0);
+
+    CHECK(r.trapped);
+    CHECK(r.value == RESOURCE_PROGRAM_NO_PROCS);
 }
 
 // Eviction + compaction. This measures each procedure's own compiled size
@@ -272,7 +296,7 @@ TEST(EvictionThreeDeepCallChain)
     ProcSource procSources[] = {{0, proc0Body, 3}, {1, proc1Body, 4}, {1, proc2Body, 3}};
     uint8_t progBytes[64];
     uint32_t progLen = makeProgram(0, 0, procSources, 3, progBytes, sizeof(progBytes));
-    ProgramResult r = enterProgramWithSharedArena(0, progBytes, progLen, arenaSize);
+    ProgramResult r = enterProgramWithSharedArena(nullptr, 0, progBytes, progLen, arenaSize);
 
     if(r.trapped)
     {
@@ -305,7 +329,7 @@ TEST(EvictionCallerAndCalleeNeverCoresident)
     ProcSource procSources[] = {{0, proc0Body, 4}, {1, proc1Body, 3}};
     uint8_t progBytes[48];
     uint32_t progLen = makeProgram(0, 0, procSources, 2, progBytes, sizeof(progBytes));
-    ProgramResult r = enterProgramWithSharedArena(0, progBytes, progLen, arenaSize);
+    ProgramResult r = enterProgramWithSharedArena(nullptr, 0, progBytes, progLen, arenaSize);
 
     if(r.trapped)
     {
@@ -345,7 +369,7 @@ TEST(EvictionSlidesAProcedureHoldingAPooledLiteral)
     ProcSource procSources[] = {{0, proc0Body, 4}, {1, proc1Body, 3}};
     uint8_t progBytes[48];
     uint32_t progLen = makeProgram(0, 0, procSources, 2, progBytes, sizeof(progBytes));
-    ProgramResult r = enterProgramWithSharedArena(0, progBytes, progLen, arenaSize);
+    ProgramResult r = enterProgramWithSharedArena(nullptr, 0, progBytes, progLen, arenaSize);
 
     if(r.trapped)
     {
@@ -378,7 +402,7 @@ TEST(ResourceErrorSingleProcedureLargerThanArena)
     ProcSource procSources[] = {{0, body, 42}};
     uint8_t progBytes[256];
     uint32_t progLen = makeProgram(0, 0, procSources, 1, progBytes, sizeof(progBytes));
-    ProgramResult r = enterProgramWithSharedArena(0, progBytes, progLen, arenaSize);
+    ProgramResult r = enterProgramWithSharedArena(nullptr, 0, progBytes, progLen, arenaSize);
 
     if(r.trapped)
     {
@@ -389,7 +413,7 @@ TEST(ResourceErrorSingleProcedureLargerThanArena)
         writeHexResult(r.value);
     }
     CHECK(r.trapped);
-    CHECK(r.value == 0x52455343u); // RESOURCE_ERROR_CODE, "RESC"
+    CHECK(r.value == RESOURCE_EXHAUSTED_ARENA);
 }
 
 TEST(EvictionChurnUnderLoopedCallChain)
@@ -460,7 +484,11 @@ TEST(EvictionChurnUnderLoopedCallChain)
     uint32_t progLen = makeProgram(0, 0, procSources, 5, progBytes, sizeof(progBytes));
 
     static constexpr uint32_t L = 4;
-    ProgramResult r = enterProgramWithSharedArena(L, progBytes, progLen, arenaSize);
+    // Every procedure here declares argCount 1 (argCounts above), the entry
+    // one included, so L travels as a one-element vector rather than a bare
+    // word.
+    static const uint32_t entryArgs[] = {L};
+    ProgramResult r = enterProgramWithSharedArena(entryArgs, 1, progBytes, progLen, arenaSize);
 
     if(r.trapped)
     {
@@ -487,6 +515,7 @@ static uint32_t requiredStackBytesFor(uint32_t procCount, uint32_t totalDepth, u
          + totalDepth * 4
          + maxCallDepth * CALL_RECORD_BYTES
          + ENTER_DISPATCH_FIXED_BYTES
+         + ENTER_PROGRAM_CORE_FRAME_BYTES
          + TRANSLATOR_ENTRY_WORST_CASE_BYTES;
 }
 
@@ -514,7 +543,7 @@ TEST(OnStackAcceptsAtComputedBudgetBoundary)
     uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + GENEROUS_ARENA;
     uint32_t stackLimit = currentSp() - needed - BOUNDARY_SLACK;
 
-    ProgramResult r = enterProgramOnStack(0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -542,7 +571,7 @@ TEST(OnStackRejectsJustAboveComputedBudget)
     uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + GENEROUS_ARENA;
     uint32_t stackLimit = currentSp() - needed + BOUNDARY_SLACK;
 
-    ProgramResult r = enterProgramOnStack(0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -553,7 +582,7 @@ TEST(OnStackRejectsJustAboveComputedBudget)
         writeHexResult(r.value);
     }
     CHECK(r.trapped);
-    CHECK(r.value == 0x52455343u); // RESOURCE_ERROR_CODE, "RESC"
+    CHECK(r.value == RESOURCE_EXHAUSTED_STACK_BUDGET);
 }
 
 TEST(OnStackSucceedsWithBothArenaAndStackBudgetTight)
@@ -603,7 +632,7 @@ TEST(OnStackSucceedsWithBothArenaAndStackBudgetTight)
     uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + tightArena;
     uint32_t stackLimit = currentSp() - needed - TIGHT_TEST_SLACK;
 
-    ProgramResult r = enterProgramOnStack(0, bytes, len, tightArena, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, tightArena, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {

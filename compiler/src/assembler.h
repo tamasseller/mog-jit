@@ -10,6 +10,11 @@
 
 #include <cstdint>
 #include "armv6.h"
+// The RESOURCE_* codes fail() below reports, and nothing else — this
+// header needs no Runtime type (see the forward declaration under it) and
+// runtime_host.h needs nothing but stdint.h, so pulling it in here costs
+// the Runtime-agnosticism above nothing.
+#include "runtime_host.h"
 
 // Declared at global scope in runtime/runtime_internal.h, a plain
 // aggregate every caller builds by reinterpreting a raw byte buffer —
@@ -90,17 +95,21 @@ public:
     // which this can't anticipate on its own.
     uint32_t emit(uint16_t word);
 
-    // A translator-detected failure (arena exhausted with nothing left
-    // to evict, or the live stack-nesting guard tripped). Calls
-    // runtimeBail(), which is [[noreturn]] in every build: in production
-    // it restores the caller's own saved sp and long-jumps to the
-    // landing with RESOURCE_ERROR; the host build's own mocked
+    // A translator-detected failure, reported as the RESOURCE_* code the
+    // caller names (runtime_host.h has the list and what each class means
+    // to whoever gets it back). There is no default: every site knows
+    // which of them it is, and a default argument is exactly the escape
+    // hatch that grows a second blanket code.
+    //
+    // Calls runtimeBail(), which is [[noreturn]] in every build: in
+    // production it restores the caller's own saved sp and long-jumps to
+    // the landing with that code; the host build's own mocked
     // runtimeBail() (test/host/host_runtime_support.cpp) escapes the
     // same way via longjmp, the same mechanism 1test's own CHECK()
     // failures already unwind through. Every call site should still
     // `return` right after calling this regardless, as defense in depth
     // against a build where that contract doesn't hold.
-    void fail();
+    void fail(uint32_t code);
 
     // ── branches ────────────────────────────────────────────────────────
     // Raw placeholder/patch primitives — translate_proc.cpp's own
