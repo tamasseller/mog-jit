@@ -74,9 +74,25 @@ void emitGuardedBranch(Assembler &a, Label &label, Cond condition, const uint8_t
     }
     else
     {
-        uint32_t skip = a.placeholderCondBranch(ArmV6M::inverse(condition));
+        // Both branches go through Label/bind() rather than a raw
+        // placeholderCondBranch patched to skip + 4. That arithmetic was
+        // wrong whenever the literal pool had anything pending: the
+        // unconditional branchTo() below flushes the pool right after
+        // itself (nothing falls through an unconditional branch, so that
+        // is normally free real estate) -- but skip + 4 points at exactly
+        // that spot, so the "condition not taken" edge jumped straight
+        // into literal data and executed it. Found by fuzz/qemu_exec:
+        // `cmp r0,#0; bcs .+4; b otherwise; nop; <4 bytes of pool>` with
+        // the pool word 0x0019d156 decoding as a `bne` into nothing.
+        //
+        // bind() is the one flush-safe way to resolve a fixup to "wherever
+        // we are now" (assembler.h), and it is what makes this correct by
+        // construction instead of by arithmetic that has to stay in step
+        // with the pool.
+        Label fallThrough;
+        a.branchTo(fallThrough, ArmV6M::inverse(condition));
         a.branchTo(label); // the long unconditional branch, chained onto label
-        a.patchBranch(skip, skip + 4); // "not taken" (condition true) — fall through to the long branch right after
+        a.bind(fallThrough);
     }
 }
 

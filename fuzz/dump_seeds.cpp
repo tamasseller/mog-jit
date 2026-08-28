@@ -1,13 +1,20 @@
-// Regenerates the diverse-shape entries in seeds/ from
-// ../test/corpus_programs.h -- the same Instr[] bodies
-// test/qemu/fixtures.cpp exercises on real hardware, re-encoded here to
-// exactly the single-procedure wire format harness.cpp's own
-// LLVMFuzzerTestOneInput expects: one arg_count:LEB128 immediately
-// followed by that procedure's own body bytes, nothing else (no
-// proc_count, no envelope) -- see harness.cpp's own
-// `decodeLeb128(data, 0, bodyOffset)` at offset 0. Only single-procedure
-// programs qualify: this format has no second body to point a CALL's own
-// calleeIndex at, so corpusLargeBrTable* (two procedures) is left out.
+// Re-encodes ../test/corpus_programs.h's single-procedure bodies -- the
+// same Instr[] shapes test/qemu/fixtures.cpp exercises on real hardware --
+// as one arg_count:LEB128 immediately followed by that procedure's own body
+// bytes, and writes them to seeds_raw/ as *staging* input for make_seeds.ts.
+//
+// Staging, not seeds: harness.cpp takes whole programs now (the
+// max_call_depth/total_depth/proc_count envelope of bytecode.ts's
+// encodeJitProgram), and the two envelope stats come out of
+// validateProgram's own whole-program DFS, which exists only on the TS
+// side. So this file produces the bodies and make_seeds.ts wraps them;
+// seeds/ has exactly one owner, and nothing writes a format the harness
+// would silently discard on every execution.
+//
+// Only single-procedure programs qualify: this staging format has no second
+// body to point a CALL's own calleeIndex at, so corpusLargeBrTable* (two
+// procedures) is left out -- make_seeds.ts authors its own
+// multi-procedure/CALL shapes instead.
 //
 // A plain host program, no runtime/target dependency, matching build.sh's
 // own compiler invocation style.
@@ -63,13 +70,13 @@ int main()
         len += encodeBody(e.body, e.bodyCount, buf + len, sizeof(buf) - len);
 
         char path[256];
-        std::snprintf(path, sizeof(path), "seeds/%s", e.name);
+        std::snprintf(path, sizeof(path), "seeds_raw/%s", e.name);
         if(!writeFile(path, buf, len))
         {
             ok = false;
             continue;
         }
-        std::printf("wrote %s (%u bytes)\n", path, len);
+        std::printf("staged %s (%u bytes)\n", path, len);
     }
     return ok ? 0 : 1;
 }

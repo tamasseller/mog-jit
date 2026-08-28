@@ -728,7 +728,13 @@ Per-opcode-class notes:
   shrinks the window, with unconditional refill).
 - **`BR_TABLE`.** ARMv6-M has no `TBB`/`TBH` (Thumb-2 only). `N ≤ 2`, the
   overwhelming common case (`if`/`if-else`, isa-core.md §7.1), compiles to
-  `CMP` plus a conditional branch, no table. `N > 2`
+  `CMP` plus a conditional branch, no table — *when* the dispatch value is a
+  fused comparison's own 0/1, which is what §7.1's "the default is
+  unreachable for `if-else`" is about. Unfused, `acc` is an arbitrary u32
+  and §4.5's `acc ≥ N` outcome is real, so `N == 2` needs three ways out
+  (`CMP #1` plus `BHI` past both arms, then `BEQ` to the second): folding
+  `acc ≥ 2` into `case[1]` ran the else-arm where the ISA runs neither arm.
+  `N > 2`
   (`compiler/src/blocks.cpp`'s `openBrTableJump`) needs a literal-pool jump
   table plus a computed `BX`, but not one dispatch routine per site: one
   flash-resident copy for the whole program (§11's reserved slot 6,
@@ -915,12 +921,22 @@ producer *or* a write-back-in-place op. Four consequences:
   `testAccNonzero`'s unfused fallback, which flushes for real before the
   branch and needs no seeding.
 
-isa-core.md §8.7 makes this a validation error generally: a CFG split
-(`BR_TABLE`/`LOOP`) clobbers `acc` unconditionally, so a case/loop body
-reading a value from before the split — including the leaving direction,
-a merge point being read without every incoming edge re-establishing a
-value — is rejected by `validate.ts`/`vm.ts` rather than relying on this
-one seeded case alone.
+isa-core.md §8.7 makes this a validation error generally, and the rule is
+unconditional in both directions: a CFG split (`BR_TABLE`/`LOOP`) clobbers
+`acc` on entry to every successor, *and* `acc` is dead after the whole
+construct however its cases ended. `validate.ts`/`vm.ts` reject both,
+rather than relying on this one seeded case alone.
+
+The leaving direction is worth stating separately, because it is what makes
+this backend's fusion legal at all: `BR_TABLE`'s implicit default (§4.5,
+`acc ≥ N` runs no case) is the one edge in the ISA that holds no
+instructions, so nothing can establish a value on it and no merge after a
+dispatch can be given one on every edge. That is why `translateIfThen`,
+`translateIfThenElse` and `translateSwitch` all `poison()` at their merge
+point unconditionally, with no fixup on the skip edge — a fixup that
+materialized the fused comparison's 0/1 there was tried, and isa-rationale
+.md's own reasoning for the rule rules it out: the pattern is invalid input,
+not something a backend has to compile.
 
 **Callee-side prologue as a fold.** isa-core.md §4.6's last argument arrives
 in `acc`, not at `phys(argidx)`, which holds stale data (whatever the
@@ -1365,3 +1381,76 @@ call overwrote its own return address with the sentinel and jumped into
 entirely) plus a fixed safety margin below the measured `sp` regardless
 (defense in depth) — see `stack_paint.cpp`'s own comment for the full
 diagnosis via `qemu-system-arm -d exec`.
+
+---
+
+## 17. Differential fuzzing
+
+`fuzz/` is two harnesses, because they catch disjoint bug classes and each
+is structurally blind to the other's.
+
+`fuzz/harness.cpp` runs the real translator on the host, under ASan/UBSan
+with asserts live, on whole programs a `validateProgram` gate has already
+approved (over a socket to `fuzz/oracle_server.ts`, so Node starts once
+rather than per test case). Each input is translated twice — once with a
+detached `Assembler`, then again with attached ones against a small real
+arena at a fixed low address, which is what reaches `Runtime::allocate`/
+`findEvictionVictim`/`evict`'s compaction memmove and `finalize`'s dispatch
+registration. It finds crashes, and nothing else: it never executes what it
+emitted.
+
+`fuzz/qemu_exec/` closes exactly that gap, and needs no new emulator —
+§16's own `qemu-system-arm` setup already runs this translator plus the
+real, unmodified `runtime/`. A batch of programs is loaded straight into
+guest flash (`-device loader`; semihosting file I/O was tried first and
+`SYS_OPEN` returns -1 on this machine), each is run through the real
+`enterProgramSplit`, and the results are diffed against `@ppl/machine`'s
+reference VM. One boot per batch, so the emulator's startup cost amortizes
+away.
+
+**What the execution half found that the crash half could not.** Every one
+of these produced no crash, no assert and no `RESOURCE_ERROR` — just the
+wrong number, or no answer at all:
+
+- A register-form shift emitted a bare `LSLS/LSRS/ASRS Rd, Rm`, and
+  ARMv6-M's register form reads `Rm[7:0]` where isa-core.md then masked
+  the amount to five bits. `2784` (`87*32`) meant "shift by 0" to the ISA
+  and "shift by 224" to the hardware. Fixed in the ISA rather than the
+  translator: §4.1 no longer defines a shift by 32 or more, so the bare
+  register-form shift stands and the codegen is unchanged. See
+  fuzzing-campaign.md finding 5 for why the alternative — masking to five
+  bits with `LSLS #27`/`LSRS #27`, ARMv6-M having no AND-with-immediate —
+  was not worth two extra instructions on every dynamic shift.
+- `emitGuardedBranch`'s long form patched its "not taken" edge to
+  *branch + 4 bytes*, which is precisely where the unconditional branch's
+  own literal-pool flush lands — so that edge jumped into pool data and
+  executed it. Now resolved through `Label`/`bind()`, the one flush-safe
+  way to mean "wherever we are now".
+- `BR_TABLE 2`'s unfused form folded `acc ≥ 2` into `case[1]`, running the
+  else-arm where §4.5 runs neither arm (§10).
+- A `PUSH` inside a `LOOP`'s *condition* sub-block never had its TOS
+  surplus dropped at that block's own `BLOCK_END` (§8.1 drops it like any
+  other, and every `BR_TABLE` case already did) — so `sp` and the window
+  model diverged from the loop onward and the return sequence reclaimed the
+  wrong amount, returning through a corrupted call record.
+- Two where the *reference* side was wrong, not the JIT: `runProc` seeded a
+  callee's `acc` to 0 where §4.6 puts the callee's last argument there, and
+  `validateProgram` treated a zero-argument procedure's entry `acc` as live
+  when nothing establishes it (§4.6 conditions that on `N >= 1`), so
+  `{argCount: 0, body: [RETURN]}` validated with no defined result — the VM
+  returning 0 where the emitted code returned the caller's leftover
+  accumulator. Fixing the second needed `ExtOpEffect.writesAcc`, since an
+  extension op that assigns `acc` had no way to say so.
+
+**And one it found that is structural, left open deliberately:** `TRAP`
+does not unwind. It compiles to a normal return carrying
+`0x80000000 | code`, which is correct for the entry procedure and silently
+wrong for a nested one, whose caller reads the sentinel as an ordinary
+return value. Fixing it means a new helper-vector slot doing what
+`runtimeBail` does for `RESOURCE_ERROR` — new asm, a new reserved slot, and
+a change to what may leave a compiled procedure. See
+docs/target-profile.md; `fuzz/qemu_exec` sets these programs aside by
+`VmResult.trapDepth` rather than reporting them repeatedly.
+
+The `fuzz/seeds` corpus keeps a regression seed for each fixed finding, so
+`qemu_exec.ts seeds` is a standing check on all of them.

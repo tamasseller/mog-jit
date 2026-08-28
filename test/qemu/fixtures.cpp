@@ -371,10 +371,12 @@ static Program f29Prog;
 // returns to its pre-brTable value (1), matching case 1 (which never
 // touches tos) — POP() mirrors PUSH() by loading the popped slot's own
 // value back into acc (see fixture 17's own "acc poisoned" comment), so
-// k1 (total) is pushed *before* k2 (counter): the first POP discards
-// counter's spent (zero) value, and the second POP is the one that lands
-// the real result in acc. Body lives in corpus_programs.h. expect
-// (selector=0,n=4) -> 10; (selector=1,n=4) -> 12.
+// total is pushed *before* counter: the first POP discards counter's spent
+// (zero) value, and the second POP is the one that lands the real result in
+// acc, which the case then STOREs to the result slot k1 -- acc itself
+// cannot cross a BR_TABLE's merge point (isa-core.md §8.7), so a
+// value-producing dispatch delivers through a slot. Body lives in
+// corpus_programs.h. expect (selector=0,n=4) -> 10; (selector=1,n=4) -> 12.
 static Program f30Prog;
 
 // ---- Fixture 31: large BR_TABLE (N=20) with a CALL inside one case. The
@@ -384,7 +386,8 @@ static Program f30Prog;
 // proc_scan.cpp's triggersLRSave/`(uint32_t)instr.imm > 2` fix end-to-end,
 // since a large N combined with a real CALL is exactly the combination
 // that bug could disagree on between the scan pass and the real
-// translation pass. Body lives in corpus_programs.h. expect selector=7 ->
+// translation pass. Each case STOREs to a result slot for the same reason
+// fixture 30 does. Body lives in corpus_programs.h. expect selector=7 ->
 // 1005, selector=3 -> 30, selector=19 -> 190.
 static Program f31Prog;
 

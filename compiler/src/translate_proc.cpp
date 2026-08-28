@@ -188,8 +188,24 @@ static uint32_t processNonControl(Ctx &ctx, const DecodedInstr &decoded, Assembl
             uint32_t calleeArgCount = r.slot(instr.calleeIndex).argCount();
             uint32_t stackArgs = calleeArgCount > 0 ? calleeArgCount - 1 : 0;
 
-            // acc is unconditionally clobbered by CALL.
-            ctx.accState.flush(a, ACC_REG);
+            // isa-core.md §4.6: the callee's last argument arrives in
+            // acc, so it has to really be materialized there -- but only
+            // if the callee takes an argument at all. With none, §8.7
+            // doesn't require acc live at the call site (it lists "a CALL
+            // whose callee takes at least one argument" among the reads,
+            // not every CALL), so a legitimately poisoned acc reaches
+            // here and flushing it would assert. Nothing is lost by
+            // skipping it either way: CALL clobbers acc regardless, and
+            // the producer() below re-establishes it from the return
+            // value.
+            if(calleeArgCount > 0)
+            {
+                ctx.accState.flush(a, ACC_REG);
+            }
+            else
+            {
+                ctx.accState.poison();
+            }
 
             spillForCall(a, ctx.window, stackArgs);
             fillCalleeArgs(a, stackArgs);
@@ -563,21 +579,6 @@ static void translateIfThen(Ctx &ctx, Assembler& a, const Runtime& r)
 
     Label skip;
 
-    // What acc holds on the skip edge -- isa-core.md §4.5's implicit
-    // default (acc >= N runs no case at all) leaves acc untouched, so that
-    // edge re-establishes it for the merge below exactly as a case body
-    // does, and validateProgram's own AND-across-cases model (§8.7)
-    // therefore lets a RETURN downstream read it. Captured before the CMP:
-    // testAccNonzero may peek a pending immediate into SCRATCH_REG, and
-    // the fixup below wants the original description, not that scratch
-    // copy. Nothing between here and the fixup can invalidate it -- the
-    // fixup is only ever reached via the skip branch, i.e. with the body's
-    // own code (window restore included) unexecuted. Fused, acc was never
-    // materialized at all, but the skip edge is by construction the
-    // "comparison true" one, so acc is 1 there (§7.3's complementary
-    // comparison).
-    const Shape skipEdgeAcc = fused ? Shape::ofImm(1) : ctx.accState.peek();
-
     const auto cond = fused ? ctx.pendingComparisonCondition : testAccNonzero(a, ctx.accState);
 
     emitGuardedBranch(a, skip, cond, ctx.bytes, ctx.bytesLen, ctx.pc, 1);
@@ -585,42 +586,28 @@ static void translateIfThen(Ctx &ctx, Assembler& a, const Runtime& r)
     if(fused)
     {
         ctx.accState.producer(Shape::ofImm(0));
-    }   
-    
-    const auto term = processUntilTerminator(ctx, a, r, false);
+    }
 
-    if(term.op != Op::BLOCK_END)
+    const auto term = processUntilTerminator(ctx, a, r, false);
+    if(term.op == Op::BLOCK_END)
+    {
+        localJumpCleanup(ctx, a, entryTos);
+    }
+    else
     {
         handleGlobalJump(ctx, a, term, entryTos);
-        // The body left through its own terminator, so the skip edge is
-        // the only one that reaches here -- no merge to reconcile, acc is
-        // just whatever that one edge carries.
-        a.bind(skip);
-        ctx.accState.producer(skipEdgeAcc);
-        return;
     }
 
-    localJumpCleanup(ctx, a, entryTos);
+    // isa-core.md §8.7: acc is never live after a BR_TABLE, so there is
+    // nothing to reconcile here between the body's edge and the skip edge.
+    // The skip edge is §4.5's implicit default, and that edge holds no
+    // instructions at all -- it is pure fall-through from the dispatch --
+    // so it could not be handed a value even if the merge wanted one.
+    // That is the whole reason the rule is unconditional rather than an
+    // AND across the cases.
+    ctx.accState.poison();
 
-    if(!ctx.accState.live())
-    {
-        // The body's edge arrives dead, so nothing downstream may read acc
-        // regardless of which edge ran (isa-core.md §8.7) -- no fixup
-        // needed, and the skip edge's own value goes unused.
-        a.bind(skip);
-        return;
-    }
-
-    // Both edges reach the merge live, but with the body's value in
-    // ACC_REG (localJumpCleanup's flushLive) and the skip edge's still
-    // wherever it started -- so the skip edge gets a fixup stub of its
-    // own, placed after the body where only its branch can reach it.
-    Label end;
-    a.branchTo(end);
     a.bind(skip);
-    skipEdgeAcc.materialize(a, ACC_REG);
-    a.bind(end);
-    ctx.accState.setClean(ACC_REG);
 }
 
 static void translateIfThenElse(Ctx &ctx, Assembler& a, const Runtime& r)
@@ -636,22 +623,51 @@ static void translateIfThenElse(Ctx &ctx, Assembler& a, const Runtime& r)
 
     Label end, otherwise;
 
-    const auto cond = fused ? ctx.pendingComparisonCondition : testAccNonzero(a, ctx.accState);
-
-    emitGuardedBranch(a, otherwise, cond, ctx.bytes, ctx.bytesLen, ctx.pc, 1);
-
     if(fused)
     {
-        ctx.accState.producer(Shape::ofImm(0));
+        // A fused comparison's own result is 0 or 1 by construction, so
+        // §7.1's "default unreachable" really does hold here: one branch
+        // on the comparison's condition splits the two cases exactly.
+        emitGuardedBranch(a, otherwise, ctx.pendingComparisonCondition, ctx.bytes, ctx.bytesLen, ctx.pc, 1);
+    }
+    else
+    {
+        // Unfused, the dispatch value is an arbitrary u32, and isa-core.md
+        // §4.5 is unconditional about what that means: `acc >= N` executes
+        // no case at all. For N == 2 that third outcome is real, and
+        // testAccNonzero's zero/non-zero test folded it into case[1] --
+        // `CONST 131118; BR_TABLE 2` ran the else-arm where the ISA (and
+        // the reference VM) run neither arm. §7.1's "default unreachable"
+        // describes what the DSL lowerer emits for an `if-else`, not a
+        // licence for the backend to assume it. Found by fuzz/qemu_exec.
+        //
+        // The dispatch value has to be in a register to be compared
+        // against, and ACC_REG is where flush() would have put it anyway.
+        ctx.accState.flush(a, ACC_REG);
+
+        a.emit(ArmV6M::cmp(R(ACC_REG), ArmV6M::Imm<8>(1)));
+        emitGuardedBranch(a, end, Cond::HI, ctx.bytes, ctx.bytesLen, ctx.pc, 2); // acc > 1: the implicit default, past both arms
+
+        // Re-emitted rather than reusing the flags above: emitGuardedBranch
+        // may take its long form, whose bind() can flush the literal pool
+        // in between. Nothing a flush emits writes flags today, and one CMP
+        // is a cheap way not to depend on that staying true.
+        a.emit(ArmV6M::cmp(R(ACC_REG), ArmV6M::Imm<8>(1)));
+        emitGuardedBranch(a, otherwise, Cond::EQ, ctx.bytes, ctx.bytesLen, ctx.pc, 1); // acc == 1: case[1]
     }
 
-    bool mergeLive = true; // vacuously, until an edge that actually reaches it says otherwise
+    // Both paths now reach case[0] only with acc == 0 and case[1] only with
+    // acc == 1, so each arm's entry value is a compile-time constant
+    // regardless of whether a comparison was fused (isa-core.md §7.3).
+    // §8.7 forbids an arm from reading it without its own producer, so this
+    // is knowledge nothing may act on -- kept because it costs nothing and
+    // is true, not because any emitted code depends on it.
+    ctx.accState.producer(Shape::ofImm(0));
 
     const auto term = processUntilTerminator(ctx, a, r, false);
     if(term.op == Op::BLOCK_END)
     {
         localJumpCleanup(ctx, a, entryTos);
-        mergeLive = mergeLive && ctx.accState.live();
         a.branchTo(end);
     }
     else
@@ -662,49 +678,25 @@ static void translateIfThenElse(Ctx &ctx, Assembler& a, const Runtime& r)
     a.flushPoolNoGuard();
     a.bind(otherwise);
 
-    if(fused)
-    {
-        ctx.accState.producer(Shape::ofImm(1));
-    }
-    else
-    {
-        // "otherwise" is reached exactly when "then" wasn't taken. Even
-        // though testAccNonzero's own flush() really did put a value in
-        // ACC_REG right before the branch, isa-core.md §8.7 still treats
-        // this edge as a split successor -- nothing downstream may assume
-        // that value is still meaningful without its own fresh producer.
-        ctx.accState.poison();
-    }
+    ctx.accState.producer(Shape::ofImm(1));
 
     const auto term2 = processUntilTerminator(ctx, a, r, false);
     if(term2.op == Op::BLOCK_END)
     {
         localJumpCleanup(ctx, a, entryTos);
-        mergeLive = mergeLive && ctx.accState.live();
     }
     else
     {
         handleGlobalJump(ctx, a, term2, entryTos);
     }
 
-    // "end" merges two edges -- "then"'s branch (taken when "then" ran and
-    // fell through its own BLOCK_END) and "otherwise"'s fallthrough (taken
-    // when "otherwise" ran); the two cases exhaust this form's successors,
-    // since N == 2's implicit default is folded into "otherwise" by the
-    // single conditional branch above. isa-core.md §8.7: live past the
-    // merge only if every edge that actually reaches it re-established a
-    // value -- localJumpCleanup's own flushLive already put each such
-    // edge's value in ACC_REG, so agreement is all that's left to check.
-    // An arm that left through a terminator never reaches here at all, and
-    // if neither did, this is dead code and the answer doesn't matter.
-    if(mergeLive)
-    {
-        ctx.accState.setClean(ACC_REG);
-    }
-    else
-    {
-        ctx.accState.poison();
-    }
+    // "end" merges up to three edges -- "then"'s branch, "otherwise"'s
+    // fallthrough, and (unfused only) the implicit default's own branch
+    // past both arms. isa-core.md §8.7 makes that last one decisive: it
+    // holds no instructions, so no value can be established on it, and acc
+    // is therefore dead after the whole construct regardless of what the
+    // two arms did.
+    ctx.accState.poison();
 
     if(end.chain != -1)
     {
@@ -752,13 +744,6 @@ static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n
 
     Label end;
 
-    // Vacuously true: the implicit default (isa-core.md §4.5) always
-    // reaches the merge and always arrives live -- the flush() above put
-    // the dispatch value in ACC_REG, and the helper's own clamped index
-    // register is deliberately never acc (docs/design.md §12), so that
-    // edge leaves it untouched. Only the cases can spoil it.
-    bool mergeLive = true;
-
     for(uint32_t i = 0; i < n; i++)
     {
         a.patchRawHalfword(base + i * 2, (uint16_t)(a.pc() - base));
@@ -777,7 +762,6 @@ static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n
         if(term.op == Op::BLOCK_END)
         {
             localJumpCleanup(ctx, a, entryTos);
-            mergeLive = mergeLive && ctx.accState.live();
             if(i + 1 < n)
             {
                 a.branchTo(end);
@@ -795,18 +779,10 @@ static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n
 
     // "end" merges however many of the n cases branched here plus the
     // implicit default's own table slot, just patched above. isa-core.md
-    // §8.7: live past the merge only if every edge that reaches it
-    // re-established a value -- localJumpCleanup's own flushLive put each
-    // BLOCK_END-closing case's value in ACC_REG and the default edge left
-    // the dispatch value there, so agreement is all that's left to check.
-    if(mergeLive)
-    {
-        ctx.accState.setClean(ACC_REG);
-    }
-    else
-    {
-        ctx.accState.poison();
-    }
+    // §8.7: acc is dead after the construct, and the default's slot is why
+    // -- it is a table entry, not a block, so no value can be established
+    // on that edge no matter what the cases did.
+    ctx.accState.poison();
 
     if(end.chain != -1)
     {
@@ -828,6 +804,26 @@ static void translateLoop(Ctx &ctx, Assembler& a, const Runtime& r)
 
     const auto condTerm = processUntilTerminator(ctx, a, r, true);
     assert(condTerm.op == Op::BLOCK_END);
+
+    // isa-core.md §8.1: a BLOCK_END implicitly drops any TOS surplus above
+    // its own block's entry depth, and the condition sub-block's BLOCK_END
+    // is no exception -- a PUSH inside it is exactly as legal as one inside
+    // a BR_TABLE case, where localJumpCleanup already does this. Missing it
+    // left the surplus in place on *both* edges out of the test, so the
+    // window model and the real sp disagreed from here on and the
+    // procedure's own return sequence reclaimed the wrong amount, returning
+    // through a corrupted call record. Found by fuzz/qemu_exec, as a hang.
+    //
+    // Before the branch, so both edges see the same sp; and the flush has
+    // to come first, since restoreWindow pops window registers and the
+    // condition value may still be living in one of them. Neither POP nor
+    // ADD SP, SP, #imm writes flags on ARMv6-M, so a fused comparison's
+    // own CMP still governs the branch below.
+    if(ctx.window.tos != entryTos)
+    {
+        ctx.accState.flushLive(a, ACC_REG);
+        restoreWindow(a, ctx.window, entryTos);
+    }
 
     const bool fused = ctx.hasPendingComparisonCondition;
     ctx.hasPendingComparisonCondition = false;

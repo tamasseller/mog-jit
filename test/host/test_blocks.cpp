@@ -65,6 +65,48 @@ TEST(EmitGuardedBranchUsesLongFormWhenSpanExceedsRange)
     CHECK(label.chain == 2); // the long b's own site, right after the guard
 }
 
+TEST(EmitGuardedBranchLongFormSkipsOverAPoolFlush)
+{
+    // The long form's "condition not taken" edge must land on the
+    // instruction after the long branch — and the unconditional branch
+    // flushes the literal pool right after itself (nothing falls through
+    // an unconditional branch, so that space is normally free). With
+    // anything pending, the naive "skip + 4" target pointed straight at
+    // the first pool word and the not-taken edge executed literal data as
+    // instructions. Found by fuzz/qemu_exec.
+    Instr body[16];
+    for(int i = 0; i < 15; i++)
+    {
+        body[i] = bare(Op::NOT);
+    }
+    body[15] = bare(Op::RETURN);
+    uint8_t bytes[32];
+    uint32_t len = encode(body, 16, bytes, sizeof(bytes));
+
+    uint16_t buf[32];
+    Assembler e(buf, 32);
+
+    // One pending pool entry: a literal too wide for any MOVS/shift
+    // synthesis, so materializeImm32 has to park it.
+    e.materializeImm32(ACC_REG, 0x0019d156u);
+    CHECK(e.poolDebt() > 0);
+
+    const uint32_t guardAt = e.pc();
+    Label label;
+    emitGuardedBranch(e, label, Cond::EQ, bytes, len, 0, 1);
+
+    CHECK(ArmV6M::isCondBranch(buf[guardAt / 2]));
+    uint16_t rawOff;
+    CHECK(ArmV6M::getCondBranchOffset(buf[guardAt / 2], rawOff));
+
+    // A conditional branch's target is (site + 4) + 2 * rawOff. That has to
+    // be where the *next* instruction will go, i.e. exactly where the
+    // assembler is now that the flush has happened — never inside the pool.
+    const uint32_t target = guardAt + 4 + 2 * rawOff;
+    CHECK(target == e.pc());
+    CHECK(rawOff != 0); // it really did have a pool to skip over
+}
+
 TEST(MaxSpanBytesRecursesThroughANestedLoop)
 {
     // The span being measured contains a whole LOOP construct (cond +

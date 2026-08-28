@@ -381,9 +381,15 @@ TEST(AddAccImmRhsScratchRegDestAlsoScratchRegDoesNotAssert)
 
 TEST(TwoOpInPlaceNativeCoversEveryOpcode)
 {
-    // AND is exercised by the tests above; OR/XOR/MUL and the
-    // register-count shift forms share the same TwoOpInPlace dispatch
-    // but weren't exercised through the native-opcode switch yet.
+    // AND is exercised by the tests above; OR/XOR/MUL and the three
+    // register-count shift forms share the same TwoOpInPlace dispatch but
+    // weren't exercised through the native-opcode switch yet.
+    //
+    // The shifts belong here — one instruction each, like the rest. They
+    // briefly did not: masking the amount to five bits made each of them
+    // three, until isa-core.md §4.1 stopped defining a shift by 32 or more
+    // and there was nothing left to mask for (fuzzing-campaign.md
+    // finding 5).
     struct
     {
         Op op;

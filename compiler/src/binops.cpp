@@ -124,11 +124,13 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
             case Op::AND:  e.materializeImm32(dest, accShape.imm & rhs.imm); break;
             case Op::OR:   e.materializeImm32(dest, accShape.imm | rhs.imm); break;
             case Op::XOR:  e.materializeImm32(dest, accShape.imm ^ rhs.imm); break;
-            // Same 0..31 masking as the register-destination shift path
-            // below (isa-core.md's shift semantics, vm.ts's `R & 31`) --
-            // required here too: an unmasked shift count of 32+ is
-            // undefined behavior for C++'s own `<<`/`>>`, not just an
-            // encoding-width problem.
+            // validate.ts rejects an immediate shift amount outside
+            // 0..31 (isa-core.md §4.1), so the mask is only ever a no-op
+            // on a validated program -- kept because it is free at compile
+            // time and because an unmasked count of 32+ would be undefined
+            // behavior for C++'s own `<<`/`>>` right here in the
+            // translator, which is a far worse failure than a wrong
+            // constant.
             case Op::SHL:  e.materializeImm32(dest, (uint32_t)accShape.imm << (rhs.imm & 31)); break;
             case Op::SHR:  e.materializeImm32(dest, (uint32_t)accShape.imm >> (rhs.imm & 31)); break;
             case Op::ASR:  e.materializeImm32(dest, (uint32_t)((int32_t)accShape.imm >> (rhs.imm & 31))); break;
@@ -193,15 +195,17 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
 
             const auto m = accShape.peek(e, SCRATCH_REG);
 
-            // isa-core.md's shift semantics mask the amount to 0..31
-            // (vm.ts's own evalBinary: `R & 31`), same as a real ARM
-            // register-shift would -- but bytecode carries a full u32
-            // immediate with no such bound, so this always has to mask
-            // before it ever reaches Imm<5>'s own 5-bit field. LSR/ASR's
-            // *immediate* encoding is the one wrinkle: imm5==0 means
-            // "shift by 32" there (unlike LSL, where imm5==0 already means
-            // a genuine no-op) -- so a masked shift of 0 has to become a
-            // plain register move instead of lsrs/asrs #0.
+            // The amount is known here, and validate.ts already rejects
+            // one outside 0..31 (isa-core.md §4.1) -- but bytecode carries
+            // a full u32 immediate, and this must not hand something wider
+            // to Imm<5>'s own 5-bit field however it got here. Free at
+            // compile time either way.
+            //
+            // LSR/ASR's *immediate* encoding is the one real wrinkle, and
+            // is unrelated to any of that: imm5==0 means "shift by 32"
+            // there (unlike LSL, where imm5==0 already means a genuine
+            // no-op), so a shift of 0 has to become a plain register move
+            // instead of lsrs/asrs #0.
             uint32_t shift = (uint32_t)rhs.imm & 31u;
             switch(op)
             {
@@ -230,6 +234,19 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
 
             accShape.materialize(e, t);
 
+            // A bare register-form shift, amount unmasked. ARMv6-M reads
+            // Rm[7:0] here, not Rm[4:0], so an amount of 32 or more does
+            // not agree with the five-bit masking a host `<<` would do --
+            // and isa-core.md §4.1 leaves exactly that case unspecified,
+            // so there is nothing to agree with. Masking it would cost
+            // LSLS #27 / LSRS #27 into a scratch on every dynamic shift
+            // (ARMv6-M has no AND-with-immediate, so an AND against 31
+            // would cost a register to hold the constant and be worse
+            // still) -- three instructions where one does the job, to pin
+            // down a case no codec depends on. The immediate combo above
+            // is a separate matter: the amount is known there, validate.ts
+            // rejects one outside 0..31 outright, and masking it costs
+            // nothing at compile time.
             switch(op)
             {
                 case Op::SHL: e.emit(ArmV6M::lsls(R((uint16_t)t), R((uint16_t)m))); break;

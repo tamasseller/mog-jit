@@ -1,7 +1,10 @@
+dump_code
+dump_seeds
 fuzz_driver
 fuzz_driver_afl
-dump_seeds
-repro_driver*
 last_input.bin
 out/
 out_*/
+probe_arena
+repro_driver*
+seeds_raw/

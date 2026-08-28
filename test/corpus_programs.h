@@ -54,48 +54,57 @@ inline constexpr Instr corpusBrTableInLoopProc0[] = {
 };
 
 // LOOP nested inside a BR_TABLE case — fixtures.cpp's fixture 30.
+//
+// k0 is the packed argument, k1 the result slot: isa-core.md §8.7 drops acc
+// at a BR_TABLE's merge point however the cases ended, so a dispatch that
+// produces a value delivers it through a TOS slot the cases STORE to, not
+// through acc.
 inline constexpr Instr corpusLoopInBrTableProc0[] = {
+    CONST(0), PUSH(),
     LOAD(0), opImm(Op::SHR, 8), brTable(2),
         CONST(0), PUSH(),
         LOAD(0), opImm(Op::AND, 0xFF), PUSH(),
         bare(Op::LOOP),
-            LOAD(2),
+            LOAD(3),
         bare(Op::BLOCK_END),
-            LOAD(1), opReg(Op::ADD, 2), STORE(1),
-            LOAD(2), opImm(Op::SUB, 1), STORE(2),
+            LOAD(2), opReg(Op::ADD, 3), STORE(2),
+            LOAD(3), opImm(Op::SUB, 1), STORE(3),
         bare(Op::BLOCK_END),
         POP(),
         POP(),
+        STORE(1),
         bare(Op::BLOCK_END),
-        LOAD(0), opImm(Op::AND, 0xFF), opImm(Op::MUL, 3), bare(Op::BLOCK_END),
-    bare(Op::RETURN),
+        LOAD(0), opImm(Op::AND, 0xFF), opImm(Op::MUL, 3), STORE(1), bare(Op::BLOCK_END),
+    LOAD(1), bare(Op::RETURN),
 };
 
 // Large BR_TABLE (N=20) with a CALL inside one case — fixtures.cpp's
 // fixture 31.
+// k1 is the result slot, for the same reason fixture 30 has one.
 inline constexpr Instr corpusLargeBrTableProc0[] = {
+    CONST(0), PUSH(),
     LOAD(0), brTable(20),
-        CONST(0), bare(Op::BLOCK_END),
-        CONST(10), bare(Op::BLOCK_END),
-        CONST(20), bare(Op::BLOCK_END),
-        CONST(30), bare(Op::BLOCK_END),
-        CONST(40), bare(Op::BLOCK_END),
-        CONST(50), bare(Op::BLOCK_END),
-        CONST(60), bare(Op::BLOCK_END),
-        CONST(5), call(1), bare(Op::BLOCK_END),
-        CONST(80), bare(Op::BLOCK_END),
-        CONST(90), bare(Op::BLOCK_END),
-        CONST(100), bare(Op::BLOCK_END),
-        CONST(110), bare(Op::BLOCK_END),
-        CONST(120), bare(Op::BLOCK_END),
-        CONST(130), bare(Op::BLOCK_END),
-        CONST(140), bare(Op::BLOCK_END),
-        CONST(150), bare(Op::BLOCK_END),
-        CONST(160), bare(Op::BLOCK_END),
-        CONST(170), bare(Op::BLOCK_END),
-        CONST(180), bare(Op::BLOCK_END),
-        CONST(190), bare(Op::BLOCK_END),
-    bare(Op::RETURN),
+        CONST(0), STORE(1), bare(Op::BLOCK_END),
+        CONST(10), STORE(1), bare(Op::BLOCK_END),
+        CONST(20), STORE(1), bare(Op::BLOCK_END),
+        CONST(30), STORE(1), bare(Op::BLOCK_END),
+        CONST(40), STORE(1), bare(Op::BLOCK_END),
+        CONST(50), STORE(1), bare(Op::BLOCK_END),
+        CONST(60), STORE(1), bare(Op::BLOCK_END),
+        CONST(5), call(1), STORE(1), bare(Op::BLOCK_END),
+        CONST(80), STORE(1), bare(Op::BLOCK_END),
+        CONST(90), STORE(1), bare(Op::BLOCK_END),
+        CONST(100), STORE(1), bare(Op::BLOCK_END),
+        CONST(110), STORE(1), bare(Op::BLOCK_END),
+        CONST(120), STORE(1), bare(Op::BLOCK_END),
+        CONST(130), STORE(1), bare(Op::BLOCK_END),
+        CONST(140), STORE(1), bare(Op::BLOCK_END),
+        CONST(150), STORE(1), bare(Op::BLOCK_END),
+        CONST(160), STORE(1), bare(Op::BLOCK_END),
+        CONST(170), STORE(1), bare(Op::BLOCK_END),
+        CONST(180), STORE(1), bare(Op::BLOCK_END),
+        CONST(190), STORE(1), bare(Op::BLOCK_END),
+    LOAD(1), bare(Op::RETURN),
 };
 inline constexpr Instr corpusLargeBrTableProc1[] = {LOAD(0), opImm(Op::ADD, 1000), bare(Op::RETURN)};
 

@@ -28,7 +28,7 @@ is the natural long-term home for a "target profile" extension a validator
 call could take alongside the generic checks; for now these live here and
 in `oracle_server.ts`'s own extra gate, both by hand.
 
-## argCount vs. the window's stack-reclaim encoding
+## TOS depth (argCount included) vs. the window's stack-reclaim encoding
 
 **The crash this documents:** `jit-armv6m/fuzz`'s harness found that
 `argCount = 972` (single procedure, body `[RETURN]`, otherwise entirely
@@ -61,28 +61,57 @@ or a bailout), it just asserts.
 
 | | value | meaning |
 |---|---|---|
-| Hard ABI ceiling | `argCount ≤ 131` | above this, `discardWindow`'s single-instruction reclaim can't encode the byte count at all — a real bug (§"Open question" below), not a policy choice |
+| Hard ABI ceiling | `argCount ≤ 131` | above this, `discardWindow`'s single-instruction reclaim can't encode the byte count at all and the translator bails with `RESOURCE_ERROR` (see below) — a capability limit, not a policy choice |
 | Realistic-profile cap | `argCount ≤ 16` | `oracle_server.ts`'s own extra gate (`REALISTIC_MAX_ARG_COUNT`) — no real procedure needs more than a handful of parameters; keeping the fuzz search inside this band means every crash it finds is worth investigating on its own terms, not "well, nobody would ever call it with 900 arguments anyway" |
 
-**Open question, not fixed here:** the hard ceiling (131) is itself a real
-gap — `Runtime::init()`/`ProcSlot::MAX_ARG_COUNT` (2047) let far more
-through than `discardWindow` can ever encode, and nothing between the two
-currently turns "argCount is technically representable but this specific
-ABI sequence can't reclaim it" into a `RESOURCE_ERROR` bailout instead of an
-assert. Worth its own fix (either a real multi-instruction reclaim, or a
-compile-time-checked cap enforced before `translateProc` ever runs) —
-tracked here rather than patched reflexively, since the *realistic-profile*
-gate below already keeps the fuzzer productive without it.
+**Closed:** `discardWindow` now range-checks the reclaim and calls
+`Assembler::fail()` instead of asserting, so the hard ceiling is a clean
+`RESOURCE_ERROR` rather than an abort. Measured directly
+(`fuzz/dump_code.sh` on hand-built one-instruction procedures):
+`argCount = 131` compiles, and 132 / 500 / 972 / 2047 all bail.
+`restoreWindow` carries the same guard on the same encoding.
+
+What remains is a *capability* limit, not a crash: `ProcSlot::MAX_ARG_COUNT`
+(2047) still admits far more than this ABI sequence can reclaim, so a
+procedure between 132 and 2047 arguments simply cannot be compiled. Lifting
+that needs a real multi-instruction reclaim, and nothing needs one today.
+The realistic-profile cap below is therefore about keeping the fuzzer's
+search somewhere interesting, not about avoiding an abort.
+
+**It is not really about argCount.** `discardWindow` reclaims the whole
+spilled frame, so 131 caps *total TOS depth* — arguments and pushed operands
+together. That is the same number for a procedure with 131 arguments and for
+one with none that pushes 132 operands, and the second is the case that
+actually matters: it is what a fuzzer produces by the thousand.
+`oracle_server.ts` gates on it (`REALISTIC_MAX_TOTAL_DEPTH = 128`, against
+`validateProgram`'s own whole-program `totalDepth`) for a measured reason —
+unbounded, **84% of a real fuzz corpus landed above the ceiling**, so 84% of
+the fuzzer's budget went to programs that could only ever bail, and whose
+emitted code neither half of `fuzz/` could look at. `fuzz/qemu_exec` is what
+made that ratio visible; the crash-only harness had no way to tell a bail
+from a pass.
+
+**A consequence worth recording:** `translate_proc.cpp`'s `spillImm` guards
+an SP-relative offset against `Uoff<2, 8>`'s 1020-byte ceiling, i.e. 255
+words — which is *unreachable*, because `discardWindow`'s much tighter
+7-bit reclaim bails first on any program deep enough to get there. It is
+defence in depth with nothing behind it. Left in place (the cost is one
+comparison, and the two ceilings are independent things that could move),
+but no test or fuzz input can exercise it, and one shouldn't be written on
+the assumption that it can.
 
 ## Non-canonical (overlong) LEB128 fields
 
 **The crash this documents:** a fuzzed input decoded to `argCount=0`, body
 `[SHR IMM_ACC 466312]` — but the *interesting* part wasn't the huge shift
-amount (see below, a real bug, now fixed in `binops.cpp`); it's that
-`466312` itself decoded from a wire-format immediate at all. Nothing about
-that value is unrealistic on its own — a legitimate procedure could compute
-a shift amount that large at runtime — the actual gap is in the encoding
-question this section is about.
+amount (see below, a real bug, now fixed in isa-core.md §4.1); it's that
+`466312` itself decoded from a wire-format immediate at all. The actual gap
+is in the encoding question this section is about.
+
+That exact instruction no longer validates — §4.1 now bounds an
+*immediate* shift amount to `0..31` — but the encoding question survives
+it unchanged: the same overlong field can carry any other operand, and a
+shift amount computed at run time is still unbounded and still legal.
 
 Separately, another fuzzed input hit `compiler/src/decode_instr.cpp`'s own
 `decodeLeb128` with a genuine crash: `runtime error: shift exponent 35 is
@@ -117,6 +146,96 @@ regardless of which one. Treated the same as a plain decode failure
 (`stage=1`), not a separate realistic-profile cap, since this isn't a
 "real but unrealistic" value question — it's a wire-encoding
 well-formedness one.
+
+## `TRAP` code vs. the trap-return sentinel
+
+**The ambiguity this documents:** `runtime_host.h`'s `ProgramResult` packs
+both outcomes of a whole excursion into one word, and
+`translate_proc.cpp`'s `TRAP` handling tags a bytecode trap by setting bit
+31 (`0x80000000u | (uint32_t)term.imm`), leaving `ProgramResult.trapped`
+for `RESOURCE_ERROR` alone. That header's own comment already says this
+slice "has no real error-reporting model" for `TRAP` and sentinel-encodes
+it; what it doesn't say is that the encoding is *lossy in two directions*:
+
+- a `RETURN` whose value has bit 31 set is indistinguishable from a `TRAP`
+- a `TRAP` whose code already has bit 31 set aliases the same code with it
+  cleared (`TRAP 0x80000005` and `TRAP 5` report identically)
+
+isa-core.md §4.5 makes the trap code a full u32 ("an opaque error code;
+`0` is unreachable/panic by convention, the rest of the space is
+host-defined"), and §4.2's values are u32 throughout, so both halves of
+the space are legal input.
+
+| | value | meaning |
+|---|---|---|
+| Unambiguous return values | `acc < 2³¹` | above this, the caller cannot tell a returned value from a trap |
+| Unambiguous trap codes | `code < 2³¹` | above this, the code aliases `code & 0x7fffffff` |
+
+**Not gated, deliberately.** `jit-armv6m/fuzz/qemu_exec` *runs* programs
+whose result falls in the ambiguous half (they still have to not hang or
+fault) and only skips the result *comparison*, since comparing under a
+lossy encoding manufactures false mismatches. Nothing about the
+translation of a large `RETURN` value or `TRAP` code is itself suspect —
+the gap is in the one-word result channel, and closing it means a real
+error-reporting model (a second out-parameter, or a distinct `trapped`
+value for a bytecode trap), not a cap on the ISA.
+
+## `TRAP` does not unwind — a nested trap becomes a return value
+
+**Structural, not a local codegen mistake.** `translate_proc.cpp`'s
+`handleGlobalJump` compiles `TRAP #code` to
+
+```
+    materializeImm32(ACC_REG, 0x80000000 | code)
+    returnSequence(...)          // an ordinary return
+```
+
+For the *entry* procedure that is exactly right: that word is
+`ProgramResult.value`, and `runtime_host.h` already documents the high bit
+as this slice's trap sentinel. For any *nested* procedure it is wrong. The
+callee returns normally, the sentinel lands in the caller's `acc` as an
+ordinary return value, and the caller keeps executing — usually
+overwriting it immediately.
+
+Minimal repro (`fuzz/qemu_exec/minimize_exec.ts` reduced a 195-instruction
+input to this):
+
+```
+proc 0 (argCount 0):  CALL 1 ; CONST 92 ; RETURN
+proc 1 (argCount 0):  TRAP 754
+```
+
+The reference VM traps with 754 (a bytecode trap unwinds the whole program
+there, and `ProgramResult`/§9 model it the same way). The emitted code
+returns 92. Disassembled, `proc 1` is
+`ldr r0, =0x800002f2 ; bx returnHelperFromLr` — a plain return — and
+`proc 0` then does `movs r0, #92` straight over it.
+
+**What a fix needs**, and why it isn't done here: a real unwind, i.e. a
+helper-vector slot that does for a bytecode trap what
+`dispatch_abi.cpp`'s `runtimeBail` already does for `RESOURCE_ERROR` —
+restore `Runtime::savedSp` and transfer to the landing, carrying the trap
+code. That is a new reserved slot (§11's table), hand-written asm in
+`runtime.S`, a new fixed constant, and a change to the dispatch ABI's own
+contract about what may leave a compiled procedure. Worth doing
+deliberately, not folded into a fuzzing pass.
+
+**Meanwhile:** `fuzz/qemu_exec` sets these aside explicitly rather than
+reporting them repeatedly — `vm.ts`'s `VmResult.trapDepth` says how many
+frames below the entry the trap fired, and the harness skips anything above
+0 with a named reason. Nothing else about such a program is exempt: it is
+still translated, still run, and still checked for crashes and hangs.
+
+## Whole-program procedure count
+
+`ProcSlot`'s directory is sized by `procCount` with no ceiling of its own
+beyond storage. `oracle_server.ts` caps it at 16
+(`REALISTIC_MAX_PROC_COUNT`), the same kind of realistic-profile bound as
+`REALISTIC_MAX_ARG_COUNT` above: a fuzzer left unbounded spends its budget
+on hundred-procedure programs whose procedures are one instruction each,
+which exercises `Runtime::init`'s loop and nothing else.
+`harness.cpp` mirrors the constant, since its `Runtime` storage buffer is
+sized off it.
 
 ## Adding another entry
 
