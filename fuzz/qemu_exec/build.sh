@@ -34,6 +34,7 @@ arm-none-eabi-g++ "${CXXFLAGS[@]}" \
     ../../runtime/dispatch_abi.cpp \
     ../../runtime/compile_proc.cpp \
     ../../compiler/src/window.cpp \
+    ../../compiler/src/ext.cpp \
     ../../compiler/src/accstate.cpp \
     ../../compiler/src/binops.cpp \
     ../../compiler/src/assembler.cpp \

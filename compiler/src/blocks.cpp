@@ -1,4 +1,5 @@
 #include "blocks.h"
+#include "ext.h"
 #include "window.h"
 #include "accstate.h"
 #include "decode_instr.h"
@@ -15,6 +16,13 @@ using Cond = ArmV6M::Condition;
 
 uint32_t instrMaxBytes(const Instr &instr)
 {
+    if(instr.op == Op::EXT)
+    {
+        // A bitfield read, not a call into the extension: maxSpanBytes
+        // re-walks every instruction once per enclosing nesting level, and
+        // this is the same word the prologue's lr decision read (ext.h).
+        return extDeclHalfwords(instr.extDecl) * 2;
+    }
     if(instr.op == Op::CALL)
     {
         return CALL_MAX_BYTES;
@@ -31,7 +39,8 @@ uint32_t instrMaxBytes(const Instr &instr)
 // exactly right, only safely conservative.
 static constexpr uint32_t SAFE_COND_BRANCH_SPAN = 240;
 
-SpanResult maxSpanBytes(const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount)
+SpanResult maxSpanBytes(const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount,
+    const ExtHooks *ext)
 {
     uint32_t pc = from;
     uint32_t total = 0;
@@ -40,24 +49,24 @@ SpanResult maxSpanBytes(const uint8_t *bytes, uint32_t bytesLen, uint32_t from, 
         for(;;)
         {
             assert(pc < bytesLen); // GCOV_EXCL_LINE — ran off the end while bounding a branch span; malformed input
-            DecodedInstr d = decodeInstr(bytes, bytesLen, pc);
+            DecodedInstr d = decodeInstr(bytes, bytesLen, pc, ext);
             total += instrMaxBytes(d.instr);
             if(d.instr.op == Op::BR_TABLE)
             {
-                SpanResult sub = maxSpanBytes(bytes, bytesLen, d.next, (uint32_t)d.instr.imm);
+                SpanResult sub = maxSpanBytes(bytes, bytesLen, d.next, (uint32_t)d.instr.imm, ext);
                 total += sub.bytes;
                 pc = sub.nextPc;
                 continue;
             }
             if(d.instr.op == Op::LOOP)
             {
-                SpanResult sub = maxSpanBytes(bytes, bytesLen, d.next, 2);
+                SpanResult sub = maxSpanBytes(bytes, bytesLen, d.next, 2, ext);
                 total += sub.bytes;
                 pc = sub.nextPc;
                 continue;
             }
             pc = d.next;
-            if(d.instr.op == Op::BLOCK_END || d.instr.op == Op::RETURN || d.instr.op == Op::TRAP)
+            if(isTerminator(d.instr))
             {
                 break;
             }
@@ -66,9 +75,10 @@ SpanResult maxSpanBytes(const uint8_t *bytes, uint32_t bytesLen, uint32_t from, 
     return {total, pc};
 }
 
-void emitGuardedBranch(Assembler &a, Label &label, Cond condition, const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount)
+void emitGuardedBranch(Assembler &a, Label &label, Cond condition, const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount,
+    const ExtHooks *ext)
 {
-    if(maxSpanBytes(bytes, bytesLen, from, blockCount).bytes + a.poolDebt() <= SAFE_COND_BRANCH_SPAN)
+    if(maxSpanBytes(bytes, bytesLen, from, blockCount, ext).bytes + a.poolDebt() <= SAFE_COND_BRANCH_SPAN)
     {
         a.branchTo(label, condition);
     }

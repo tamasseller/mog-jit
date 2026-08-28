@@ -42,6 +42,27 @@ struct Label
 
 class Assembler
 {
+    Runtime *runtime = nullptr; // null: detached
+
+    uint16_t *buf;
+    uint32_t capacity;
+    uint32_t count = 0;
+    bool suppressPoolCheck = false;
+
+    uint32_t procIdx = 0;
+    uint32_t lruTick = 0;
+
+    static constexpr uint32_t POOL_MAX_PENDING = 16;
+    uint32_t pendingSites[POOL_MAX_PENDING];
+    uint32_t pendingValues[POOL_MAX_PENDING];
+    uint32_t pendingCount = 0;
+
+    void linkIntoChain(Label &label, uint32_t site);
+    void parkPoolSite(uint32_t dstReg, uint32_t value);
+    void patchPoolSite(uint32_t siteOffset, uint32_t word);
+    void flushPoolImpl(bool endOfProcedure);
+    bool growForAttached();
+
 public:
     // Detached: a fixed caller-supplied buffer, no arena, no Runtime.
     // Every host unit test and QEMU pre-measurement call uses this.
@@ -71,17 +92,47 @@ public:
     // abiEmitCall) — those still guard pendingSites/pendingValues from
     // overflowing; a caller wrapping a sequence in this scope must instead
     // reserve whatever room that sequence needs *before* entering it.
+private:
+    // The raw suppression, private so that reserve-then-suppress cannot be
+    // written the wrong way round. AtomicBlock below is the public form;
+    // flushPoolImpl uses this one directly because it IS the flush.
     class AtomicScope
     {
+        Assembler &a;
+        bool prev;
+
     public:
         explicit AtomicScope(Assembler &a) : a(a), prev(a.suppressPoolCheck) { a.suppressPoolCheck = true; }
         ~AtomicScope() { a.suppressPoolCheck = prev; }
         AtomicScope(const AtomicScope &) = delete;
         AtomicScope &operator=(const AtomicScope &) = delete;
-    private:
-        Assembler &a;
-        bool prev;
     };
+
+public:
+    // Reserve, THEN suppress — in that order, which is the whole reason
+    // this is a type. Suppressing first and reserving inside would let the
+    // very flush being guarded against land in the middle of the sequence.
+    // That ordering rule used to be prose in the comment above, with every
+    // caller honouring it by hand; constructing one of these is now the
+    // only way to obtain the suppression at all.
+    //
+    // poolEntries is how many NEW literal-pool entries the guarded sequence
+    // will park; extraBytes is any raw non-instruction payload it emits (a
+    // jump table's own slots). Both are what the suppressed check would
+    // otherwise have accounted for as it went.
+    class AtomicBlock
+    {
+        AtomicScope scope;
+
+    public:
+        AtomicBlock(Assembler &a, uint32_t poolEntries, uint32_t extraBytes = 0)
+            : scope((a.ensurePoolRoom(poolEntries, extraBytes), a)) { }
+
+        AtomicBlock(const AtomicBlock &) = delete;
+        AtomicBlock &operator=(const AtomicBlock &) = delete;
+    };
+
+    inline const Runtime &r() { return *this->runtime; }
 
     // ── raw buffer ──────────────────────────────────────────────────────
     uint32_t pc() const { return count * 2; }
@@ -179,32 +230,6 @@ public:
     // put the pending set at risk of overrunning POOL_MAX_PENDING or
     // LITERAL_POOL_MAX_REACH.
     void ensurePoolRoom(uint32_t poolEntries, uint32_t extraBytes = 0);
-
-private:
-    uint16_t *buf;
-    uint32_t capacity;
-    uint32_t count = 0;
-    bool suppressPoolCheck = false;
-
-    Runtime *runtime = nullptr; // null: detached
-    uint32_t procIdx = 0;
-    uint32_t lruTick = 0;
-
-    // The pool's whole deferral state — stored (site, value) pairs, not a
-    // bytecode tag: flushPoolImpl() patches each site directly, with no
-    // scan of the output buffer at all. pendingSites[0] doubles as the
-    // chunk's own output-start for the reach guard — always the oldest
-    // pending site, since sites are appended in emission order.
-    static constexpr uint32_t POOL_MAX_PENDING = 16;
-    uint32_t pendingSites[POOL_MAX_PENDING];
-    uint32_t pendingValues[POOL_MAX_PENDING];
-    uint32_t pendingCount = 0;
-
-    void linkIntoChain(Label &label, uint32_t site);
-    void parkPoolSite(uint32_t dstReg, uint32_t value);
-    void patchPoolSite(uint32_t siteOffset, uint32_t word);
-    void flushPoolImpl(bool endOfProcedure);
-    bool growForAttached();
 };
 
 } // namespace jitc

@@ -24,12 +24,7 @@
 
 extern "C" void compileProc(uint32_t idx, Runtime *runtime)
 {
-    const ProcSlot &procSlot = runtime->slot(idx);
-    jitc::Proc proc{procSlot.argCount(), (const uint8_t *)(uintptr_t)procSlot.bodyPtr, procSlot.bodyBytes()};
-    bool savesLR = procSlot.needsLRSave();
-
     register uint32_t lruTick asm("r11");
-    jitc::Assembler assembler(runtime, idx, lruTick);
 
-    jitc::translateProc(proc, idx, assembler, *runtime);
+    jitc::translateProc(idx, *runtime, lruTick);
 }

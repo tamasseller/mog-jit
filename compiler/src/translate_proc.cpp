@@ -1,4 +1,5 @@
 #include "translate_proc.h"
+#include "ext.h"
 #include "assembler.h"
 #include "window.h"
 #include "accstate.h"
@@ -22,38 +23,8 @@ namespace jitc
 using R = ArmV6M::LoReg;
 using Cond = ArmV6M::Condition;
 
-// Re-derived from real `-fstack-usage` measurements (test/qemu's build,
-// same flags as production), not a round guess: the sustained chain from
-// one checkStackFloor call succeeding to the next one running one level
-// deeper is processNonTerminators (104) + processUntilTerminator (56),
-// both simultaneously live (the outer's frame stays reserved while it
-// calls the inner, which stays reserved while it recurses back into the
-// next level's processNonTerminators) + checkStackFloor's own frame (8) at
-// that deeper call = 168. The transient calls a construct handler makes
-// before reaching that recursive call (testAccNonzero=16,
-// emitGuardedBranch=40, handleComparisonEmission=40) are all smaller and
-// have already returned by the time the deeper call happens, so none of
-// them add to this. a.fail()'s own path was previously assumed to need
-// margin too ("fail()'s own unwind path") — checked directly and it
-// doesn't: runtimeBail() (dispatch_abi.cpp) never walks back through
-// frames, it restores sp from Runtime::savedSp via inline asm and jumps
-// straight to the landing point, so there's nothing proportional to depth
-// to budget for there. 168 + a 56-byte pad for future drift = 224.
-// test/qemu/Makefile's stack-usage-check target asserts this constant
-// stays above the tracked 104+56+8 total on every build, so a future
-// change to any of those three frames can't silently invalidate this
-// number the way TRANSLATOR_ENTRY_WORST_CASE_BYTES once did.
 static constexpr uint32_t TRANSLATE_BODY_STACK_MARGIN = 224;
-
-// The real recursion isn't translateBody calling itself — it's
-// translateLoop/translateIfThen/translateIfThenElse/translateSwitch each
-// calling processUntilTerminator -> processNonTerminators -> back into any
-// of those four (translateBody is only ever the depth-0 entry, never
-// re-entered). So this needs checking at the top of all five, not just
-// translateBody, for a nested LOOP/BR_TABLE to ever re-verify live SP as it
-// recurses. r.liveStackFloor() is read fresh on every call (never cached),
-// so this is self-correcting by construction — the only thing that can go
-// stale is the margin itself (see its own derivation comment above).
+ 
 static bool checkStackFloor(Assembler &a, const Runtime &r)
 {
     register uint32_t sp asm("sp");
@@ -80,13 +51,13 @@ struct FoldResult
     }
 };
 
-static FoldResult peekStoreFold(const uint8_t *bytes, uint32_t bytesLen, uint32_t afterPc, uint32_t tos)
+static FoldResult peekStoreFold(const uint8_t *bytes, uint32_t bytesLen, uint32_t afterPc, uint32_t tos, const ExtHooks *ext)
 {
     if(afterPc >= bytesLen)
     {
         return {-1, 0};
     }
-    DecodedInstr d = decodeInstr(bytes, bytesLen, afterPc);
+    DecodedInstr d = decodeInstr(bytes, bytesLen, afterPc, ext);
     if(d.instr.op == Op::STORE && inWindow(tos, d.instr.target))
     {
         return {(int32_t)physReg(d.instr.target), d.next};
@@ -94,10 +65,6 @@ static FoldResult peekStoreFold(const uint8_t *bytes, uint32_t bytesLen, uint32_
     return {-1, 0};
 }
 
-// spillOffset() grows with tos (bounded only by MAX_BODY_BYTES, not by
-// Uoff<2,8>'s 1020-byte encodable ceiling) — gate it here rather than
-// letting fmtImm8's unmasked OR corrupt the target instruction's register
-// field.
 static ArmV6M::Uoff<2, 8> spillImm(Assembler &a, uint32_t byteOffset)
 {
     if(!ArmV6M::Uoff<2, 8>::isInRange(byteOffset))
@@ -109,10 +76,10 @@ static ArmV6M::Uoff<2, 8> spillImm(Assembler &a, uint32_t byteOffset)
 
 struct Ctx
 {
+    Assembler a;
     Window window;
     const uint8_t *bytes;
     uint32_t bytesLen;
-    uint32_t pc = 0;
     uint32_t procIdx;
     bool savesLR;
     uint32_t initialSpilledCount;
@@ -121,630 +88,590 @@ struct Ctx
     Cond pendingComparisonCondition = Cond::EQ;
 
     AccState accState;
+
+    Ctx(Runtime& r, uint32_t procIdx, uint32_t lruTick): a(&r, procIdx, lruTick)
+    {
+        const ProcSlot &procSlot = r.slot(procIdx);
+
+        this->window = Window{procSlot.argCount(), procSlot.needsLRSave()};
+        this->bytes = (const uint8_t *)(uintptr_t)procSlot.bodyPtr;
+        this->bytesLen = procSlot.bodyBytes();
+        this->savesLR = procSlot.needsLRSave();
+        this->procIdx = procIdx; 
+        this->initialSpilledCount = procSlot.argCount() > WINDOW_SIZE ? procSlot.argCount() - WINDOW_SIZE : 0;
+    }
+
+    void returnSequence();
+    ArmV6M::Condition handleComparisonEmission(const Instr &instr);
+    DecodedInstr processUntilTerminator(uint32_t pc, bool isThisLoopCondBlock);
+    uint32_t translateLoop(uint32_t pc);
+    uint32_t translateIfThen(uint32_t pc);
+    uint32_t translateIfThenElse(uint32_t pc);
+    uint32_t translateSwitch(uint32_t pc, uint32_t n);
+    void localJumpCleanup(uint32_t tos);
+    void globalJumpCleanup(uint32_t tos);
+    void handleGlobalJump(Instr term, uint32_t tos);
+    void translateBody();
 };
 
-static void returnSequence(Ctx &ctx, Assembler& a)
+void Ctx::returnSequence()
 {
-    ctx.window.discardWindow(a);
-    abiEmitReturn(a, ctx.savesLR, ctx.initialSpilledCount);
+    this->window.discard(a);
+    abiEmitReturn(a, this->savesLR, this->initialSpilledCount);
 }
 
-static ArmV6M::Condition handleComparisonEmission(Ctx &ctx, Assembler& a, const Instr &instr)
+ArmV6M::Condition Ctx::handleComparisonEmission(const Instr &instr)
 {
     Combo combo = instr.combo;
 
     if(combo == Combo::REG_ACC || combo == Combo::REG_REG)
     {
-        if(inWindow(ctx.window.tos, instr.target))
+        if(inWindow(this->window.tos, instr.target))
         {
-            return emitComparison(a, ctx.accState, instr.op, Shape::ofReg(physReg(instr.target)));
+            return emitComparison(a, this->accState, instr.op, Shape::ofReg(physReg(instr.target)));
         }
         else
         {
-            a.emit(ArmV6M::ldrSp(R(SCRATCH_REG), spillImm(a, ctx.window.spillOffset(instr.target))));
-            return emitComparison(a, ctx.accState, instr.op, Shape::ofReg(SCRATCH_REG));
+            a.emit(ArmV6M::ldrSp(R(SCRATCH_REG), spillImm(a, this->window.spillOffset(instr.target))));
+            return emitComparison(a, this->accState, instr.op, Shape::ofReg(SCRATCH_REG));
         }
     }
     else if(combo == Combo::IMM_ACC)
     {
-        return emitComparison(a, ctx.accState, instr.op, Shape::ofImm(instr.imm));
+        return emitComparison(a, this->accState, instr.op, Shape::ofImm(instr.imm));
     }
     else 
     {
-        const auto ret = emitComparison(a, ctx.accState, instr.op, Shape::ofReg(ctx.window.topReg()));
+        const auto ret = emitComparison(a, this->accState, instr.op, Shape::ofReg(this->window.topReg()));
         
         if(combo == Combo::POP_ACC)
         {
-            ctx.window.finishPop(a);
+            this->window.finishPop(a);
         }
 
         return ret;
     }
 }
 
-static uint32_t processNonControl(Ctx &ctx, const DecodedInstr &decoded, Assembler& a, const Runtime& r)
+DecodedInstr Ctx::processUntilTerminator(uint32_t pc, bool isThisLoopCondBlock)
 {
-    const Instr &instr = decoded.instr;
-    uint32_t afterInstr = decoded.next;
-
-    switch(instr.op)
+    while(pc < this->bytesLen)
     {
-        case Op::CALL:
-        {
-            // instr.calleeIndex is a wire-decoded value validateProgram is
-            // supposed to have already bounds-checked upstream — but
-            // nothing downstream of the wire bytes re-derives that
-            // guarantee, and r.slot() itself applies no bound of its own
-            // (runtime_internal.h), so an out-of-range index would
-            // otherwise read a garbage argCount here and bake a garbage
-            // dispatch-table offset into abiEmitCall below. Cheap enough
-            // to check directly rather than trust the upstream contract.
-            if(instr.calleeIndex >= r.procCount)
-            {
-                a.fail(RESOURCE_PROGRAM_CALLEE_RANGE);
-                return afterInstr;
-            }
-
-            uint32_t calleeArgCount = r.slot(instr.calleeIndex).argCount();
-            uint32_t stackArgs = calleeArgCount > 0 ? calleeArgCount - 1 : 0;
-
-            // isa-core.md §4.6: the callee's last argument arrives in
-            // acc, so it has to really be materialized there -- but only
-            // if the callee takes an argument at all. With none, §8.7
-            // doesn't require acc live at the call site (it lists "a CALL
-            // whose callee takes at least one argument" among the reads,
-            // not every CALL), so a legitimately poisoned acc reaches
-            // here and flushing it would assert. Nothing is lost by
-            // skipping it either way: CALL clobbers acc regardless, and
-            // the producer() below re-establishes it from the return
-            // value.
-            if(calleeArgCount > 0)
-            {
-                ctx.accState.flush(a, ACC_REG);
-            }
-            else
-            {
-                ctx.accState.poison();
-            }
-
-            spillForCall(a, ctx.window, stackArgs);
-            fillCalleeArgs(a, stackArgs);
-            abiEmitCall(a, ctx.procIdx, instr.calleeIndex);
-            reloadAfterCall(a, ctx.window, ctx.window.tos - stackArgs);
-
-            // The return value is now in acc — a fresh producer, same as
-            // any other, so a following STORE still folds.
-            ctx.accState.producer(Shape::ofReg(ACC_REG));
-            return afterInstr;
-        }
-        case Op::PUSH:
-            ctx.window.pushValue(a, ctx.accState);
-            return afterInstr;
-        case Op::POP:
-            a.emit(ArmV6M::mov(ArmV6M::AnyReg(ACC_REG), ArmV6M::AnyReg(ctx.window.topReg()))); // materialize now — a bare POP can't safely stay PENDING
-            ctx.accState.setClean(ACC_REG);
-            ctx.window.finishPop(a); // must run after the read above — same register
-            return afterInstr;
-        case Op::NEG:
-        case Op::NOT:
-        {
-            // negs/mvns have an independent source register field — read
-            // the operand from wherever it already lives instead of
-            // forcing a flush into ACC_REG first (unlike CLZ/REVBITS
-            // below, which have no such freedom). A still-pending
-            // immediate materializes straight into dest rather than a
-            // scratch register — negs/mvns allow dest==src, so this
-            // stays a single instruction instead of a materialize-then-
-            // negate-elsewhere pair.
-            FoldResult fold = peekStoreFold(ctx.bytes, ctx.bytesLen, afterInstr, ctx.window.tos);
-            uint32_t dest = fold.redirectReg(ACC_REG);
-            uint32_t src = ctx.accState.peek().peek(a, dest);
-
-            emitUnary(a, instr.op, dest, src);
-            ctx.accState.setClean(dest);
-            return fold.redirectAfterNext(afterInstr);
-        }
-        case Op::CLZ:
-        case Op::REVBITS:
-        {
-            // Both dispatch through a fixed helper-vector subroutine that
-            // hardcodes ACC_REG as both argument and return register —
-            // no fold axis of their own, always flush first.
-            ctx.accState.flush(a, ACC_REG);
-            FoldResult fold = peekStoreFold(ctx.bytes, ctx.bytesLen, afterInstr, ctx.window.tos);
-            uint32_t dest = fold.redirectReg(ACC_REG);
-
-            emitUnary(a, instr.op, dest, ACC_REG);
-            ctx.accState.setClean(dest);
-            return fold.redirectAfterNext(afterInstr);
-        }
-        case Op::LOAD:
-        {
-            if(!inWindow(ctx.window.tos, instr.target))
-            {
-                a.emit(ArmV6M::ldrSp(R(ACC_REG), spillImm(a, ctx.window.spillOffset(instr.target))));
-                ctx.accState.setClean(ACC_REG);
-                return afterInstr;
-            }
-
-            FoldResult fold = peekStoreFold(ctx.bytes, ctx.bytesLen, afterInstr, ctx.window.tos);
-            
-            ctx.accState.producer(Shape::ofReg(physReg(instr.target)));
-
-            if(fold.reg >= 0)
-            {
-                ctx.accState.flush(a, (uint32_t)fold.reg);
-                return fold.afterNext;
-            }
-
-            return afterInstr;
-        }
-
-        case Op::STORE:
-            if(!inWindow(ctx.window.tos, instr.target))
-            {
-                // strSp's own register field is independent of ACC_REG,
-                // and nothing downstream reads acc after this store — read
-                // the value from wherever it already lives instead of
-                // forcing a flush into ACC_REG first.
-                uint32_t r = ctx.accState.peek().peek(a, SCRATCH_REG);
-                a.emit(ArmV6M::strSp(R(r), spillImm(a, ctx.window.spillOffset(instr.target))));
-                return afterInstr;
-            }
-            else
-            {
-                ctx.accState.flush(a, physReg(instr.target));
-                return afterInstr;
-            }
-
-        case Op::CONST:
-        {
-            if(fitsImm8(instr.imm))
-            {
-                ctx.accState.producer(Shape::ofImm(instr.imm)); // stay pending — a later consumer may fold it
-                return afterInstr;
-            }
-            else
-            {
-                FoldResult fold = peekStoreFold(ctx.bytes, ctx.bytesLen, afterInstr, ctx.window.tos);
-                uint32_t target = fold.redirectReg(ACC_REG);
-                a.materializeImm32(target, (uint32_t)instr.imm);
-                ctx.accState.setClean(target);
-                return fold.redirectAfterNext(afterInstr);
-            }
-        }
-        case Op::ADD:
-        case Op::SUB:
-        case Op::RSUB:
-        case Op::MUL:
-        case Op::AND:
-        case Op::OR:
-        case Op::XOR:
-        case Op::SHL:
-        case Op::SHR:
-        case Op::ASR:
-        {
-            Shape operandStorage{};
-            switch (instr.combo)
-            {
-                case Combo::REG_ACC:
-                case Combo::REG_REG:
-                    if(inWindow(ctx.window.tos, instr.target))
-                    {
-                        operandStorage = Shape::ofReg(physReg(instr.target));
-                    }
-                    else
-                    {
-                        a.emit(ArmV6M::ldrSp(R(SCRATCH_REG), spillImm(a, ctx.window.spillOffset(instr.target))));
-                        operandStorage = Shape::ofReg(SCRATCH_REG);
-                    }
-                    break;
-                case Combo::IMM_ACC:
-                    operandStorage = Shape::ofImm(instr.imm);
-                    break;
-                case Combo::POP_ACC:
-                case Combo::PEEK_PEEK:
-                    operandStorage = Shape::ofReg(ctx.window.topReg());
-                    break;
-                default: assert(false);
-            };
-
-            if(instr.combo == Combo::REG_REG)
-            {
-                if(inWindow(ctx.window.tos, instr.target))
-                {
-                    emitBinaryOp(a, instr.op, instr.combo, ctx.accState.peek(), operandStorage, physReg(instr.target));
-                }
-                else
-                {
-                    emitBinaryOp(a, instr.op, instr.combo, ctx.accState.peek(), operandStorage, SCRATCH_REG);
-                    a.emit(ArmV6M::strSp(R(SCRATCH_REG), spillImm(a, ctx.window.spillOffset(instr.target))));
-                }
-
-                ctx.accState.poison();
-                return afterInstr;
-            }
-            else if(instr.combo == Combo::PEEK_PEEK)
-            {
-                emitBinaryOp(a, instr.op, instr.combo, ctx.accState.peek(), operandStorage, ctx.window.topReg());
-                ctx.accState.poison();
-                return afterInstr;
-            }
-            else
-            {
-                FoldResult fold = peekStoreFold(ctx.bytes, ctx.bytesLen, afterInstr, ctx.window.tos);
-
-                const auto dest = fold.redirectReg(ACC_REG);
-                emitBinaryOp(a, instr.op, instr.combo, ctx.accState.peek(), operandStorage, dest);
-                ctx.accState.setClean(dest);
-
-                if(instr.combo == Combo::POP_ACC)
-                {
-                    ctx.window.finishPop(a);
-                }
-
-                return fold.redirectAfterNext(afterInstr);
-            }
-        }
-        case Op::EQ:
-        case Op::NE:
-        case Op::LT_S:
-        case Op::LE_S:
-        case Op::GT_S:
-        case Op::GE_S:
-        case Op::LT_U:
-        case Op::LE_U:
-        case Op::GT_U:
-        case Op::GE_U:
-        {
-            FoldResult fold = peekStoreFold(ctx.bytes, ctx.bytesLen, afterInstr, ctx.window.tos);
-            uint32_t dest = fold.redirectReg(ACC_REG);
-
-            Cond trueCondition = handleComparisonEmission(ctx, a, instr);
-
-            Label falseLabel;
-            a.branchTo(falseLabel, ArmV6M::inverse(trueCondition));
-            a.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(1)));
-            Label endLabel;
-            a.branchTo(endLabel);
-            a.bind(falseLabel);
-            a.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(0)));
-            a.bind(endLabel);
-
-            ctx.accState.setClean(dest);
-            return fold.redirectAfterNext(afterInstr);
-        }
-        default: assert(false); return -1u;
-    }
-}
-
-static uint32_t processNonControlAndConditionalFolding(Ctx &ctx, DecodedInstr &decoded, Assembler& a, const Runtime& r, bool isThisLoopCondBlock)
-{
-    const Instr &instr = decoded.instr;
-    uint32_t afterInstr = decoded.next;
-
-    if(isComparisonOp(decoded.instr.op))
-    {
-        bool hasLookahead = afterInstr < ctx.bytesLen;
-        DecodedInstr lookahead = hasLookahead ? decodeInstr(ctx.bytes, ctx.bytesLen, afterInstr) : DecodedInstr{};
-        // Must match processNonTerminators's own BR_TABLE dispatch exactly
-        // (translateIfThen/translateIfThenElse are the only two that
-        // consume a pending fused comparison) — N == 0 or negative (an
-        // overlong LEB128) falls through to translateSwitch instead, which
-        // asserts none is pending; disagreeing here would leak the fusion
-        // into whatever construct follows instead of tripping that assert.
-        bool fusesIntoBrTable = hasLookahead && lookahead.instr.op == Op::BR_TABLE
-            && (lookahead.instr.imm == 1 || lookahead.instr.imm == 2);
-        bool fusesIntoLoopExit = isThisLoopCondBlock && hasLookahead && lookahead.instr.op == Op::BLOCK_END;
-
-        if(fusesIntoBrTable || fusesIntoLoopExit)
-        {
-            ctx.pendingComparisonCondition = handleComparisonEmission(ctx, a, instr);
-            ctx.hasPendingComparisonCondition = true;
-            // isa-core.md §8.7: this comparison feeds a split (a fused
-            // guarded branch) -- nothing downstream may read accState
-            // until an arm/edge re-establishes it, whether via the
-            // entering-direction seeds below or a merge point's own
-            // poison(). Safe unconditionally: nothing between here and
-            // whichever construct consumes hasPendingComparisonCondition
-            // ever calls peek()/flush() on accState directly.
-            ctx.accState.poison();
-            return afterInstr;
-        }
-    }
-
-    return processNonControl(ctx, decoded, a, r);
-}
-
-static void translateLoop(Ctx &ctx, Assembler& a, const Runtime& r);
-static void translateIfThen(Ctx &ctx, Assembler& a, const Runtime& r);
-static void translateIfThenElse(Ctx &ctx, Assembler& a, const Runtime& r);
-static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n);
-
-static void processNonTerminators(Ctx &ctx, DecodedInstr &decoded, Assembler& a, const Runtime& r, bool isThisLoopCondBlock)
-{
-    const Instr &instr = decoded.instr;
-    uint32_t afterInstr = decoded.next;
-
-    switch(instr.op)
-    {
-        case Op::LOOP:
-        {
-            ctx.pc = afterInstr;
-            translateLoop(ctx, a, r);
-            return;
-        }
-
-        case Op::BR_TABLE:
-        {
-            ctx.pc = afterInstr;
-
-            switch(instr.imm)
-            {
-                case 1: translateIfThen(ctx, a, r); return;
-                case 2: translateIfThenElse(ctx, a, r); return;
-                default: translateSwitch(ctx, a, r, instr.imm); return;
-            }
-        }
-
-        default:
-            ctx.pc = processNonControlAndConditionalFolding(ctx, decoded, a, r, isThisLoopCondBlock);
-            return;
-    }
-}
-
-static Instr processUntilTerminator(Ctx &ctx, Assembler& a, const Runtime& r, bool isThisLoopCondBlock)
-{
-    while(ctx.pc < ctx.bytesLen)
-    {
-        DecodedInstr decoded = decodeInstr(ctx.bytes, ctx.bytesLen, ctx.pc);
+        DecodedInstr decoded = decodeInstr(this->bytes, this->bytesLen, pc, this->a.r().extension());
         const Instr &instr = decoded.instr;
         uint32_t afterInstr = decoded.next;
 
-        if(isTerminator(instr.op))
+        switch(instr.op)
         {
-            // The one legitimate case a pending fusion may still be set
-            // here: fusesIntoLoopExit deliberately leaves it set right up
-            // to the loop-cond block's own closing BLOCK_END, for
-            // translateLoop's own caller to consume immediately after this
-            // returns. Anything else (RETURN/TRAP, or a BLOCK_END outside
-            // a loop-cond block) reaching here with a pending fusion means
-            // the comparison it came from fused into nothing real.
-            assert(!ctx.hasPendingComparisonCondition ||
-                (isThisLoopCondBlock && instr.op == Op::BLOCK_END)); // GCOV_EXCL_LINE — comparison fused into nothing; malformed program
+            case Op::EXT:
+            {
+                const ExtHooks *hooks = this->a.r().extension();
+                if(hooks == nullptr || hooks->emit == nullptr)
+                {
+                    a.fail(RESOURCE_PROGRAM_EXT_UNKNOWN);
+                    pc = afterInstr; // per fail()'s own contract
+                    break;
+                }
 
-            ctx.pc = afterInstr;
-            return instr;
+                const uint32_t decl = instr.extDecl;
+                const uint32_t pops = (uint32_t)(-extDeclTosDelta(decl));
+                const bool readsAcc = extDeclHas(decl, EXT_FLAG_READS_ACC);
+                const bool writesAcc = extDeclHas(decl, EXT_FLAG_WRITES_ACC);
+
+                ExtSite site{};
+                site.bytes = this->bytes;
+                site.bytesLen = this->bytesLen;
+                site.pc = pc;
+                site.decl = decl;
+                site.out = (uint8_t)ACC_REG;
+                site.scratch = (1u << ENTRY_JUMP_REG) | (1u << 12);
+
+                if(readsAcc)
+                {
+                    this->accState.flush(a, ACC_REG);
+                    site.in[site.inCount++] = (uint8_t)ACC_REG;
+                }
+                else if(pops > 0 || writesAcc)
+                {
+                    // Staging clobbers r1/r2, and a deferred acc must not be
+                    // left depending on either. flushLive, not flush: a
+                    // poisoned acc is legitimate here and stays poisoned.
+                    this->accState.flushLive(a, ACC_REG);
+                }
+
+                // Top first, into r1 then r2 — never r0, which is acc's, and
+                // never r3, which is the only register a helper reach can use.
+                static const uint8_t STACK_STAGE[EXT_MAX_STACK_INPUTS] = {ENTRY_IDX_REG, SCRATCH_REG};
+                for(uint32_t i = 0; i < pops; i++)
+                {
+                    uint32_t src = this->window.topReg();
+                    uint8_t dst = STACK_STAGE[i];
+                    if(src != dst)
+                    {
+                        a.emit(ArmV6M::mov(ArmV6M::AnyReg(dst), ArmV6M::AnyReg(src)));
+                    }
+                    site.in[site.inCount++] = dst;
+                    this->window.finishPop(a);
+                }
+
+                const uint32_t before = a.pc();
+                hooks->emit(a, site);
+
+                if(a.pc() - before > extDeclHalfwords(decl) * 2)
+                {
+                    a.fail(RESOURCE_PROGRAM_EXT_UNSUPPORTED);
+                    pc = afterInstr;
+                    break;
+                }
+
+                if(writesAcc)
+                {
+                    this->accState.setClean(ACC_REG);
+                }
+
+                pc = afterInstr;
+                break;
+            }
+            case Op::CALL:
+            {
+                if(instr.calleeIndex >= this->a.r().procCount)
+                {
+                    a.fail(RESOURCE_PROGRAM_CALLEE_RANGE);
+                    pc = afterInstr;
+                    break;
+                }
+
+                uint32_t calleeArgCount = this->a.r().slot(instr.calleeIndex).argCount();
+                uint32_t stackArgs = calleeArgCount > 0 ? calleeArgCount - 1 : 0;
+
+                if(calleeArgCount > 0)
+                {
+                    this->accState.flush(a, ACC_REG);
+                }
+                else
+                {
+                    this->accState.poison();
+                }
+
+                this->window.spillForCall(a, stackArgs);
+                Window::fillCalleeArgs(a, stackArgs);
+                abiEmitCall(a, this->procIdx, instr.calleeIndex);
+                this->window.reloadAfterCall(a, this->window.tos - stackArgs);
+
+                this->accState.producer(Shape::ofReg(ACC_REG));
+                pc = afterInstr;
+                break;
+            }
+
+            case Op::PUSH:
+                this->window.pushValue(a, this->accState);
+                pc = afterInstr;
+                break;
+
+            case Op::POP:
+                a.emit(ArmV6M::mov(ArmV6M::AnyReg(ACC_REG), ArmV6M::AnyReg(this->window.topReg()))); // materialize now — a bare POP can't safely stay PENDING
+                this->accState.setClean(ACC_REG);
+                this->window.finishPop(a); // must run after the read above — same register
+
+                pc = afterInstr;
+                break;
+
+            case Op::NEG:
+            case Op::NOT:
+            {
+                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.r().extension());
+                uint32_t dest = fold.redirectReg(ACC_REG);
+                uint32_t src = this->accState.peek().peek(a, dest);
+
+                emitUnary(a, instr.op, dest, src);
+                this->accState.setClean(dest);
+                
+                pc = fold.redirectAfterNext(afterInstr);
+                break;
+            }
+            case Op::CLZ:
+            case Op::REVBITS:
+            {
+                this->accState.flush(a, ACC_REG);
+                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.r().extension());
+                uint32_t dest = fold.redirectReg(ACC_REG);
+
+                emitUnary(a, instr.op, dest, ACC_REG);
+                this->accState.setClean(dest);
+                
+                pc = fold.redirectAfterNext(afterInstr);
+                break;
+            }
+            case Op::LOAD:
+            {
+                if(!inWindow(this->window.tos, instr.target))
+                {
+                    a.emit(ArmV6M::ldrSp(R(ACC_REG), spillImm(a, this->window.spillOffset(instr.target))));
+                    this->accState.setClean(ACC_REG);
+
+                    pc = afterInstr;
+                    break;
+                }
+
+                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.r().extension());
+                
+                this->accState.producer(Shape::ofReg(physReg(instr.target)));
+
+                if(fold.reg >= 0)
+                {
+                    this->accState.flush(a, (uint32_t)fold.reg);
+
+                    pc = fold.afterNext;
+                    break;
+                }
+
+                pc = afterInstr;
+                break;
+            }
+
+            case Op::STORE:
+                if(!inWindow(this->window.tos, instr.target))
+                {
+                    uint32_t r = this->accState.peek().peek(a, SCRATCH_REG);
+                    a.emit(ArmV6M::strSp(R(r), spillImm(a, this->window.spillOffset(instr.target))));
+
+                    pc = afterInstr;
+                    break;
+                }
+                else
+                {
+                    this->accState.flush(a, physReg(instr.target));
+                    
+                    pc = afterInstr;
+                    break;
+                }
+
+            case Op::CONST:
+            {
+                if(fitsImm8(instr.imm))
+                {
+                    this->accState.producer(Shape::ofImm(instr.imm)); // stay pending — a later consumer may fold it
+
+                    pc = afterInstr;
+                    break;
+                }
+                else
+                {
+                    FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.r().extension());
+                    uint32_t target = fold.redirectReg(ACC_REG);
+                    a.materializeImm32(target, (uint32_t)instr.imm);
+                    this->accState.setClean(target);
+
+                    pc = fold.redirectAfterNext(afterInstr);
+                    break;
+                }
+            }
+            case Op::ADD:
+            case Op::SUB:
+            case Op::RSUB:
+            case Op::MUL:
+            case Op::AND:
+            case Op::OR:
+            case Op::XOR:
+            case Op::SHL:
+            case Op::SHR:
+            case Op::ASR:
+            {
+                Shape operandStorage{};
+                switch (instr.combo)
+                {
+                    case Combo::REG_ACC:
+                    case Combo::REG_REG:
+                        if(inWindow(this->window.tos, instr.target))
+                        {
+                            operandStorage = Shape::ofReg(physReg(instr.target));
+                        }
+                        else
+                        {
+                            a.emit(ArmV6M::ldrSp(R(SCRATCH_REG), spillImm(a, this->window.spillOffset(instr.target))));
+                            operandStorage = Shape::ofReg(SCRATCH_REG);
+                        }
+                        break;
+                    case Combo::IMM_ACC:
+                        operandStorage = Shape::ofImm(instr.imm);
+                        break;
+                    case Combo::POP_ACC:
+                    case Combo::PEEK_PEEK:
+                        operandStorage = Shape::ofReg(this->window.topReg());
+                        break;
+                    default: assert(false);
+                };
+
+                if(instr.combo == Combo::REG_REG)
+                {
+                    if(inWindow(this->window.tos, instr.target))
+                    {
+                        emitBinaryOp(a, instr.op, instr.combo, this->accState.peek(), operandStorage, physReg(instr.target));
+                    }
+                    else
+                    {
+                        emitBinaryOp(a, instr.op, instr.combo, this->accState.peek(), operandStorage, SCRATCH_REG);
+                        a.emit(ArmV6M::strSp(R(SCRATCH_REG), spillImm(a, this->window.spillOffset(instr.target))));
+                    }
+
+                    this->accState.poison();
+                    pc = afterInstr;
+                    break;
+                }
+                else if(instr.combo == Combo::PEEK_PEEK)
+                {
+                    emitBinaryOp(a, instr.op, instr.combo, this->accState.peek(), operandStorage, this->window.topReg());
+                    this->accState.poison();
+                    pc = afterInstr;
+                    break;
+                }
+                else
+                {
+                    FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.r().extension());
+
+                    const auto dest = fold.redirectReg(ACC_REG);
+                    emitBinaryOp(a, instr.op, instr.combo, this->accState.peek(), operandStorage, dest);
+                    this->accState.setClean(dest);
+
+                    if(instr.combo == Combo::POP_ACC)
+                    {
+                        this->window.finishPop(a);
+                    }
+
+                    pc = fold.redirectAfterNext(afterInstr);
+                    break;
+                }
+            }
+            case Op::EQ:
+            case Op::NE:
+            case Op::LT_S:
+            case Op::LE_S:
+            case Op::GT_S:
+            case Op::GE_S:
+            case Op::LT_U:
+            case Op::LE_U:
+            case Op::GT_U:
+            case Op::GE_U:
+            {
+                bool hasLookahead = afterInstr < this->bytesLen;
+                DecodedInstr lookahead = hasLookahead ? decodeInstr(this->bytes, this->bytesLen, afterInstr, this->a.r().extension()) : DecodedInstr{};
+                
+                bool fusesIntoBrTable = 
+                    hasLookahead && lookahead.instr.op == Op::BR_TABLE && 
+                    (lookahead.instr.imm == 1 || lookahead.instr.imm == 2);
+
+                bool fusesIntoLoopExit = 
+                    isThisLoopCondBlock && 
+                    hasLookahead && 
+                    lookahead.instr.op == Op::BLOCK_END;
+
+                Cond trueCondition = this->handleComparisonEmission(instr);
+
+                if(fusesIntoBrTable || fusesIntoLoopExit)
+                {
+                    this->pendingComparisonCondition = trueCondition;
+                    this->hasPendingComparisonCondition = true;
+                    this->accState.poison();
+                    
+                    pc = afterInstr;
+                    break;
+                }
+                else
+                {
+                    FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.r().extension());
+                    uint32_t dest = fold.redirectReg(ACC_REG);
+
+                    Label falseLabel;
+                    a.branchTo(falseLabel, ArmV6M::inverse(trueCondition));
+                    a.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(1)));
+                    Label endLabel;
+                    a.branchTo(endLabel);
+                    a.bind(falseLabel);
+                    a.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(0)));
+                    a.bind(endLabel);
+
+                    this->accState.setClean(dest);
+
+                    pc = fold.redirectAfterNext(afterInstr);
+                    break;
+                }
+            }
+            
+            case Op::LOOP: pc = this->translateLoop(afterInstr); break;
+
+            case Op::BR_TABLE:
+                switch(instr.imm)
+                {
+                    case 1: pc = this->translateIfThen(afterInstr); break;
+                    case 2: pc = this->translateIfThenElse(afterInstr); break;
+                    default: pc = this->translateSwitch(afterInstr, instr.imm);break;
+                }
+                break;
+
+            default:
+                assert(isTerminator(instr));
+                assert(!this->hasPendingComparisonCondition || (isThisLoopCondBlock && instr.op == Op::BLOCK_END)); // GCOV_EXCL_LINE — comparison fused into nothing; malformed program
+                return {.instr = instr, .next = afterInstr};
         }
-
-        processNonTerminators(ctx, decoded, a, r, isThisLoopCondBlock);
     }
 
-    // Ran off bytesLen without finding this block's own close — same
-    // malformed/truncated-bytecode case decode_instr.h's own asserts
-    // already leave out of scope (a translator-input bug, never a
-    // legitimate runtime condition, so this doesn't get its own real
-    // check either). assert(false) compiles out under -DNDEBUG same as
-    // those; the for(;;) beneath it is unconditional either way, purely
-    // to satisfy this non-void function's return requirement — reaching
-    // it in a release build hangs rather than returning garbage.
     assert(false); // GCOV_EXCL_LINE
     for(;;);
 }
 
-static void localJumpCleanup(Ctx &ctx, Assembler& a, uint32_t tos)
+void Ctx::localJumpCleanup(uint32_t tos)
 {
-    ctx.accState.flushLive(a, ACC_REG);
-    restoreWindow(a, ctx.window, tos);
+    this->accState.flushLive(a, ACC_REG);
+    this->window.restore(a, tos);
 }
 
-static void globalJumpCleanup(Ctx &ctx, Assembler& a, uint32_t tos)
+void Ctx::globalJumpCleanup(uint32_t tos)
 {
-    // Every caller either immediately re-poisons at its own construct's
-    // next case/merge point, or (translateBody's own top-level RETURN/TRAP)
-    // is the last thing translation does at all -- this write is provably
-    // never read, but poison() rather than setClean(ACC_REG) keeps that
-    // true by construction instead of by accident, matching isa-core.md
-    // §8.7 (a terminator's own edge doesn't survive to feed anything else).
-    ctx.accState.poison();
-    ctx.window.tos = tos;
+    this->accState.poison();
+    this->window.tos = tos;
 }
 
-static void handleGlobalJump(Ctx &ctx, Assembler& a, Instr term, uint32_t tos)
+void Ctx::handleGlobalJump(Instr term, uint32_t tos)
 {
     if(term.op == Op::RETURN)
     {
-        ctx.accState.flush(a, ACC_REG);
-        returnSequence(ctx, a);
+        this->accState.flush(a, ACC_REG);
+        this->returnSequence();
     }
     else
     {
         assert(term.op == Op::TRAP);
 
-        // A TRAP is not a return, and this is the whole difference: no
-        // window discard, no call-record retrieval, no reclaim of
-        // out-of-window arguments. trapHelper restores the excursion's own
-        // saved sp, which subsumes every one of those in one instruction —
-        // and has to, since a nested TRAP unwinds every frame between here
-        // and the entry procedure, not just this one (isa-core.md §4.5,
-        // §9). Emitting the ordinary return sequence instead is what made
-        // a nested TRAP hand its code to its caller as a return value;
-        // found by fuzz/qemu_exec.
-        //
-        // The code goes to ACC_REG plainly, with no sentinel bit: the
-        // landing tag (runtime_host.h's LANDING_TRAP) is what tells the
-        // host this was a trap, so the code needs no room stolen out of
-        // its own value space.
         a.materializeImm32(ACC_REG, (uint32_t)term.imm);
         abiEmitTrap(a);
     }
 
-    globalJumpCleanup(ctx, a, tos);
+    this->globalJumpCleanup(tos);
 }
 
-static void translateIfThen(Ctx &ctx, Assembler& a, const Runtime& r)
+uint32_t Ctx::translateIfThen(uint32_t pc)
 {
-    if(!checkStackFloor(a, r))
+    if(!checkStackFloor(a, this->a.r()))
     {
-        return;
+        return -1;
     }
 
-    const auto entryTos = ctx.window.tos;
-    const bool fused = ctx.hasPendingComparisonCondition;
-    ctx.hasPendingComparisonCondition = false;
+    const auto entryTos = this->window.tos;
+    const bool fused = this->hasPendingComparisonCondition;
+    this->hasPendingComparisonCondition = false;
 
     Label skip;
 
-    const auto cond = fused ? ctx.pendingComparisonCondition : testAccNonzero(a, ctx.accState);
+    const auto cond = fused ? this->pendingComparisonCondition : testAccNonzero(a, this->accState);
 
-    emitGuardedBranch(a, skip, cond, ctx.bytes, ctx.bytesLen, ctx.pc, 1);
+    emitGuardedBranch(a, skip, cond, this->bytes, this->bytesLen, pc, 1);
 
     if(fused)
     {
-        ctx.accState.producer(Shape::ofImm(0));
+        this->accState.producer(Shape::ofImm(0));
     }
 
-    const auto term = processUntilTerminator(ctx, a, r, false);
-    if(term.op == Op::BLOCK_END)
+    const auto term = this->processUntilTerminator(pc, false);
+    if(term.instr.op == Op::BLOCK_END)
     {
-        localJumpCleanup(ctx, a, entryTos);
+        this->localJumpCleanup(entryTos);
     }
     else
     {
-        handleGlobalJump(ctx, a, term, entryTos);
+        this->handleGlobalJump(term.instr, entryTos);
     }
 
-    // isa-core.md §8.7: acc is never live after a BR_TABLE, so there is
-    // nothing to reconcile here between the body's edge and the skip edge.
-    // The skip edge is §4.5's implicit default, and that edge holds no
-    // instructions at all -- it is pure fall-through from the dispatch --
-    // so it could not be handed a value even if the merge wanted one.
-    // That is the whole reason the rule is unconditional rather than an
-    // AND across the cases.
-    ctx.accState.poison();
+    this->accState.poison();
 
     a.bind(skip);
+
+    return term.next;
 }
 
-static void translateIfThenElse(Ctx &ctx, Assembler& a, const Runtime& r)
+uint32_t Ctx::translateIfThenElse(uint32_t pc)
 {
-    if(!checkStackFloor(a, r))
+    if(!checkStackFloor(this->a, this->a.r()))
     {
-        return;
+        return -1;
     }
 
-    const auto entryTos = ctx.window.tos;
-    const bool fused = ctx.hasPendingComparisonCondition;
-    ctx.hasPendingComparisonCondition = false;
+    const auto entryTos = this->window.tos;
+    const bool fused = this->hasPendingComparisonCondition;
+    this->hasPendingComparisonCondition = false;
 
     Label end, otherwise;
 
     if(fused)
     {
-        // A fused comparison's own result is 0 or 1 by construction, so
-        // §7.1's "default unreachable" really does hold here: one branch
-        // on the comparison's condition splits the two cases exactly.
-        emitGuardedBranch(a, otherwise, ctx.pendingComparisonCondition, ctx.bytes, ctx.bytesLen, ctx.pc, 1);
+        emitGuardedBranch(a, otherwise, this->pendingComparisonCondition, this->bytes, this->bytesLen, pc, 1);
     }
     else
     {
-        // Unfused, the dispatch value is an arbitrary u32, and isa-core.md
-        // §4.5 is unconditional about what that means: `acc >= N` executes
-        // no case at all. For N == 2 that third outcome is real, and
-        // testAccNonzero's zero/non-zero test folded it into case[1] --
-        // `CONST 131118; BR_TABLE 2` ran the else-arm where the ISA (and
-        // the reference VM) run neither arm. §7.1's "default unreachable"
-        // describes what the DSL lowerer emits for an `if-else`, not a
-        // licence for the backend to assume it. Found by fuzz/qemu_exec.
-        //
-        // The dispatch value has to be in a register to be compared
-        // against, and ACC_REG is where flush() would have put it anyway.
-        ctx.accState.flush(a, ACC_REG);
+        this->accState.flush(a, ACC_REG);
 
         a.emit(ArmV6M::cmp(R(ACC_REG), ArmV6M::Imm<8>(1)));
-        emitGuardedBranch(a, end, Cond::HI, ctx.bytes, ctx.bytesLen, ctx.pc, 2); // acc > 1: the implicit default, past both arms
+        emitGuardedBranch(a, end, Cond::HI, this->bytes, this->bytesLen, pc, 2); // acc > 1: the implicit default, past both arms
 
-        // Re-emitted rather than reusing the flags above: emitGuardedBranch
-        // may take its long form, whose bind() can flush the literal pool
-        // in between. Nothing a flush emits writes flags today, and one CMP
-        // is a cheap way not to depend on that staying true.
         a.emit(ArmV6M::cmp(R(ACC_REG), ArmV6M::Imm<8>(1)));
-        emitGuardedBranch(a, otherwise, Cond::EQ, ctx.bytes, ctx.bytesLen, ctx.pc, 1); // acc == 1: case[1]
+        emitGuardedBranch(a, otherwise, Cond::EQ, this->bytes, this->bytesLen, pc, 1); // acc == 1: case[1]
     }
 
-    // Both paths now reach case[0] only with acc == 0 and case[1] only with
-    // acc == 1, so each arm's entry value is a compile-time constant
-    // regardless of whether a comparison was fused (isa-core.md §7.3).
-    // §8.7 forbids an arm from reading it without its own producer, so this
-    // is knowledge nothing may act on -- kept because it costs nothing and
-    // is true, not because any emitted code depends on it.
-    ctx.accState.producer(Shape::ofImm(0));
+    this->accState.producer(Shape::ofImm(0));
 
-    const auto term = processUntilTerminator(ctx, a, r, false);
-    if(term.op == Op::BLOCK_END)
+    const auto term = this->processUntilTerminator(pc, false);
+    if(term.instr.op == Op::BLOCK_END)
     {
-        localJumpCleanup(ctx, a, entryTos);
+        this->localJumpCleanup(entryTos);
         a.branchTo(end);
     }
     else
     {
-        handleGlobalJump(ctx, a, term, entryTos);
+        this->handleGlobalJump(term.instr, entryTos);
     }
 
     a.flushPoolNoGuard();
     a.bind(otherwise);
 
-    ctx.accState.producer(Shape::ofImm(1));
+    this->accState.producer(Shape::ofImm(1));
 
-    const auto term2 = processUntilTerminator(ctx, a, r, false);
-    if(term2.op == Op::BLOCK_END)
+    const auto term2 = this->processUntilTerminator(term.next, false);
+    if(term2.instr.op == Op::BLOCK_END)
     {
-        localJumpCleanup(ctx, a, entryTos);
+        this->localJumpCleanup(entryTos);
     }
     else
     {
-        handleGlobalJump(ctx, a, term2, entryTos);
+        this->handleGlobalJump(term2.instr, entryTos);
     }
 
-    // "end" merges up to three edges -- "then"'s branch, "otherwise"'s
-    // fallthrough, and (unfused only) the implicit default's own branch
-    // past both arms. isa-core.md §8.7 makes that last one decisive: it
-    // holds no instructions, so no value can be established on it, and acc
-    // is therefore dead after the whole construct regardless of what the
-    // two arms did.
-    ctx.accState.poison();
+    this->accState.poison();
 
     if(end.chain != -1)
     {
         a.bind(end);
     }
+
+    return term2.next;
 }
 
-static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n)
+uint32_t Ctx::translateSwitch(uint32_t pc, uint32_t n)
 {
-    if(!checkStackFloor(a, r))
+    if(!checkStackFloor(a, this->a.r()))
     {
-        return;
+        return -1;
     }
 
-    const auto entryTos = ctx.window.tos;
-    assert(ctx.hasPendingComparisonCondition == false);
+    const auto entryTos = this->window.tos;
+    assert(this->hasPendingComparisonCondition == false);
 
-    ctx.accState.flush(a, ACC_REG);
+    this->accState.flush(a, ACC_REG);
     a.materializeImm32(SCRATCH_REG, n);
 
-    // The dispatch (mov/ldr/blx, 6 bytes) and the n+1 raw table halfwords
-    // that follow must sit contiguous — the helper jumps by indexing
-    // directly off where the blx itself lands, so nothing may flush in
-    // between. n is known here, so fold the whole span's own length into
-    // the reach check up front instead of guarding unconditionally: a
-    // switch big enough for this to actually matter is rare in practice.
     uint32_t tableBytes = 6 + (n + 1) * 2;
-    a.ensurePoolRoom(0, tableBytes);
 
     uint32_t base;
     {
-        Assembler::AtomicScope atomic(a);
+        Assembler::AtomicBlock atomic(a, /*poolEntries=*/0, tableBytes);
         a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
         a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(HELPER_BR_TABLE_JUMP_OFFSET)));
         a.emit(ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
@@ -764,20 +691,12 @@ static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n
     {
         a.patchRawHalfword(base + i * 2, (uint16_t)(a.pc() - base));
 
-        // Every case is a split successor of the same dispatch point (the
-        // flush() above the jump table), not a continuation of the
-        // previous case -- reset here so case i doesn't inherit whatever
-        // accState mutation case i-1's own (not-taken-here) body left
-        // behind. isa-core.md §8.7: a split clobbers acc unconditionally,
-        // so this is poison() even though the dispatch value is still
-        // physically sitting in ACC_REG -- nothing may read it without a
-        // fresh producer of its own.
-        ctx.accState.poison();
+        this->accState.poison();
 
-        const auto term = processUntilTerminator(ctx, a, r, false);
-        if(term.op == Op::BLOCK_END)
+        const auto term = this->processUntilTerminator(pc, false);
+        if(term.instr.op == Op::BLOCK_END)
         {
-            localJumpCleanup(ctx, a, entryTos);
+            this->localJumpCleanup(entryTos);
             if(i + 1 < n)
             {
                 a.branchTo(end);
@@ -786,165 +705,123 @@ static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n
         }
         else
         {
-            handleGlobalJump(ctx, a, term, entryTos);
+            this->handleGlobalJump(term.instr, entryTos);
             a.flushPoolNoGuard();
         }
+
+        pc = term.next;
     }
 
     a.patchRawHalfword(base + n * 2, (uint16_t)(a.pc() - base));
 
-    // "end" merges however many of the n cases branched here plus the
-    // implicit default's own table slot, just patched above. isa-core.md
-    // §8.7: acc is dead after the construct, and the default's slot is why
-    // -- it is a table entry, not a block, so no value can be established
-    // on that edge no matter what the cases did.
-    ctx.accState.poison();
+    this->accState.poison();
 
     if(end.chain != -1)
     {
         a.bind(end);
     }
+
+    return pc;
 }
 
-static void translateLoop(Ctx &ctx, Assembler& a, const Runtime& r)
+uint32_t Ctx::translateLoop(uint32_t pc)
 {
-    if(!checkStackFloor(a, r))
+    if(!checkStackFloor(a, this->a.r()))
     {
-        return;
+        return -1;
     }
 
-    const auto entryTos = ctx.window.tos;
+    const auto entryTos = this->window.tos;
 
-    ctx.accState.flushLive(a, ACC_REG);
+    this->accState.flushLive(a, ACC_REG);
     const auto start = a.pc();
 
-    const auto condTerm = processUntilTerminator(ctx, a, r, true);
-    assert(condTerm.op == Op::BLOCK_END);
+    const auto condTerm = this->processUntilTerminator(pc, true);
+    assert(condTerm.instr.op == Op::BLOCK_END);
 
-    // isa-core.md §8.1: a BLOCK_END implicitly drops any TOS surplus above
-    // its own block's entry depth, and the condition sub-block's BLOCK_END
-    // is no exception -- a PUSH inside it is exactly as legal as one inside
-    // a BR_TABLE case, where localJumpCleanup already does this. Missing it
-    // left the surplus in place on *both* edges out of the test, so the
-    // window model and the real sp disagreed from here on and the
-    // procedure's own return sequence reclaimed the wrong amount, returning
-    // through a corrupted call record. Found by fuzz/qemu_exec, as a hang.
-    //
-    // Before the branch, so both edges see the same sp; and the flush has
-    // to come first, since restoreWindow pops window registers and the
-    // condition value may still be living in one of them. Neither POP nor
-    // ADD SP, SP, #imm writes flags on ARMv6-M, so a fused comparison's
-    // own CMP still governs the branch below.
-    if(ctx.window.tos != entryTos)
+    if(this->window.tos != entryTos)
     {
-        ctx.accState.flushLive(a, ACC_REG);
-        restoreWindow(a, ctx.window, entryTos);
+        this->accState.flushLive(a, ACC_REG);
+        this->window.restore(a, entryTos);
     }
 
-    const bool fused = ctx.hasPendingComparisonCondition;
-    ctx.hasPendingComparisonCondition = false;
+    const bool fused = this->hasPendingComparisonCondition;
+    this->hasPendingComparisonCondition = false;
 
-    const auto cond = fused ? ctx.pendingComparisonCondition : testAccNonzero(a, ctx.accState);
+    const auto cond = fused ? this->pendingComparisonCondition : testAccNonzero(a, this->accState);
 
     Label out;
-    emitGuardedBranch(a, out, ArmV6M::inverse(cond), ctx.bytes, ctx.bytesLen, ctx.pc, 1);
+    emitGuardedBranch(a, out, ArmV6M::inverse(cond), this->bytes, this->bytesLen, condTerm.next, 1);
 
     if(fused)
     {
-        ctx.accState.producer(Shape::ofImm(1));
+        this->accState.producer(Shape::ofImm(1));
     }
 
-    const auto bodyTerm = processUntilTerminator(ctx, a, r, false);
-    if(bodyTerm.op == Op::BLOCK_END)
+    const auto bodyTerm = this->processUntilTerminator(condTerm.next, false);
+    if(bodyTerm.instr.op == Op::BLOCK_END)
     {
-        localJumpCleanup(ctx, a, entryTos);
+        this->localJumpCleanup(entryTos);
         int32_t delta = (int32_t)start - (int32_t)(a.pc() + 4);
         if(!ArmV6M::Ioff<1, 11>::isInRange(delta))
         {
             a.fail(RESOURCE_LIMIT_LOOP_BACK_EDGE);
-            return;
+            return -1;
         }
         a.emit(ArmV6M::b(ArmV6M::Ioff<1, 11>((int16_t)delta)));
     }
     else
     {
-        handleGlobalJump(ctx, a, bodyTerm, entryTos);
+        this->handleGlobalJump(bodyTerm.instr, entryTos);
     }
 
     a.flushPoolNoGuard();
 
-    // "out" is reached directly from the guarded branch above whenever the
-    // loop condition was false -- the body above never ran on that edge.
-    // isa-core.md §8.7: this is a split successor of the condition's own
-    // branch decision, so it starts dead regardless of what the condition
-    // itself (or testAccNonzero's own flush) left in ACC_REG.
-    ctx.accState.poison();
+    this->accState.poison();
 
     a.bind(out);
+
+    return bodyTerm.next;
 }
 
-static void translateBody(Ctx &ctx, Assembler& a, const Runtime& r)
+void Ctx::translateBody()
 {
-    if(!checkStackFloor(a, r))
+    if(!checkStackFloor(a, this->a.r()))
     {
         return;
     }
 
-    while(ctx.pc < ctx.bytesLen)
-    {
-        DecodedInstr decoded = decodeInstr(ctx.bytes, ctx.bytesLen, ctx.pc);
-        const Instr &instr = decoded.instr;
-        uint32_t afterInstr = decoded.next;
+    DecodedInstr decoded = processUntilTerminator(0, false);
+    const Instr &instr = decoded.instr;
 
-        switch(instr.op)
-        {
-        case Op::BLOCK_END:
-            assert(false); // GCOV_EXCL_LINE — BLOCK_END with no open block; malformed program
-            return;
-                
-        case Op::RETURN:
-        case Op::TRAP:
-        {
-            handleGlobalJump(ctx, a, instr, ctx.window.tos);
-            ctx.pc = afterInstr;
-            assert(ctx.pc == ctx.bytesLen);
-            return;
-        }
-                
-        default:
-            processNonTerminators(ctx, decoded, a, r, false);
-            continue;
-        }
+    switch(instr.op)
+    {
+    case Op::BLOCK_END:
+        assert(false); // GCOV_EXCL_LINE — BLOCK_END with no open block; malformed program
+        return;
+            
+    case Op::RETURN:
+    case Op::TRAP:
+        this->handleGlobalJump(instr, this->window.tos);
+        assert(decoded.next == this->bytesLen);
+        return;
     }
 }
 
-uint32_t translateProc(
-    const Proc &proc,
-    uint32_t procIdx,
-    Assembler &a,
-    const Runtime& r)
+uint32_t translateProc(uint32_t procIdx, Runtime& r, uint32_t lruTick)
 {
-    uint32_t initialSpilledCount = proc.argCount > WINDOW_SIZE ? proc.argCount - WINDOW_SIZE : 0;
-    const auto savesLR = r.slot(procIdx).needsLRSave();
+    Ctx ctx(r, procIdx, lruTick);
 
-    Ctx ctx{Window{proc.argCount, savesLR}, proc.body, proc.bodyBytes,
-        0, procIdx, savesLR, initialSpilledCount};
+    abiEmitPrologue(ctx.a, ctx.savesLR);
 
-    abiEmitPrologue(a, savesLR);
-
-    // isa-core.md §4.6: the last argument arrives in acc, not at
-    // physReg(argCount-1) — that slot's own physical register holds
-    // whatever the caller's shuffle last left there. Flush it immediately
-    // so window.topReg()/physReg(argCount-1) are trustworthy from the
-    // first instruction onward, same as every other in-window slot.
-    if(proc.argCount >= 1)
+    if(ctx.window.tos >= 1)
     {
-        ctx.accState.flush(a, physReg(proc.argCount - 1));
+        ctx.accState.flush(ctx.a, physReg(ctx.window.tos - 1));
     }
 
-    translateBody(ctx, a, r);
+    ctx.translateBody();
 
-    return a.finalize();
+    return ctx.a.finalize();
 }
 
 } // namespace jitc

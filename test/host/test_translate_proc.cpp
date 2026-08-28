@@ -6,12 +6,17 @@
 // correctly without QEMU.
 #include "Test.h"
 #include "translate_proc.h"
+#include "ext.h"
 #include "encode_instr.h"
 #include "armv6.h"
 #include "registers.h"
 
 #include "runtime_internal.h"
+#include "dispatch_abi.h"
 #include "host_runtime_support.h"
+
+#include <sys/mman.h>
+#include <cassert>
 
 using namespace jitc;
 
@@ -58,35 +63,132 @@ static const Instr kProc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
 // proc1 (argCount 1): LOAD(0), opImm(ADD, 5), RETURN
 static const Instr kProc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
 
-/** Encodes an Instr[] fixture into the raw wire bytes Proc::body expects. */
-static Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8_t *bytesOut, uint32_t bytesCap)
+// translateProc now builds its own Proc straight out of a Runtime's own
+// ProcSlot — procIdx's own argCount/bodyPtr/bodyBytes/needsLRSave, the
+// same struct runtime/runtime_internal.h's Runtime::init() fills from
+// real wire bytes — rather than taking a Proc and an Assembler as
+// separate parameters. There is no longer a detached, buffer-only entry
+// point a host test can hand a throwaway pair to: every call now goes
+// through an *attached* Assembler (compiler/src/assembler.h) over the
+// Runtime's own arena.
+//
+// That arena, and every ProcSlot's own bodyPtr, are addressed as a bare
+// uint32_t — a real target's flat 32-bit address space. A 64-bit host
+// process's own real memory doesn't generally fit that (ASLR puts both
+// the stack and ordinary heap/static storage above 4GB), so this file
+// can't just point those fields at an ordinary local buffer the way the
+// old detached Assembler(buf, capacity) could. LowMemory below is the
+// fix: an mmap(..., MAP_32BIT) region — real, dereferenceable memory
+// that also happens to live below 4GB, so the uint32_t round-trip loses
+// nothing.
+class LowMemory
 {
-    uint32_t len = encodeBody(body, count, bytesOut, bytesCap);
-    return Proc{argCount, bytesOut, len};
-}
+    uint8_t *mem;
+    uint32_t size;
+    uint32_t cursor = 0;
+public:
+    explicit LowMemory(uint32_t bytes) : size(bytes)
+    {
+        void *p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
+        assert(p != MAP_FAILED); // GCOV_EXCL_LINE — this file's own setup, not the thing under test
+        mem = (uint8_t *)p;
+    }
+    ~LowMemory() { munmap(mem, size); }
+    LowMemory(const LowMemory &) = delete;
+    LowMemory &operator=(const LowMemory &) = delete;
 
-// translateProc now reads two facts through a Runtime rather than a raw
-// calleeArgCounts array/savesLR bool: r.slot(procIdx).needsLRSave() for
-// the procedure under test itself (translateProc's own read), and
-// r.slot(calleeIndex).argCount() for whatever CALL targets it reaches
-// (translateBody's own CALL-case read) — nothing else. No dispatch/arena
-// ever runs on the host, so a hand-populated slot works fine here; no
-// need to walk real wire bytes through Runtime::init() the way
-// test_runtime_arena.cpp's own RuntimeStorage does.
+    // Bump-allocates bytes (4-aligned, mirroring Runtime::reserveFor's own
+    // rounding) and returns its address as the bare uint32_t every
+    // ProcSlot::bodyPtr/Runtime::arenaCursor field expects.
+    uint32_t alloc(uint32_t bytes)
+    {
+        uint32_t at = cursor;
+        cursor = (cursor + bytes + 3u) & ~3u;
+        assert(cursor <= size); // GCOV_EXCL_LINE — this file's own sizing, not the thing under test
+        return (uint32_t)(uintptr_t)(mem + at);
+    }
+
+    uint8_t *raw(uint32_t addr) const { return (uint8_t *)(uintptr_t)addr; }
+    const uint16_t *code(uint32_t addr) const { return (const uint16_t *)(uintptr_t)addr; }
+};
+
+// Arbitrary but fixed — none of this file's tests exercise eviction
+// ordering (that's test/qemu's job), so the exact LRU tick a compiled
+// prologue stub bumps from never matters here, only that one is supplied.
+static constexpr uint32_t LRU_TICK = 1000;
+
+// Every real caller reads a procedure's own argCount/bodyPtr/bodyBytes/
+// needsLRSave through its slot in a Runtime, and every CALL site reads
+// just the callee's argCount() the same way (translate_proc.cpp) — set()
+// below is the procedure-under-test path: it encodes body[count] via
+// encodeBody() into fresh LowMemory and registers the result as procIdx's
+// own slot. A procedure that's only ever CALL'd, never itself translated
+// in a given test, needs no real body at all (body defaults to nullptr).
 template<uint32_t procCount>
 class FakeRuntime
 {
     alignas(8) uint8_t bytes[sizeof(Runtime) + (procCount + 1) * sizeof(ProcSlot)] = {};
+    LowMemory low{1u << 20}; // 1 MiB — comfortably covers every test's own arena + bodies
+    uint32_t arenaBase;
 public:
-    FakeRuntime()
+    explicit FakeRuntime(uint32_t arenaBytes = 64)
     {
         runtime().procCount = procCount;
+        arenaBase = low.alloc(arenaBytes);
+        runtime().arenaCursor = arenaBase;
+        runtime().arenaEnd = arenaBase + arenaBytes;
+        runtime().stackLimit = 0;
+        runtime().arenaOverlapsStack = 0;
+        // Every slot starts not-resident (Runtime::isResident() reads
+        // codePtr against trampolineAddr) — left at its zero-init default
+        // otherwise, growForAttached's own findEvictionVictim/evict loop
+        // sees a bogus resident procedure (this file's own trampolineAddr,
+        // test_runtime_arena.cpp's 0xDEADBEEF, is nonzero) and evicts it,
+        // corrupting whichever procedure is actually mid-translation.
+        for(uint32_t i = 0; i < procCount; i++)
+        {
+            runtime().slot(i).codePtr = trampolineAddr;
+        }
     }
     Runtime &runtime() { return *reinterpret_cast<Runtime *>(bytes); }
-    void set(uint32_t idx, uint32_t argCount, bool savesLR)
+    void setExtension(const ExtHooks *e) { runtime().ext = e; }
+
+    // Reserves cap bytes of low, dereferenceable memory for procedure
+    // idx's own body, pins it as that slot's bodyPtr, and hands back the
+    // raw pointer to fill — for the handful of tests that hand-splice an
+    // extension opcode encodeBody can't express (extBody below).
+    // Ordinary Instr[] bodies go through set() instead.
+    uint8_t *bodyBuf(uint32_t idx, uint32_t cap)
     {
-        runtime().slot(idx).setStaticInfo(argCount, /*bodyBytes=*/0, savesLR);
+        uint32_t addr = low.alloc(cap);
+        runtime().slot(idx).bodyPtr = addr;
+        return low.raw(addr);
     }
+
+    void setLen(uint32_t idx, uint32_t argCount, uint32_t bodyBytes, bool savesLR)
+    {
+        runtime().slot(idx).setStaticInfo(argCount, bodyBytes, savesLR);
+    }
+
+    // No body: a callee only ever CALL'd within this test, never itself
+    // translated — argCount is the one fact that read reaches. With a
+    // body: an ordinary Instr[] fixture, encoded fresh into cap bytes of
+    // low memory and registered whole (this is the procedure translateProc
+    // itself is asked to compile).
+    void set(uint32_t idx, uint32_t argCount, bool savesLR, const Instr *body = nullptr, uint32_t count = 0, uint32_t cap = 64)
+    {
+        if(body == nullptr)
+        {
+            setLen(idx, argCount, /*bodyBytes=*/0, savesLR);
+            return;
+        }
+        uint8_t *raw = bodyBuf(idx, cap);
+        uint32_t len = encodeBody(body, count, raw, cap);
+        setLen(idx, argCount, len, savesLR);
+    }
+
+    const uint16_t *code() const { return low.code(arenaBase); }
 };
 
 static uint32_t literalSiteCount(const uint16_t *buf, uint32_t halfwords)
@@ -149,14 +251,10 @@ TEST(TranslateProc0EntryProcedure)
     // abiEmitCall) — one placeholder halfword at the call site, the real
     // packed value landing in the pool word this procedure's own
     // end-of-procedure flush emits.
-    uint16_t buf[32];
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(0, kProc0Body, 3, bodyBytes, sizeof(bodyBytes));
-    Assembler a(buf, 32);
     FakeRuntime<2> rt;
-    rt.set(0, 0, /*savesLR=*/true);
+    rt.set(0, 0, /*savesLR=*/true, kProc0Body, 3);
     rt.set(1, 1, /*savesLR=*/false);
-    uint32_t halfwordCount = translateProc(proc, /*procIdx=*/0, a, rt.runtime());
+    uint32_t halfwordCount = translateProc(/*procIdx=*/0, rt.runtime(), LRU_TICK);
 
     CHECK(halfwordCount == 18);
 
@@ -173,7 +271,7 @@ TEST(TranslateProc0EntryProcedure)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -185,13 +283,9 @@ TEST(TranslateProc1Callee)
     // in-window read (a deferred producer, itself free), folding straight
     // into the following opImm(ADD,5). No CALL here, so entirely
     // unaffected by the call record's own pooling change.
-    uint16_t buf[32];
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(1, kProc1Body, 3, bodyBytes, sizeof(bodyBytes));
-    Assembler a(buf, 32);
     FakeRuntime<2> rt;
-    rt.set(1, 1, /*savesLR=*/false);
-    uint32_t halfwordCount = translateProc(proc, /*procIdx=*/1, a, rt.runtime());
+    rt.set(1, 1, /*savesLR=*/false, kProc1Body, 3);
+    uint32_t halfwordCount = translateProc(/*procIdx=*/1, rt.runtime(), LRU_TICK);
 
     CHECK(halfwordCount == 11);
 
@@ -203,20 +297,16 @@ TEST(TranslateProc1Callee)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
 TEST(OverflowIsReportedRatherThanOverrunningTheBuffer)
 {
-    uint16_t buf[4]; // too small for even the 6-halfword prologue alone
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(0, kProc0Body, 3, bodyBytes, sizeof(bodyBytes));
-    Assembler a(buf, 4);
-    FakeRuntime<2> rt;
-    rt.set(0, 0, /*savesLR=*/true);
+    FakeRuntime<2> rt(/*arenaBytes=*/8); // too small for even the 6-halfword prologue alone
+    rt.set(0, 0, /*savesLR=*/true, kProc0Body, 3);
     rt.set(1, 1, /*savesLR=*/false);
-    EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_ARENA, translateProc(proc, 0, a, rt.runtime()));
+    EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_ARENA, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
 TEST(CallToAProcedureIndexTheProgramDoesntHaveIsReported)
@@ -227,13 +317,9 @@ TEST(CallToAProcedureIndexTheProgramDoesntHaveIsReported)
     // EXHAUSTED one: no arena size makes a call to procedure 5 of a
     // one-procedure program work.
     const Instr body[] = {CONST(1), call(5), bare(Op::RETURN)};
-    FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/true);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(0, body, 3, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[64];
-    Assembler a(buf, 64);
-    EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_CALLEE_RANGE, translateProc(proc, 0, a, rt.runtime()));
+    FakeRuntime<1> rt(/*arenaBytes=*/128);
+    rt.set(0, 0, /*savesLR=*/true, body, 3);
+    EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_CALLEE_RANGE, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
 TEST(LoopBackEdgeBailsWhenTheBodyExceedsTheEncodableBranchRange)
@@ -253,14 +339,10 @@ TEST(LoopBackEdgeBailsWhenTheBodyExceedsTheEncodableBranchRange)
     body[n++] = bare(Op::BLOCK_END);
     body[n++] = bare(Op::RETURN);
 
-    FakeRuntime<1> rt;
-    rt.set(0, 1, /*savesLR=*/false);
-    uint8_t bodyBytes[2048];
-    Proc proc = makeProc(1, body, n, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[4096]; // generous -- the failure under test must come from
-                         // the branch-range check, not emit()'s own capacity check
-    Assembler a(buf, 4096);
-    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_LOOP_BACK_EDGE, translateProc(proc, 0, a, rt.runtime()));
+    FakeRuntime<1> rt(/*arenaBytes=*/8192); // generous -- the failure under test must come from
+                                            // the branch-range check, not emit()'s own capacity check
+    rt.set(0, 1, /*savesLR=*/false, body, n, /*cap=*/2048);
+    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_LOOP_BACK_EDGE, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
 TEST(SpillLoadBailsWhenTheOffsetExceedsTheEncodableRange)
@@ -273,12 +355,8 @@ TEST(SpillLoadBailsWhenTheOffsetExceedsTheEncodableRange)
     FakeRuntime<1> rt;
     // tos=261 (argCount, all out-of-window) -> spillOffset(0) ==
     // 4*(spilledCount(261)-1) == 4*256 == 1024, past Uoff<2,8>::maxValue (1020).
-    rt.set(0, 261, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(261, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_SPILL_OFFSET, translateProc(proc, 0, a, rt.runtime()));
+    rt.set(0, 261, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_SPILL_OFFSET, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
 // The tests below exercise LOOP/BR_TABLE/comparisons-as-values/unary ops/
@@ -310,12 +388,8 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[32];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 17);
 
     const uint16_t expected[] = {
@@ -332,7 +406,7 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -353,13 +427,9 @@ TEST(BrTableJumpTableHelperViaFullPipeline)
         CONST(0),
         bare(Op::RETURN),
     };
-    FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/true);
-    uint8_t bodyBytes[32];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[64];
-    Assembler a(buf, 64);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    FakeRuntime<1> rt(/*arenaBytes=*/128);
+    rt.set(0, 0, /*savesLR=*/true, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 25);
 
     const uint16_t expected[] = {
@@ -384,7 +454,7 @@ TEST(BrTableJumpTableHelperViaFullPipeline)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -401,12 +471,8 @@ TEST(ComparisonFusesIntoBrTableGuard)
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[32];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 16);
 
     const uint16_t expected[] = {
@@ -422,7 +488,7 @@ TEST(ComparisonFusesIntoBrTableGuard)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -432,12 +498,8 @@ TEST(ComparisonMaterializesAsOrdinaryValue)
     // materializeComparison path, not fusion.
     const Instr body[] = {CONST(5), opImm(Op::GT_U, 3), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 15);
 
     const uint16_t expected[] = {
@@ -452,7 +514,7 @@ TEST(ComparisonMaterializesAsOrdinaryValue)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -460,12 +522,8 @@ TEST(NegViaFullPipeline)
 {
     const Instr body[] = {CONST(5), bare(Op::NEG), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[8];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
@@ -476,7 +534,7 @@ TEST(NegViaFullPipeline)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -488,12 +546,8 @@ TEST(ClzHelperViaFullPipeline)
     // caller-side wiring around it.
     const Instr body[] = {CONST(5), bare(Op::CLZ), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/true);
-    uint8_t bodyBytes[8];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/true, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 14);
 
     const uint16_t expected[] = {
@@ -507,7 +561,7 @@ TEST(ClzHelperViaFullPipeline)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -518,12 +572,8 @@ TEST(LastArgumentHomeSlotReadTwiceViaLoad)
     // same in-window slot both just read the already-correct value.
     const Instr body[] = {LOAD(0), LOAD(0), opReg(Op::ADD, 0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 1, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
@@ -534,7 +584,7 @@ TEST(LastArgumentHomeSlotReadTwiceViaLoad)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -552,12 +602,8 @@ TEST(LastArgumentHomeSlotReadViaPopAcc)
     // POP_ACC produces a fresh value).
     const Instr body[] = {opStack(Op::ADD, Combo::POP_ACC), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
@@ -568,7 +614,7 @@ TEST(LastArgumentHomeSlotReadViaPopAcc)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -589,12 +635,8 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[32];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 18);
 
     const uint16_t expected[] = {
@@ -610,7 +652,7 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -628,12 +670,8 @@ TEST(PopThroughFullPipeline)
 {
     const Instr body[] = {CONST(5), PUSH(), POP(), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
@@ -644,7 +682,7 @@ TEST(PopThroughFullPipeline)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -652,12 +690,8 @@ TEST(TrapAtTopLevel)
 {
     const Instr body[] = {trapInstr(3)};
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[8];
-    Proc proc = makeProc(0, body, 1, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, 1);
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     // The code goes into ACC_REG plainly — no high-bit sentinel to widen
     // it past MOVS's own imm8, so nothing pools and no window teardown
     // precedes the dispatch either (trapHelper restores savedSp instead).
@@ -670,7 +704,7 @@ TEST(TrapAtTopLevel)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -694,12 +728,8 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[32];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 18);
 
     const uint16_t expected[] = {
@@ -715,7 +745,7 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -728,12 +758,8 @@ TEST(LoadFromOutOfWindowSlot)
     // slot 0's own spill/reload.
     const Instr body[] = {LOAD(0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 5, /*savesLR=*/false);
-    uint8_t bodyBytes[8];
-    Proc proc = makeProc(5, body, 2, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 5, /*savesLR=*/false, body, 2);
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 12);
 
     const uint16_t expected[] = {
@@ -745,7 +771,7 @@ TEST(LoadFromOutOfWindowSlot)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -757,12 +783,8 @@ TEST(StoreStandaloneInWindowWhenNotPrecededByAFoldableProducer)
     // tests exercise via peekStoreFold.
     const Instr body[] = {CONST(9), PUSH(), POP(), STORE(0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 1, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 14);
 
     const uint16_t expected[] = {
@@ -776,7 +798,7 @@ TEST(StoreStandaloneInWindowWhenNotPrecededByAFoldableProducer)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -794,12 +816,8 @@ TEST(StoreStandaloneOutOfWindowSlot)
     // either.
     const Instr body[] = {bare(Op::NEG), STORE(0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 5, /*savesLR=*/false);
-    uint8_t bodyBytes[8];
-    Proc proc = makeProc(5, body, 3, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 5, /*savesLR=*/false, body, 3);
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 13);
 
     const uint16_t expected[] = {
@@ -812,7 +830,7 @@ TEST(StoreStandaloneOutOfWindowSlot)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -823,14 +841,10 @@ TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
     // also guards that nothing here may become a literal load.
     const Instr body[] = {CONST(1000), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[8];
-    Proc proc = makeProc(0, body, 2, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, 2);
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 11);
-    CHECK(literalSiteCount(buf, halfwordCount) == 0);
+    CHECK(literalSiteCount(rt.code(), halfwordCount) == 0);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -840,7 +854,7 @@ TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -848,12 +862,8 @@ TEST(ConstFoldsDirectlyIntoAFollowingStore)
 {
     const Instr body[] = {CONST(5), STORE(0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 1, /*savesLR=*/false);
-    uint8_t bodyBytes[8];
-    Proc proc = makeProc(1, body, 3, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 1, /*savesLR=*/false, body, 3);
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 12);
 
     const uint16_t expected[] = {
@@ -865,7 +875,7 @@ TEST(ConstFoldsDirectlyIntoAFollowingStore)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -881,12 +891,8 @@ TEST(RegRegOutOfWindowWritesBackToStackAfterComputing)
     // its acc operand reads r7, not r0.
     const Instr body[] = {opRegWriteback(Op::ADD, 0), CONST(1), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 5, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(5, body, 3, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 5, /*savesLR=*/false, body, 3);
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 15);
 
     const uint16_t expected[] = {
@@ -901,7 +907,7 @@ TEST(RegRegOutOfWindowWritesBackToStackAfterComputing)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -909,12 +915,8 @@ TEST(RegRegInWindowWritesBackToItsOwnRegister)
 {
     const Instr body[] = {CONST(5), PUSH(), opRegWriteback(Op::ADD, 0), LOAD(0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 12);
 
     const uint16_t expected[] = {
@@ -926,7 +928,7 @@ TEST(RegRegInWindowWritesBackToItsOwnRegister)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -934,12 +936,8 @@ TEST(PopAccStackComboThroughFullPipeline)
 {
     const Instr body[] = {CONST(3), PUSH(), CONST(2), opStack(Op::ADD, Combo::POP_ACC), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
@@ -950,7 +948,7 @@ TEST(PopAccStackComboThroughFullPipeline)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -965,12 +963,8 @@ TEST(PeekPeekStackComboThroughFullPipeline)
     // never need.
     const Instr body[] = {CONST(3), PUSH(), CONST(6), opStack(Op::AND, Combo::PEEK_PEEK), POP(), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
 
     CHECK(halfwordCount == 13);
 
@@ -984,7 +978,7 @@ TEST(PeekPeekStackComboThroughFullPipeline)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -1012,12 +1006,11 @@ TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
         CONST(999), bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    // argCount=1 (not 0): the callee prologue's own unconditional flush
+    // into physReg(0)=r7 below is only observable at all when there's an
+    // actual last argument to flush.
+    rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 20);
 
     const uint16_t expected[] = {
@@ -1034,7 +1027,7 @@ TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -1044,12 +1037,8 @@ TEST(RevbitsHelperViaFullPipeline)
     // vector index (revbitsHelper, index 5).
     const Instr body[] = {CONST(1), bare(Op::REVBITS), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/true);
-    uint8_t bodyBytes[8];
-    Proc proc = makeProc(0, body, 3, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/true, body, 3);
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 14);
 
     const uint16_t expected[] = {
@@ -1062,7 +1051,7 @@ TEST(RevbitsHelperViaFullPipeline)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -1083,13 +1072,9 @@ TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
         LOAD(0),
         bare(Op::RETURN),
     };
-    FakeRuntime<1> rt;
-    rt.set(0, 1, /*savesLR=*/true);
-    uint8_t bodyBytes[32];
-    Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[64];
-    Assembler a(buf, 64);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    FakeRuntime<1> rt(/*arenaBytes=*/128);
+    rt.set(0, 1, /*savesLR=*/true, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 30);
 
     const uint16_t expected[] = {
@@ -1118,7 +1103,7 @@ TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -1143,12 +1128,8 @@ TEST(LoopConditionClosesViaAnExplicitFusedComparison)
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[32];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 17);
 
     const uint16_t expected[] = {
@@ -1165,7 +1146,7 @@ TEST(LoopConditionClosesViaAnExplicitFusedComparison)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -1177,12 +1158,8 @@ TEST(ComparisonMaterializedResultFoldsDirectlyIntoAFollowingStore)
     // ACC_REG (fold.reg<0) instead.
     const Instr body[] = {CONST(5), opImm(Op::GT_U, 3), STORE(0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 1, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(1, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 17);
 
     const uint16_t expected[] = {
@@ -1199,7 +1176,7 @@ TEST(ComparisonMaterializedResultFoldsDirectlyIntoAFollowingStore)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -1211,12 +1188,8 @@ TEST(LastArgumentHomeSlotReadViaRegAcc)
     // above against the same unconditionally-flushed value.
     const Instr body[] = {opReg(Op::ADD, 1), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 2, /*savesLR=*/false);
-    uint8_t bodyBytes[8];
-    Proc proc = makeProc(2, body, 2, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 2, /*savesLR=*/false, body, 2);
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
@@ -1227,7 +1200,7 @@ TEST(LastArgumentHomeSlotReadViaRegAcc)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -1261,13 +1234,9 @@ TEST(DeeplyNestedButWellFormedBlocksSucceedWithNoStackFloor)
     }
     body[2 * kDepth] = CONST(0);
     body[2 * kDepth + 1] = bare(Op::RETURN);
-    FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[512];
-    Proc proc = makeProc(0, body, 2 * kDepth + 2, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[512];
-    Assembler a(buf, 512);
-    translateProc(proc, 0, a, rt.runtime());
+    FakeRuntime<1> rt(/*arenaBytes=*/1024);
+    rt.set(0, 0, /*savesLR=*/false, body, 2 * kDepth + 2, /*cap=*/512);
+    translateProc(0, rt.runtime(), LRU_TICK);
 }
 
 TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
@@ -1287,15 +1256,11 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     // separates this from an arena overflow, which the same escape used to
     // be indistinguishable from.
     const Instr body[] = {bare(Op::RETURN)};
-    FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
+    FakeRuntime<1> rt(/*arenaBytes=*/32);
+    rt.set(0, 0, /*savesLR=*/false, body, 1);
     rt.runtime().stackLimit = currentSp(); // translateBody's guard now reads r.liveStackFloor() directly
-    uint8_t bodyBytes[8];
-    Proc proc = makeProc(0, body, 1, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[16];
-    Assembler a(buf, 16);
 
-    EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_TRANSLATOR_STACK, translateProc(proc, 0, a, rt.runtime()));
+    EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_TRANSLATOR_STACK, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
 TEST(FlatBodySucceedsWithSlackThatOnlyCoversTranslateBodysOwnDepthZeroCheck)
@@ -1306,14 +1271,10 @@ TEST(FlatBodySucceedsWithSlackThatOnlyCoversTranslateBodysOwnDepthZeroCheck)
     // no nesting at all (never reaching translateIfThen/translateLoop/
     // translateSwitch) succeed outright.
     const Instr body[] = {bare(Op::RETURN)};
-    FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
+    FakeRuntime<1> rt(/*arenaBytes=*/32);
+    rt.set(0, 0, /*savesLR=*/false, body, 1);
     rt.runtime().stackLimit = currentSp() - 1024; // generous slack — see the paired test below for why 1024
-    uint8_t bodyBytes[8];
-    Proc proc = makeProc(0, body, 1, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[16];
-    Assembler a(buf, 16);
-    translateProc(proc, 0, a, rt.runtime());
+    translateProc(0, rt.runtime(), LRU_TICK);
 }
 
 TEST(NestedIfChainReportsOverflowWithTheSameSlackADepthZeroBodyTolerates)
@@ -1348,15 +1309,11 @@ TEST(NestedIfChainReportsOverflowWithTheSameSlackADepthZeroBodyTolerates)
     body[2 * kDepth] = CONST(0);
     body[2 * kDepth + 1] = bare(Op::RETURN);
 
-    FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
+    FakeRuntime<1> rt(/*arenaBytes=*/1024);
+    rt.set(0, 0, /*savesLR=*/false, body, 2 * kDepth + 2, /*cap=*/512);
     rt.runtime().stackLimit = currentSp() - 1024;
-    uint8_t bodyBytes[512];
-    Proc proc = makeProc(0, body, 2 * kDepth + 2, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[512];
-    Assembler a(buf, 512);
 
-    EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_TRANSLATOR_STACK, translateProc(proc, 0, a, rt.runtime()));
+    EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_TRANSLATOR_STACK, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
 // ── Literal pooling ─────────────────────────────────────────────────────
@@ -1370,12 +1327,8 @@ TEST(LargeConstAndLargeOperandBothPoolIntoOneChunk)
     // (16) but different pool words.
     const Instr body[] = {CONST(0x12345678), opImm(Op::ADD, 0x0ABCDEF0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(0, body, 3, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, 3);
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
 
     CHECK(halfwordCount == 16); // 24 unpooled: 7 + 7 synthesis halfwords
 
@@ -1390,7 +1343,7 @@ TEST(LargeConstAndLargeOperandBothPoolIntoOneChunk)
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
-        CHECK(buf[i] == expected[i]);
+        CHECK(rt.code()[i] == expected[i]);
     }
 }
 
@@ -1400,13 +1353,9 @@ TEST(ShiftAmountNeverPoolsEvenWhenHardToSynthesize)
     // must stay an immediate no matter what it costs to synthesize.
     const Instr body[] = {LOAD(0), opImm(Op::SHL, 3), bare(Op::RETURN)};
     FakeRuntime<1> rt;
-    rt.set(0, 1, /*savesLR=*/false);
-    uint8_t bodyBytes[16];
-    Proc proc = makeProc(1, body, 3, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(literalSiteCount(buf, halfwordCount) == 0);
+    rt.set(0, 1, /*savesLR=*/false, body, 3);
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
+    CHECK(literalSiteCount(rt.code(), halfwordCount) == 0);
 }
 
 TEST(PooledLoadInsideGuardedRegionStillResolves)
@@ -1428,19 +1377,15 @@ TEST(PooledLoadInsideGuardedRegionStillResolves)
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    uint8_t bodyBytes[32];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[32];
-    Assembler a(buf, 32);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
 
-    CHECK(literalSiteCount(buf, halfwordCount) == 2);
+    CHECK(literalSiteCount(rt.code(), halfwordCount) == 2);
 
     uint32_t value = 0;
-    CHECK(loadedWord(buf, halfwordCount, nthLiteralSite(buf, halfwordCount, 0), value));
+    CHECK(loadedWord(rt.code(), halfwordCount, nthLiteralSite(rt.code(), halfwordCount, 0), value));
     CHECK(value == 0x12345678);
-    CHECK(loadedWord(buf, halfwordCount, nthLiteralSite(buf, halfwordCount, 1), value));
+    CHECK(loadedWord(rt.code(), halfwordCount, nthLiteralSite(rt.code(), halfwordCount, 1), value));
     CHECK(value == 0x0ABCDEF0);
 }
 
@@ -1466,19 +1411,15 @@ TEST(PooledLoadSurvivesAcrossABrTableJumpTableUnflushed)
         CONST(0),
         bare(Op::RETURN),
     };
-    FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/true);
-    uint8_t bodyBytes[32];
-    Proc proc = makeProc(0, body, sizeof(body) / sizeof(body[0]), bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[64];
-    Assembler a(buf, 64);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    FakeRuntime<1> rt(/*arenaBytes=*/128);
+    rt.set(0, 0, /*savesLR=*/true, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
 
-    CHECK(literalSiteCount(buf, halfwordCount) == 1);
+    CHECK(literalSiteCount(rt.code(), halfwordCount) == 1);
 
     uint32_t value = 0;
-    uint32_t site = nthLiteralSite(buf, halfwordCount, 0);
-    CHECK(loadedWord(buf, halfwordCount, site, value));
+    uint32_t site = nthLiteralSite(rt.code(), halfwordCount, 0);
+    CHECK(loadedWord(rt.code(), halfwordCount, site, value));
     CHECK(value == 0x12345678);
 }
 
@@ -1512,18 +1453,14 @@ TEST(LargeBrTableJumpTableFlushesAPendingLiteralBeforeItsOwnTable)
     body[n++] = CONST(0);
     body[n++] = bare(Op::RETURN);
 
-    FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/true);
-    uint8_t bodyBytes[2048];
-    Proc proc = makeProc(0, body, n, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[4096];
-    Assembler a(buf, 4096);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    FakeRuntime<1> rt(/*arenaBytes=*/8192);
+    rt.set(0, 0, /*savesLR=*/true, body, n, /*cap=*/2048);
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
 
-    CHECK(literalSiteCount(buf, halfwordCount) == 1);
+    CHECK(literalSiteCount(rt.code(), halfwordCount) == 1);
     uint32_t value = 0;
-    uint32_t site = nthLiteralSite(buf, halfwordCount, 0);
-    CHECK(loadedWord(buf, halfwordCount, site, value));
+    uint32_t site = nthLiteralSite(rt.code(), halfwordCount, 0);
+    CHECK(loadedWord(rt.code(), halfwordCount, site, value));
     CHECK(value == 0x12345678);
 }
 
@@ -1546,20 +1483,16 @@ TEST(OutputReachDistanceForcesAMidProcedureFlush)
     body[n++] = opImm(Op::ADD, 0x0ABCDEF0);
     body[n++] = bare(Op::RETURN);
 
-    uint8_t bodyBytes[1024];
-    FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false);
-    Proc proc = makeProc(0, body, n, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[1024];
-    Assembler a(buf, 1024);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    FakeRuntime<1> rt(/*arenaBytes=*/2048);
+    rt.set(0, 0, /*savesLR=*/false, body, n, /*cap=*/1024);
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
 
-    CHECK(literalSiteCount(buf, halfwordCount) == 2);
+    CHECK(literalSiteCount(rt.code(), halfwordCount) == 2);
 
     uint32_t value = 0;
-    CHECK(loadedWord(buf, halfwordCount, nthLiteralSite(buf, halfwordCount, 0), value));
+    CHECK(loadedWord(rt.code(), halfwordCount, nthLiteralSite(rt.code(), halfwordCount, 0), value));
     CHECK(value == 0x12345678);
-    CHECK(loadedWord(buf, halfwordCount, nthLiteralSite(buf, halfwordCount, 1), value));
+    CHECK(loadedWord(rt.code(), halfwordCount, nthLiteralSite(rt.code(), halfwordCount, 1), value));
     CHECK(value == 0x0ABCDEF0);
 }
 
@@ -1582,22 +1515,233 @@ TEST(OutputReachOverflowFlushesBeforeGoingOutOfRange)
     }
     body[n++] = bare(Op::RETURN);
 
-    uint8_t bodyBytes[512];
-    FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/true);
-    Proc proc = makeProc(0, body, n, bodyBytes, sizeof(bodyBytes));
-    uint16_t buf[4096];
-    Assembler a(buf, 4096);
-    uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
+    FakeRuntime<1> rt(/*arenaBytes=*/8192);
+    rt.set(0, 0, /*savesLR=*/true, body, n, /*cap=*/512);
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
 
-    uint32_t site = nthLiteralSite(buf, halfwordCount, 0);
+    uint32_t site = nthLiteralSite(rt.code(), halfwordCount, 0);
     CHECK(site < halfwordCount);
     uint32_t value = 0;
-    CHECK(loadedWord(buf, halfwordCount, site, value));
+    CHECK(loadedWord(rt.code(), halfwordCount, site, value));
     CHECK(value == 0x12345678);
 
     // Flushed within reach, wherever it ended up.
     uint16_t off;
-    CHECK(ArmV6M::getLiteralOffset(buf[site], off));
+    CHECK(ArmV6M::getLiteralOffset(rt.code()[site], off));
     CHECK(off * 4u <= 1020);
+}
+
+// ── the extension seam at codegen ────────────────────────────────────────
+
+namespace
+{
+// Captured by the fake emit(), so a test can assert on what the core
+// handed it rather than only on the bytes that came out.
+struct SeenSite
+{
+    bool called = false;
+    uint32_t opcodeByte = 0;
+    uint8_t in[EXT_MAX_INPUTS] = {};
+    uint8_t inCount = 0;
+    uint8_t out = 0;
+    uint32_t scratch = 0;
+};
+SeenSite g_seen;
+
+uint32_t twoPopDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+{
+    // Pops two, writes acc, four halfwords of budget.
+    *decl = jitc::extDecl(0x80, jitc::EXT_FLAG_WRITES_ACC, /*tosDelta=*/-2, 0, /*halfwords=*/4);
+    return 1;
+}
+
+void captureEmit(jitc::Assembler &a, const ExtSite &site)
+{
+    g_seen.called = true;
+    g_seen.opcodeByte = site.bytes[site.pc];
+    g_seen.inCount = site.inCount;
+    for(uint32_t i = 0; i < site.inCount; i++) g_seen.in[i] = site.in[i];
+    g_seen.out = site.out;
+    g_seen.scratch = site.scratch;
+    // Something real and recognisable: out = in[0] + in[1].
+    a.emit(ArmV6M::adds(ArmV6M::LoReg(site.out), ArmV6M::LoReg(site.in[0]), ArmV6M::LoReg(site.in[1])));
+}
+
+void overrunEmit(jitc::Assembler &a, const ExtSite &site)
+{
+    // Declares 4 halfwords (twoPopDecode) but emits 5.
+    for(uint32_t i = 0; i < 5; i++) a.emit(ArmV6M::adds(ArmV6M::LoReg(site.out), ArmV6M::LoReg(site.out), ArmV6M::Imm<3>(1)));
+}
+
+uint32_t helperDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+{
+    // Declares NEEDS_LR, which both reach forms require: a BLX clobbers lr,
+    // and the prologue's decision to save it came from this flag.
+    *decl = jitc::extDecl(0x80, jitc::EXT_FLAG_NEEDS_LR | jitc::EXT_FLAG_WRITES_ACC,
+        /*tosDelta=*/-2, 0, /*halfwords=*/16);
+    return 1;
+}
+
+constexpr uint32_t FAKE_HELPER_ADDR = 0x0800BEEFu;
+
+void rawHelperEmit(jitc::Assembler &a, const ExtSite &site)
+{
+    jitc::extEmitHelperCall(a, site, FAKE_HELPER_ADDR);
+}
+
+void cHelperEmit(jitc::Assembler &a, const ExtSite &site)
+{
+    jitc::extEmitCHelperCall(a, site, FAKE_HELPER_ADDR);
+}
+
+uint32_t stateDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+{
+    *decl = jitc::extDecl(0x80, jitc::EXT_FLAG_WRITES_ACC, /*tosDelta=*/-2, 0, /*halfwords=*/8);
+    return 1;
+}
+
+// Bumps scratch word 1 and leaves it in acc — the shape any real extension
+// keeping a cursor would use.
+void stateEmit(jitc::Assembler &a, const ExtSite &site)
+{
+    jitc::extEmitStateBase(a, site.in[0]);
+    a.emit(ArmV6M::ldr(ArmV6M::LoReg(site.out), ArmV6M::LoReg(site.in[0]),
+        ArmV6M::Uoff<2, 5>((uint16_t)jitc::extStateOffset(1))));
+    a.emit(ArmV6M::adds(ArmV6M::LoReg(site.out), ArmV6M::Imm<8>(1)));
+    a.emit(ArmV6M::str(ArmV6M::LoReg(site.out), ArmV6M::LoReg(site.in[0]),
+        ArmV6M::Uoff<2, 5>((uint16_t)jitc::extStateOffset(1))));
+}
+
+const ExtHooks EXT_STATE = {jitc::EXT_ABI_VERSION, stateDecode, stateEmit, 0};
+
+const ExtHooks EXT_RAW_HELPER = {jitc::EXT_ABI_VERSION, helperDecode, rawHelperEmit, 0};
+const ExtHooks EXT_C_HELPER = {jitc::EXT_ABI_VERSION, helperDecode, cHelperEmit, EXT_THUNK_STACK_BYTES};
+
+// True iff `needle` appears anywhere in the first `n` halfwords of `buf`.
+bool containsSeq(const uint16_t *buf, uint32_t n, const uint16_t *needle, uint32_t len)
+{
+    for(uint32_t i = 0; i + len <= n; i++)
+    {
+        uint32_t j = 0;
+        while(j < len && buf[i + j] == needle[j]) j++;
+        if(j == len) return true;
+    }
+    return false;
+}
+
+const ExtHooks EXT_CAPTURE = {jitc::EXT_ABI_VERSION, twoPopDecode, captureEmit};
+const ExtHooks EXT_OVERRUN = {jitc::EXT_ABI_VERSION, twoPopDecode, overrunEmit};
+
+
+// PUSH PUSH <0x80> RETURN, hand-spliced: encodeBody takes Instr[], which
+// cannot express an extension op (its operands never live in Instr).
+uint32_t extBody(uint8_t *out)
+{
+    const Instr prelude[] = {CONST(3), PUSH(), CONST(4), PUSH()};
+    uint32_t n = encodeBody(prelude, 4, out, 16);
+    out[n++] = 0x80;
+    out[n++] = 100; // RETURN
+    return n;
+}
+} // namespace
+
+TEST(AnExtensionOpIsStagedIntoR1R2AndEmitsThroughTheAssembler)
+{
+    g_seen = SeenSite{};
+    FakeRuntime<1> rt(/*arenaBytes=*/128);
+    uint8_t *raw = rt.bodyBuf(0, 32);
+    rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/false);
+    rt.setExtension(&EXT_CAPTURE);
+    translateProc(0, rt.runtime(), LRU_TICK);
+
+    CHECK(g_seen.called);
+    // site.pc addresses the opcode byte itself, not the byte after it.
+    CHECK(g_seen.opcodeByte == 0x80);
+    // Two stack pops, no acc read: r1 then r2, top first. Never r0 (acc's)
+    // and never r3 (the only register a helper reach can use).
+    CHECK(g_seen.inCount == 2);
+    CHECK(g_seen.in[0] == ENTRY_IDX_REG);
+    CHECK(g_seen.in[1] == SCRATCH_REG);
+    CHECK(g_seen.out == ACC_REG);
+    CHECK((g_seen.scratch & (1u << ENTRY_JUMP_REG)) != 0);
+    CHECK((g_seen.scratch & (1u << ACC_REG)) == 0);      // acc is not scratch
+    CHECK((g_seen.scratch & (1u << ENTRY_IDX_REG)) == 0); // nor are the staged inputs
+}
+
+TEST(AnExtensionOpOverrunningItsDeclaredBudgetIsReported)
+{
+    // The span walk budgeted the declared halfwords and every enclosing
+    // conditional branch's reach was computed from it, so an overrun is a
+    // wrong branch offset rather than merely wasted arena.
+    FakeRuntime<1> rt(/*arenaBytes=*/128);
+    uint8_t *raw = rt.bodyBuf(0, 32);
+    rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/false);
+    rt.setExtension(&EXT_OVERRUN);
+
+    EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_EXT_UNSUPPORTED, translateProc(0, rt.runtime(), LRU_TICK));
+}
+
+TEST(ARawHelperReachIsAPooledAddressAndABlx)
+{
+    FakeRuntime<1> rt(/*arenaBytes=*/256);
+    uint8_t *raw = rt.bodyBuf(0, 32);
+    rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/true);
+    rt.setExtension(&EXT_RAW_HELPER);
+    uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
+
+    // No r10 vector detour: the address comes from the literal pool, so the
+    // reach itself is just the BLX. r3 because Thumb-1 leaves nothing else
+    // free — r0-r2 are the staged operands.
+    const uint16_t blx[] = {ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG))};
+    CHECK(containsSeq(rt.code(), n, blx, 1));
+
+    // Specifically NOT through the thunk. (A bare `MOV r3,r10` would be the
+    // wrong thing to look for: the procedure's own RETURN reaches the r10
+    // vector with that same idiom. The thunk's marker is parking the target
+    // in r12 and loading the vector at the thunk's own offset.)
+    const uint16_t thunkMarker[] = {ArmV6M::mov(ArmV6M::AnyReg(12), ArmV6M::AnyReg(ENTRY_JUMP_REG))};
+    CHECK(!containsSeq(rt.code(), n, thunkMarker, 1));
+    const uint16_t thunkLoad[] = {ArmV6M::ldr(ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::LoReg(ENTRY_JUMP_REG),
+        ArmV6M::Uoff<2, 5>((uint16_t)HELPER_EXT_THUNK_OFFSET))};
+    CHECK(!containsSeq(rt.code(), n, thunkLoad, 1));
+}
+
+TEST(ACHelperReachGoesThroughTheThunkWithTheTargetInR12)
+{
+    FakeRuntime<1> rt(/*arenaBytes=*/256);
+    uint8_t *raw = rt.bodyBuf(0, 32);
+    rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/true);
+    rt.setExtension(&EXT_C_HELPER);
+    uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
+
+    // Target parked in r12/ip — the AAPCS scratch register, so r0-r3 stay
+    // the callee's own arguments — then the thunk reached through the r10
+    // vector by the same MOV/LDR/BLX idiom every other helper uses.
+    const uint16_t seq[] = {
+        ArmV6M::mov(ArmV6M::AnyReg(12), ArmV6M::AnyReg(ENTRY_JUMP_REG)),
+        ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)),
+        ArmV6M::ldr(ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::LoReg(ENTRY_JUMP_REG),
+            ArmV6M::Uoff<2, 5>((uint16_t)HELPER_EXT_THUNK_OFFSET)),
+        ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)),
+    };
+    CHECK(containsSeq(rt.code(), n, seq, 4));
+}
+
+TEST(ExtensionScratchIsReachedWithOneMovOffTheRuntimePointer)
+{
+    FakeRuntime<1> rt(/*arenaBytes=*/256);
+    uint8_t *raw = rt.bodyBuf(0, 32);
+    rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/false);
+    rt.setExtension(&EXT_STATE);
+    uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
+
+    // One instruction to get the base — a whole-register MOV out of r9,
+    // which pays no hi-register mirror tax — then ordinary loads and stores
+    // at the scratch's own absolute offsets.
+    const uint16_t seq[] = {
+        ArmV6M::mov(ArmV6M::AnyReg(ENTRY_IDX_REG), ArmV6M::AnyReg(RUNTIME_PTR_REG)),
+        ArmV6M::ldr(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ENTRY_IDX_REG),
+            ArmV6M::Uoff<2, 5>((uint16_t)jitc::extStateOffset(1))),
+    };
+    CHECK(containsSeq(rt.code(), n, seq, 2));
 }

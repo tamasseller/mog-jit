@@ -26,6 +26,7 @@ extern const uint16_t revbitsHelper[];           /* runtime.S */
 extern const uint16_t brTableJumpHelper[];       /* runtime.S */
 extern const uint16_t returnHelperFromStackReclaim[]; /* runtime.S */
 extern const uint16_t trapHelper[];              /* runtime.S */
+extern const uint16_t extThunkHelper[];          /* runtime.S */
 extern uint64_t enterDispatch(const EntryArgs *entryArgs, Runtime *runtime); /* runtime.S */
 }
 
@@ -44,6 +45,14 @@ extern uint64_t enterDispatch(const EntryArgs *entryArgs, Runtime *runtime); /* 
  * constant is a per-call-depth upper bound (every frame assumed non-leaf),
  * not a tight count. */
 #define CALL_RECORD_BYTES 4
+
+/* What runtime.S's extThunkHelper costs an excursion that reaches it: 4 for
+ * the pushed lr, 8 for REALIGN_ENTER's slack. An extension's own C helper
+ * adds its own frame on top, which is why ExtHooks carries a declared
+ * helperStackBytes (compiler/src/ext.h) that enterProgram* folds into the
+ * up-front budget — a helper's worst case has to reach that check, or the
+ * static reservation isn't a bound at all. */
+#define EXT_THUNK_STACK_BYTES 12
 
 /* enterDispatch's own two prologue pushes: {r2,r4,r5,r6,r7,lr} +
  * {r4,r5,r6,r7} = 10 words. Reserved once, for the whole excursion's

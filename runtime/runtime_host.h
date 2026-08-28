@@ -27,6 +27,11 @@
 extern "C" {
 #endif
 
+/* The extension seam's registration struct (compiler/src/ext.h), passed to
+ * enterProgram* below. Only ever a pointer here, so an incomplete type is
+ * enough and a plain-C host that registers nothing just passes NULL. */
+struct ExtHooks;
+
 typedef struct
 {
     /* What `value` means is decided entirely by `trapped` — see the
@@ -110,6 +115,7 @@ ProgramResult enterProgramOnStack(
     uint32_t argCount,
     const uint8_t *programBytes,
     uint32_t programSize,
+    const struct ExtHooks *extension,
     uint32_t codeArenaSize,
     uint32_t stackLimit,
     uint32_t interruptReserve);
@@ -128,6 +134,7 @@ ProgramResult enterProgramSplit(
     uint32_t argCount,
     const uint8_t *programBytes,
     uint32_t programSize,
+    const struct ExtHooks *extension,
     uint32_t codeArenaBase,
     uint32_t codeArenaSize,
     uint32_t stackLimit,
@@ -153,8 +160,23 @@ ProgramResult enterProgramSplit(
  * between the two files fails the build instead of corrupting memory
  * silently. Change a number on either side and the other file's own
  * assert is what catches the mismatch. */
-#define RUNTIME_DISPATCH_TABLE_OFFSET 40 /* &runtime + this = dispatchBase (== &slots[1]) */
+#define RUNTIME_DISPATCH_TABLE_OFFSET 44 /* &runtime + this = dispatchBase (== &slots[1]) */
 #define DISPATCH_SENTINEL_OFFSET 16      /* dispatchBase - this = &slots[0] (the sentinel) */
+
+/* Three words of per-excursion scratch an extension may use for whatever it
+ * needs (a stream cursor, a buffer base, an object handle), at a
+ * compile-time-constant offset from the runtime pointer.
+ *
+ * They are the sentinel ProcSlot's own lastUsed/bodyPtr/staticInfo. slots[0]
+ * exists purely so a real procedure index can be offset by one, and only its
+ * codePtr is ever touched — runtime.S writes it, sentinelLandingAddress()
+ * reads it, and every loop over procedures runs over slot(i) == slots[i+1].
+ * So these three words are already allocated, already reachable through the
+ * pointer emitted code has, and cost nothing to hand out. Zeroed by
+ * Runtime::init; the offset is checked against the real layout by
+ * runtime_internal.h's own static_assert. */
+#define RUNTIME_EXT_STATE_OFFSET 32
+#define RUNTIME_EXT_STATE_WORDS 3
 
 /* Field offsets into `struct EntryArgs` (entry_args.h), for the same
  * reason and by the same split as the two above: enterDispatch's own
@@ -231,6 +253,29 @@ ProgramResult enterProgramSplit(
  * anywhere to report to. Not produced by anything yet. */
 #define RESOURCE_PROGRAM_ENTRY_ARG_COUNT 0x52451500u /* argCount != the entry procedure's own declared arg_count */
 #define RESOURCE_PROGRAM_ENTRY_DEPTH 0x52451600u     /* entry procedure's out-of-window args over the envelope's own total_depth */
+/* A wire byte in the extension range (>= 128, isa-core.md §11) or a
+ * reserved core code (124-127, §5.3). Reported rather than asserted
+ * because it is plausibly the RIGHT program against an image built
+ * without that extension registered — a deployment mismatch, not
+ * malformed bytes. Rejected by Runtime::init's own directory walk, which
+ * decodes every instruction of every procedure before anything is
+ * translated, so no later path can ever see one. */
+#define RESOURCE_PROGRAM_EXT_UNKNOWN 0x52451700u
+/* A well-formed extension declaration asking for a capability this core
+ * doesn't implement (call-shaped, terminates, a transient or net TOS push),
+ * or an extension opcode reaching codegen before the emit path exists.
+ * Distinct from EXT_UNKNOWN because the remedy differs: a newer core,
+ * rather than an image built with a different extension. */
+#define RESOURCE_PROGRAM_EXT_UNSUPPORTED 0x52451800u
+/* ExtHooks::abiVersion != EXT_ABI_VERSION (compiler/src/ext.h) — an
+ * extension built against a different version of the seam. The only
+ * enforced point of the native-declares-a-subset rule. */
+#define RESOURCE_PROGRAM_EXT_ABI 0x52451900u
+/* One of the four core opcodes isa-core.md §5.3 reserves but hasn't
+ * assigned (124-127). Not an extension byte — those start at 128 and are
+ * never offered to an extension — so this says the program was built for a
+ * core that assigns them and this one doesn't. */
+#define RESOURCE_PROGRAM_RESERVED_OPCODE 0x52451a00u
 
 #define RESOURCE_EXHAUSTED_ARENA 0x52452100u            /* code arena full with nothing left to evict */
 #define RESOURCE_EXHAUSTED_STACK_BUDGET 0x52452200u     /* the up-front whole-excursion stack check failed; nothing was touched */

@@ -1,4 +1,5 @@
 #include "decode_instr.h"
+#include "ext.h"
 
 #include <cassert>
 
@@ -97,7 +98,6 @@ constexpr Entry TABLE[] = {
 // 108-123 are CONST#0..15, whose value is the opcode's own offset from
 // this base — a range check rather than 16 more table rows.
 constexpr uint32_t SMALL_CONST_BASE = 108;
-constexpr uint32_t SMALL_CONST_LAST = 123;
 
 static_assert(sizeof(TABLE) / sizeof(TABLE[0]) == SMALL_CONST_BASE,
     "decode table must cover exactly opcodes 0..SMALL_CONST_BASE-1 (isa-core.md §5.2)");
@@ -122,18 +122,75 @@ uint32_t decodeLeb128(const uint8_t *bytes, uint32_t offset, uint32_t &next)
     return value;
 }
 
-DecodedInstr decodeInstr(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset)
+bool decodeLeb128Checked(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset,
+    uint32_t &value, uint32_t &next)
+{
+    uint32_t v = 0, shift = 0, pos = offset;
+    for(;;)
+    {
+        if(pos >= bytesLen || shift >= 32)
+        {
+            return false; // off the end still continuing, or overlong for a u32
+        }
+        uint8_t byte = bytes[pos];
+        v += (uint32_t)(byte & 0x7f) << shift;
+        pos++;
+        if((byte & 0x80) == 0)
+        {
+            break;
+        }
+        shift += 7;
+    }
+    value = v;
+    next = pos;
+    return true;
+}
+
+uint32_t extDecodeLength(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t &decl,
+    const ExtHooks *ext)
+{
+    if(ext == nullptr || ext->decode == nullptr)
+    {
+        return 0;
+    }
+    uint32_t len = ext->decode(bytes, bytesLen, offset, &decl);
+    // Two things the core will not take on trust, because both would turn a
+    // bad extension into a hang or an overrun rather than a diagnostic: no
+    // forward progress, and a length running past the buffer.
+    if(len == 0 || len > bytesLen - offset)
+    {
+        return 0;
+    }
+    return len;
+}
+
+DecodedInstr decodeInstr(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, const ExtHooks *ext)
 {
     assert(offset < bytesLen); // GCOV_EXCL_LINE — ran off the end of the buffer; malformed input
     (void)bytesLen;            // only consulted by the assert above outside debug builds
+    
     uint32_t code = bytes[offset];
     uint32_t pos = offset + 1;
 
     Instr instr{};
 
+    if(code >= EXT_OPCODE_BASE)
+    {
+        // The extension range (§11) ONLY. The four codes the core reserves
+        // but hasn't assigned (124-127, §5.3) are not extension space and
+        // are never offered to an extension — Runtime::init's walk rejects
+        // them, which is also what lets this return a well-formed Instr
+        // unconditionally here.
+        instr.op = Op::EXT;
+        uint32_t len = extDecodeLength(bytes, bytesLen, offset, instr.extDecl, ext);
+        assert(len >= 1); // GCOV_EXCL_LINE — unreachable: the walk already accepted this byte
+        return {instr, offset + len};
+    }
+
+    assert(code <= LAST_CORE_OPCODE); // GCOV_EXCL_LINE — unreachable: 124-127 are core-reserved (§5.3), rejected by the walk
+
     if(code >= SMALL_CONST_BASE)
     {
-        assert(code <= SMALL_CONST_LAST); // GCOV_EXCL_LINE — reserved/unassigned (§5.3), or an extension opcode (§11) this JIT never registers
         instr.op = Op::CONST;
         instr.imm = (int32_t)(code - SMALL_CONST_BASE);
         return {instr, pos};

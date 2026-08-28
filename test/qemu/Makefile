@@ -21,6 +21,7 @@ SOURCES += ../../runtime/compile_proc.cpp
 
 # The compiler itself
 SOURCES += ../../compiler/src/window.cpp
+SOURCES += ../../compiler/src/ext.cpp
 SOURCES += ../../compiler/src/accstate.cpp
 SOURCES += ../../compiler/src/binops.cpp
 SOURCES += ../../compiler/src/assembler.cpp
@@ -140,6 +141,18 @@ LDFLAGS += -specs=nosys.specs
 LDFLAGS += -T linker.ld
 
 include ../../vendor/ultimate-makefile/Makefile.ultimate
+
+# Makefile.ultimate generates header dependencies for .c/.cpp (-MMD) but its
+# %.S.o rule has neither DEPFLAGS nor a .d prerequisite, so an assembly file
+# never notices a header change. runtime.S really does #include
+# runtime_host.h (see the AS comment above), and the macros it takes from
+# there — RUNTIME_DISPATCH_TABLE_OFFSET, DISPATCH_SENTINEL_OFFSET, LANDING_*,
+# ENTRY_ARGS_*_OFFSET — are exactly the ones the C++ side also compiles
+# against. A stale runtime.S.o therefore produces a binary whose two halves
+# disagree about a struct offset, which does not fail to build and does not
+# assert: it dispatches to a wrong address and hangs. runtime_internal.h's
+# own static_assert cannot catch it, since it only checks the C++ side.
+$(OBJDIR)/$(abspath ../../runtime/runtime.S).o: $(abspath ../../runtime/runtime_host.h)
 
 # Not using Makefile.ultimate's own `check` (host-execution + gcovr
 # coverage assumptions don't fit a bare-metal image) — main.cpp's own

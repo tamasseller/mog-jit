@@ -138,7 +138,7 @@ uint32_t Window::spillOffset(uint32_t k) const
     return (savesLR && k < initialSpilledCount) ? raw + 4 : raw;
 }
 
-void Window::discardWindow(Assembler &e) const
+void Window::discard(Assembler &e) const
 {
     uint32_t spilled = spilledCount(tos) - (savesLR ? initialSpilledCount : 0);
     if(spilled > 0)
@@ -176,12 +176,12 @@ void Window::finishPop(Assembler &e)
     tos -= 1;
 }
 
-void spillForCall(Assembler &e, Window &window, uint32_t stackArgs)
+void Window::spillForCall(Assembler &e, uint32_t stackArgs)
 {
-    uint32_t w = std::min(window.tos, WINDOW_SIZE);
+    uint32_t w = std::min(this->tos, WINDOW_SIZE);
     uint32_t m = std::min(stackArgs, w);
-    uint32_t bottom = window.tos - w;
-    uint32_t base = window.tos - m;
+    uint32_t bottom = this->tos - w;
+    uint32_t base = this->tos - m;
 
     if(base > bottom)
     {
@@ -190,7 +190,7 @@ void spillForCall(Assembler &e, Window &window, uint32_t stackArgs)
     pushLargestKClosest(e, base, m);
 }
 
-void fillCalleeArgs(Assembler &e, uint32_t stackArgs)
+void Window::fillCalleeArgs(Assembler &e, uint32_t stackArgs)
 {
     uint32_t m = std::min(stackArgs, WINDOW_SIZE - 1);
     if(m == 0)
@@ -200,9 +200,9 @@ void fillCalleeArgs(Assembler &e, uint32_t stackArgs)
     popRuns(e, stackArgs - m, m);
 }
 
-void restoreWindow(Assembler &e, Window &window, uint32_t targetTos)
+void Window::restore(Assembler &e, uint32_t targetTos)
 {
-    uint32_t spilledNow = spilledCount(window.tos);
+    uint32_t spilledNow = spilledCount(this->tos);
     uint32_t spilledTarget = spilledCount(targetTos);
     uint32_t reloadTop = std::min(spilledNow, targetTos);
 
@@ -218,13 +218,13 @@ void restoreWindow(Assembler &e, Window &window, uint32_t targetTos)
     }
     popRuns(e, spilledTarget, reloadTop - spilledTarget);
 
-    window.tos = targetTos;
+    this->tos = targetTos;
 }
 
-void reloadAfterCall(Assembler &e, Window &window, uint32_t targetTos)
+void Window::reloadAfterCall(Assembler &e, uint32_t targetTos)
 {
-    uint32_t w = std::min(window.tos, WINDOW_SIZE);
-    uint32_t bottom = window.tos - w;
+    uint32_t w = std::min(this->tos, WINDOW_SIZE);
+    uint32_t bottom = this->tos - w;
     uint32_t count = std::min(targetTos, WINDOW_SIZE);
     uint32_t deeperFloor = targetTos - count;
 
@@ -236,7 +236,7 @@ void reloadAfterCall(Assembler &e, Window &window, uint32_t targetTos)
     uint32_t historicalTop = std::min(bottom, targetTos);
     popRuns(e, deeperFloor, historicalTop - deeperFloor);
 
-    window.tos = targetTos;
+    this->tos = targetTos;
 }
 
 } // namespace jitc

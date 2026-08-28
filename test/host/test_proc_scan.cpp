@@ -155,16 +155,58 @@ TEST(ScanProcBodyStackFloorReachedReportsNotOk)
     uint32_t len = encodeBody(body, 4, bytes, sizeof(bytes));
 
     register uint32_t sp asm("sp");
-    BodyScanResult r = scanProcBody(bytes, len, 0, sp); // floor pinned at the current sp: no margin at all
+    BodyScanResult r = scanProcBody(bytes, len, 0, nullptr, sp); // floor pinned at the current sp: no margin at all
     CHECK(!r.ok);
-    CHECK(r.stackFloorHit); // ran out of stack, not a malformed body — the caller reports these differently
+    CHECK(r.failCode == RESOURCE_EXHAUSTED_SCAN_STACK); // out of stack, not a malformed body
+}
+
+TEST(ScanProcBodyRejectsAnExtensionRangeOpcode)
+{
+    // 0x80 is the first extension opcode (isa-core.md §11). decodeInstr only
+    // asserts on it and every shipping build is -DNDEBUG, so this walk is
+    // what actually stops it — reported as its own reason, distinct from
+    // both a malformed body and running out of stack.
+    const uint8_t bytes[] = {0x80};
+
+    BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
+    CHECK(!r.ok);
+    CHECK(r.failCode == RESOURCE_PROGRAM_EXT_UNKNOWN);
+}
+
+TEST(ScanProcBodyRejectsAReservedCoreOpcodeAsItsOwnReason)
+{
+    // 124-127 are reserved to the CORE (isa-core.md §5.3), not extension
+    // space — the extension range starts at 128. So this is NOT an unknown
+    // extension opcode: it says the program wants a core that assigns these
+    // and this one doesn't, and no registered extension can change that.
+    for(uint8_t code = 124; code < 128; code++)
+    {
+        const uint8_t bytes[] = {code};
+        BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
+        CHECK(!r.ok);
+        CHECK(r.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE);
+    }
+}
+
+TEST(ScanProcBodyRejectsAnExtensionOpcodeAfterAValidPrefix)
+{
+    // Not just the first byte: the walk must stop mid-body too, and must not
+    // report the truncation it would otherwise notice at the end instead.
+    const Instr prefix[] = {CONST(1)};
+    uint8_t bytes[16];
+    uint32_t len = encodeBody(prefix, 1, bytes, sizeof(bytes));
+    bytes[len++] = 0x80;
+
+    BodyScanResult r = scanProcBody(bytes, len, 0);
+    CHECK(!r.ok);
+    CHECK(r.failCode == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
 
 TEST(ScanProcBodyRunningOffTheEndIsNotAStackFloorHit)
 {
     // A LOOP with nothing closing it: the walk runs off maxBytes with a
     // level still open. Same !ok as the floor case above, and the other
-    // half of the distinction stackFloorHit exists to draw — a body that
+    // half of the distinction failCode exists to draw — a body that
     // was never well-formed, which no amount of stack would fix.
     const Instr body[] = {bare(Op::LOOP), CONST(1)};
     uint8_t bytes[16];
@@ -172,5 +214,5 @@ TEST(ScanProcBodyRunningOffTheEndIsNotAStackFloorHit)
 
     BodyScanResult r = scanProcBody(bytes, len, 0);
     CHECK(!r.ok);
-    CHECK(!r.stackFloorHit);
+    CHECK(r.failCode == RESOURCE_PROGRAM_BODY_UNTERMINATED);
 }

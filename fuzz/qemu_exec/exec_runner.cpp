@@ -191,6 +191,7 @@ int main(void)
         ProgramResult r = enterProgramSplit(
             entryArgs, argCount,
             programBytes, len,
+            /*extension=*/nullptr, 
             (uint32_t)(uintptr_t)g_codeArena, CODE_ARENA_BYTES,
             /*stackLimit=*/(uint32_t)(uintptr_t)(g_codeArena + CODE_ARENA_BYTES),
             /*interruptReserve=*/0);

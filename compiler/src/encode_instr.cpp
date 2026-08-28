@@ -159,7 +159,7 @@ void encodeInstr(const Instr &instr, uint8_t *out, uint32_t &outLen, uint32_t ou
         encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
         return;
     default:
-        break; // GCOV_EXCL_LINE — every Op not already handled by isArithOp/isComparisonOp/the unary range is one of the explicit cases above; Op's own fixed enum range makes this genuinely unreachable, not merely untested
+        break; // GCOV_EXCL_LINE — every Op not already handled by isArithOp/isComparisonOp/the unary range is one of the explicit cases above, with one deliberate exception: Op::EXT. An extension instruction's operands never live in Instr (they stay on the wire, isa-core.md §11.3), so this encoder structurally cannot rebuild one — a fixture needing an extension op splices its own bytes instead. Reaching here with anything else is a translator-logic bug.
     }
 
     assert(false && "encode_instr: unhandled instruction"); // GCOV_EXCL_LINE

@@ -13,11 +13,7 @@ static constexpr uint32_t PC = 15;
 
 void emitPrologueStub(Assembler &a)
 {
-    // Fixed-length (STUB_SIZE, asserted by test_abi_strategy.cpp against
-    // this function's own emitted length) and self-relocating (the ADD
-    // r2,r2,pc below) — a pool flush landing anywhere in here would break
-    // both.
-    Assembler::AtomicScope atomic(a);
+    Assembler::AtomicBlock atomic(a, /*poolEntries=*/0);
     a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(LRU_TICK_REG))); // MOV r3, r11 — low-mirror the LRU tick
     a.emit(ArmV6M::str(R(ENTRY_JUMP_REG), R(ENTRY_IDX_REG), ArmV6M::Uoff<2, 5>(4)));   // STR r3, [r1, #4] — entry.last_used = old tick
     a.emit(ArmV6M::adds(R(ENTRY_JUMP_REG), ArmV6M::Imm<8>(1)));                        // ADDS r3, r3, #1
@@ -63,8 +59,6 @@ void abiEmitCall(Assembler &a, uint32_t procIdx, uint32_t calleeIndex)
     // (blocks.h's CALL_MAX_BYTES=64), comfortably more than
     // CALL_SEQUENCE_BYTES actually is. Nothing inside the scope below can
     // need to flush.
-    a.ensurePoolRoom(2);
-
     uint32_t preCallPc = a.pc();
 
     uint32_t k = (preCallPc - STUB_SIZE) + CALL_SEQUENCE_HALFWORDS * 2;
@@ -73,7 +67,7 @@ void abiEmitCall(Assembler &a, uint32_t procIdx, uint32_t calleeIndex)
     // record bakes in k, a closed-form offset computed from this
     // sequence's own fixed CALL_SEQUENCE_BYTES — a pool flush landing
     // anywhere in here would change that length and invalidate it.
-    Assembler::AtomicScope atomic(a);
+    Assembler::AtomicBlock atomic(a, /*poolEntries=*/2);
     a.materializeImm32(ENTRY_IDX_REG, record, false);
     a.materializeImm32(ENTRY_OFFSET_REG, calleeIndex, false);
     a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
@@ -97,12 +91,10 @@ void abiEmitReturn(Assembler &a, bool savesLR, uint32_t initialSpilledCount)
     // materializeImm32 call below is the only pool-eligible spot in this
     // whole function, and this sequence's own length is well within
     // LITERAL_POOL_REACH_MARGIN either way.
-    a.ensurePoolRoom(1);
-
     // A helper-vector jump sequence — kept contiguous like the other
     // three, though (unlike abiEmitCall's record) nothing here is
     // actually self-referential.
-    Assembler::AtomicScope atomic(a);
+    Assembler::AtomicBlock atomic(a, /*poolEntries=*/1);
 
     if(savesLR && initialSpilledCount > 0)
     {
@@ -123,7 +115,7 @@ void abiEmitTrap(Assembler &a)
     // here is self-referential, and unlike abiEmitReturn there is nothing
     // to materialize either: the trap code is already in ACC_REG (its
     // caller put it there) and trapHelper takes no other input beyond r9.
-    Assembler::AtomicScope atomic(a);
+    Assembler::AtomicBlock atomic(a, /*poolEntries=*/0);
     a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
     a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(HELPER_TRAP_OFFSET)));
     a.emit(ArmV6M::bx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));

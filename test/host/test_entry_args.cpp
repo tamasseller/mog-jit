@@ -120,8 +120,8 @@ bool viaCallSite(Machine &m, const uint32_t *args, uint32_t n)
 
     uint16_t buf[32];
     Assembler e(buf, 32);
-    spillForCall(e, caller, stackArgs);
-    fillCalleeArgs(e, stackArgs);
+    caller.spillForCall(e, stackArgs);
+    Window::fillCalleeArgs(e, stackArgs);
 
     for(uint32_t i = 0; i < e.halfwordCount(); i++)
     {

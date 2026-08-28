@@ -8,6 +8,11 @@
 
 #include <cstdint>
 
+// For the RESOURCE_* reason codes failCode carries. Needs only stdint
+// itself, so this pulls in no runtime types.
+#include "runtime_host.h"
+#include "ext.h"
+
 namespace jitc
 {
 
@@ -15,11 +20,13 @@ struct BodyScanResult
 {
     uint32_t bodyBytes;  // this procedure's own body length, discovered by walking it
     bool needsLRSave;    // true iff the body contains CALL, BR_TABLE(imm>2), CLZ, or REVBITS
-    bool ok;             // false: hit stackFloor, or ran off maxBytes with something still open
-    bool stackFloorHit;  // which of those two, when !ok: true = stackFloor, false = ran off maxBytes.
-                         // The caller reports them as different things (runtime_host.h's
-                         // RESOURCE_EXHAUSTED_SCAN_STACK vs RESOURCE_PROGRAM_BODY_UNTERMINATED —
-                         // out of room here, versus a program that was never well-formed).
+    bool ok;             // exactly failCode == 0; kept because it is what most callers want
+    uint32_t failCode;   // 0 when ok, else the RESOURCE_* code (runtime_host.h) naming which
+                         // of the five ways this walk can reject a body happened. Carried as
+                         // the code itself rather than a set of parallel bools: the caller
+                         // only ever forwards it, and the reasons kept multiplying (out of
+                         // stack, never terminated, a reserved core opcode, an extension byte
+                         // nothing claims, a declaration this core can't honour).
 };
 
 /** Finds one procedure's own body boundary and whether it needs `lr`
@@ -38,7 +45,8 @@ struct BodyScanResult
  *  everywhere else in this translator (decode_instr.h's own asserts,
  *  compiled out under -DNDEBUG) — this only guards the genuinely dynamic
  *  concern, recursion depth. */
-BodyScanResult scanProcBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t startOffset, uint32_t stackFloor = 0);
+BodyScanResult scanProcBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t startOffset,
+    const ExtHooks *ext = nullptr, uint32_t stackFloor = 0);
 
 } // namespace jitc
 

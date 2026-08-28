@@ -73,11 +73,17 @@ uint32_t physReg(uint32_t k);
 // savesLR fact needed by spillOffset()/discardWindow() below.
 class Window
 {
+    bool savesLR;
+    uint32_t initialSpilledCount;
+
 public:
     uint32_t tos;
 
+    inline Window() = default;
+
     explicit Window(uint32_t argCount, bool savesLR = false)
-        : tos(argCount), savesLR(savesLR),
+        : tos(argCount), 
+          savesLR(savesLR),
           initialSpilledCount(argCount > WINDOW_SIZE ? argCount - WINDOW_SIZE : 0)
     {
     }
@@ -108,47 +114,17 @@ public:
     // no such adjustment.
     uint32_t spillOffset(uint32_t k) const;
 
-    // A terminator's (RETURN/TRAP) sp rebalancing — nothing downstream ever
-    // reads r4-r7 again, so this is just a bare sp adjustment undoing every
-    // spill this procedure's own body made. A savesLR procedure only
-    // reclaims its own self-spilled locals here, not the
-    // initialSpilledCount slots its caller placed before this procedure's
-    // own prologue ran (those sit below this procedure's own push{lr}).
-    // abi_strategy.cpp's abiEmitReturn reclaims that remainder, after
-    // retrieving the saved record.
-    void discardWindow(Assembler &e) const;
+    void discard(Assembler &e) const;
 
-private:
-    bool savesLR;
-    uint32_t initialSpilledCount;
+    void spillForCall(Assembler &e, uint32_t stackArgs);
+
+    static void fillCalleeArgs(Assembler &e, uint32_t stackArgs);
+
+    void reloadAfterCall(Assembler &e, uint32_t targetTos);
+
+    void restore(Assembler &e, uint32_t targetTos);
 };
 
-// CALL's own shuffle, first half — spills the caller's currently-resident
-// window into the leftover-locals mask (one plain PUSH) and the
-// stack-passed args (pushLargestKClosest). Doesn't move window.tos.
-void spillForCall(Assembler &e, Window &window, uint32_t stackArgs);
-
-// CALL's shuffle, second half — fills the callee's own canonical phase-0
-// window from what spillForCall just pushed. Capped at WINDOW_SIZE - 1, not
-// WINDOW_SIZE: the callee's own last argument (delivered via acc, not
-// through this function) always lands at physReg(argCount-1), which is the
-// same physical register as physReg(0) whenever stackArgs equals
-// WINDOW_SIZE exactly, so this cap must stay exact.
-void fillCalleeArgs(Assembler &e, uint32_t stackArgs);
-
-// CALL's shuffle, final step — once the callee returns, reload whatever
-// spillForCall/fillCalleeArgs consumed. Mutates window.tos to targetTos.
-void reloadAfterCall(Assembler &e, Window &window, uint32_t targetTos);
-
-// blocks.h's own block-exit truncation: any TOS surplus above targetTos is
-// implicitly dropped at a BLOCK_END/loop back-edge — no bytecode-level pop
-// sequence runs, so sp needs rebalancing here regardless of whether any
-// physical register still holds something the target window's own mapping
-// expects. What's spilled above targetTos's own ceiling is abandoned
-// outright; what's spilled at or below it is genuinely historical data,
-// reloaded via popRuns in the same larger-k-first order it was spilled in.
-// Mutates window.tos to targetTos directly.
-void restoreWindow(Assembler &e, Window &window, uint32_t targetTos);
 
 } // namespace jitc
 

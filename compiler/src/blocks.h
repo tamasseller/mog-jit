@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include "instr.h"
+#include "ext.h"
 #include "shape.h"
 #include "armv6.h"
 #include "assembler.h"
@@ -24,9 +25,11 @@ struct SpanResult
     uint32_t bytes;
     uint32_t nextPc;
 };
-SpanResult maxSpanBytes(const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount);
+SpanResult maxSpanBytes(const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount,
+    const ExtHooks *ext = nullptr);
 
-void emitGuardedBranch(Assembler &a, Label &label, ArmV6M::Condition condition, const uint8_t *bytes, uint32_t bytesLen, uint32_t from, uint32_t blockCount);
+void emitGuardedBranch(Assembler &a, Label &label, ArmV6M::Condition condition, const uint8_t *bytes,
+    uint32_t bytesLen, uint32_t from, uint32_t blockCount, const ExtHooks *ext = nullptr);
 
 // ── Comparison → branch fusion (§10.1's "zero-destination" axis) ───────
 

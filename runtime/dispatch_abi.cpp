@@ -28,7 +28,7 @@ extern const uint32_t trampolineAddr = (uint32_t)(uintptr_t)translatorTrampoline
  * (clzHelper/revbitsHelper/brTableJumpHelper) are the reserved
  * software-helper slots — see runtime.S's own header above those three
  * symbols. */
-extern const uint32_t helperVec[9] = {
+extern const uint32_t helperVec[10] = {
     (uint32_t)(uintptr_t)callHelper,
     (uint32_t)(uintptr_t)returnHelperFromLr,
     (uint32_t)(uintptr_t)returnHelperFromStack,
@@ -38,6 +38,7 @@ extern const uint32_t helperVec[9] = {
     (uint32_t)(uintptr_t)brTableJumpHelper,
     (uint32_t)(uintptr_t)returnHelperFromStackReclaim,
     (uint32_t)(uintptr_t)trapHelper,
+    (uint32_t)(uintptr_t)extThunkHelper,
 };
 
 /* An attached Assembler's own direct exit when it cannot free enough

@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <cassert>
 #include "fixtures.h"
+#include "ext.h"
 #include "instr.h"
 #include "encode_instr.h"
 #include "translate_proc.h"
@@ -69,7 +70,7 @@ static ProgramResult enterProgramWithSharedArena(
     const uint8_t *programBytes, uint32_t programSize, uint32_t arenaSize)
 {
     return enterProgramSplit(args, argCount, programBytes, programSize,
-        (uint32_t)(uintptr_t)sharedArena, arenaSize, stackLimitAboveBss(), /*interruptReserve=*/0);
+        /*extension=*/nullptr, (uint32_t)(uintptr_t)sharedArena, arenaSize, stackLimitAboveBss(), /*interruptReserve=*/0);
 }
 
 static uint32_t makeProgram(uint32_t maxCallDepth, uint32_t totalDepth, const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCap)
@@ -145,7 +146,7 @@ TEST(OnStackGenerousSucceeds)
     uint32_t len = makeProgram(/*maxCallDepth=*/1, /*totalDepth=*/1, procs, 2, bytes, sizeof(bytes));
 
     uint32_t stackLimit = stackLimitAboveBss();
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, /*extension=*/nullptr, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -169,7 +170,7 @@ TEST(SplitThreeDeepCallChainSucceeds)
     static uint8_t arena[GENEROUS_ARENA];
     uint32_t stackLimit = stackLimitAboveBss();
     ProgramResult r = enterProgramSplit(nullptr, 0, bytes, len,
-        (uint32_t)(uintptr_t)arena, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+        /*extension=*/nullptr, (uint32_t)(uintptr_t)arena, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -196,7 +197,7 @@ TEST(OnStackRejectsBeforeTouchingAnything)
     uint32_t len = makeProgram(/*maxCallDepth=*/1, /*totalDepth=*/1, procs, 2, bytes, sizeof(bytes));
 
     uint32_t stackLimit = currentSp(); // measured before this callee's own prologue — strictly higher than sp once inside it
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, /*extension=*/nullptr, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -219,10 +220,25 @@ TEST(AProgramWithNoProceduresIsRejected)
     // storageBytesFor(0) sizes, so this is rejected before that storage is
     // even measured — well before any stack budget or arena is involved.
     const uint8_t bytes[] = {0x00, 0x00, 0x00};
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, sizeof(bytes), GENEROUS_ARENA, 0, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, sizeof(bytes), /*extension=*/nullptr, GENEROUS_ARENA, 0, /*interruptReserve=*/0);
 
     CHECK(r.trapped);
     CHECK(r.value == RESOURCE_PROGRAM_NO_PROCS);
+}
+
+TEST(AnExtensionRangeOpcodeIsRejectedOnHardware)
+{
+    // The point of running this HERE: this image is built -DNDEBUG, so
+    // decode_instr.cpp's assert is gone. Before Runtime::init's walk gained
+    // its own check, byte 0x80 decoded as CONST 20 and the rest of the
+    // instruction stream was silently reinterpreted — on real hardware, with
+    // no diagnostic at all. Hand-encoded because no ProcSource can express it.
+    // max_call_depth=1 total_depth=1 proc_count=1 arg_count=0 body=[0x80]
+    const uint8_t bytes[] = {0x01, 0x01, 0x01, 0x00, 0x80};
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, sizeof(bytes), /*extension=*/nullptr, GENEROUS_ARENA, 0, /*interruptReserve=*/0);
+
+    CHECK(r.trapped);
+    CHECK(r.value == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
 
 // Eviction + compaction. This measures each procedure's own compiled size
@@ -239,26 +255,37 @@ TEST(AProgramWithNoProceduresIsRejected)
 static uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint32_t *calleeArgCounts, uint32_t calleeCount, bool savesLR)
 {
     static uint16_t scratch[128];
-    Assembler a(scratch, 128);
 
-    // translateProc now reads a callee's argCount and the procedure-under-
-    // measurement's own needsLRSave through a Runtime rather than raw
-    // parameters (compile_proc.cpp's own ProcSlot). This measurement never
-    // runs a real dispatch/arena, so a throwaway Runtime hand-populated
-    // with just those two facts — never bodyPtr/bodyBytes — stands in for
-    // the real one exactly the way it used to pass calleeArgCounts/savesLR
-    // directly.
+    // translateProc now reads a procedure's own argCount/bodyPtr/bodyBytes/
+    // needsLRSave straight out of its own slot in a Runtime (and every
+    // callee's argCount the same way, for CALL sites), and always compiles
+    // through an Assembler attached to that Runtime's own arena — there is
+    // no longer a detached, buffer-only entry point. This measurement never
+    // runs a real dispatch, so a throwaway Runtime stands in for the real
+    // one: scratch above becomes its whole arena, and proc's own wire bytes
+    // (already real — this target is genuinely 32-bit, so a pointer cast to
+    // uint32_t loses nothing the way it would on the host) are registered
+    // as procIdx's own slot exactly the way Runtime::init() would from the
+    // real program bytes.
     alignas(8) uint8_t runtimeBytes[sizeof(Runtime) + (calleeCount + 1) * sizeof(ProcSlot)] = {};
     Runtime &r = *reinterpret_cast<Runtime *>(runtimeBytes);
     r.procCount = calleeCount;
+    r.arenaCursor = (uint32_t)(uintptr_t)scratch;
+    r.arenaEnd = r.arenaCursor + sizeof(scratch);
     for(uint32_t i = 0; i < calleeCount; i++)
     {
+        // Not resident: Runtime::isResident() compares codePtr against
+        // trampolineAddr, never zero — left at its zero-init default,
+        // growForAttached's own findEvictionVictim/evict loop would see a
+        // bogus resident procedure and evict it, corrupting whichever one
+        // is actually mid-translation.
+        r.slot(i).codePtr = trampolineAddr;
         r.slot(i).setStaticInfo(calleeArgCounts[i], /*bodyBytes=*/0, i == procIdx && savesLR);
     }
+    r.slot(procIdx).bodyPtr = (uint32_t)(uintptr_t)proc.body;
+    r.slot(procIdx).setStaticInfo(proc.argCount, proc.bodyBytes, savesLR);
 
-    uint32_t n = translateProc(proc, procIdx, a, r);
-    assert(!a.overflowed()); // GCOV_EXCL_LINE — the scratch buffer above is already generous for this test corpus
-    return n;
+    return translateProc(procIdx, r, /*lruTick=*/0);
 }
 
 TEST(EvictionThreeDeepCallChain)
@@ -543,7 +570,7 @@ TEST(OnStackAcceptsAtComputedBudgetBoundary)
     uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + GENEROUS_ARENA;
     uint32_t stackLimit = currentSp() - needed - BOUNDARY_SLACK;
 
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, /*extension=*/nullptr, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -571,7 +598,7 @@ TEST(OnStackRejectsJustAboveComputedBudget)
     uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + GENEROUS_ARENA;
     uint32_t stackLimit = currentSp() - needed + BOUNDARY_SLACK;
 
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, /*extension=*/nullptr, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -632,7 +659,7 @@ TEST(OnStackSucceedsWithBothArenaAndStackBudgetTight)
     uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + tightArena;
     uint32_t stackLimit = currentSp() - needed - TIGHT_TEST_SLACK;
 
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, tightArena, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, /*extension=*/nullptr, tightArena, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -640,6 +667,42 @@ TEST(OnStackSucceedsWithBothArenaAndStackBudgetTight)
     }
     CHECK(!r.trapped);
     CHECK(r.value == 106);
+}
+
+TEST(AnExtensionsDeclaredHelperStackIsAddedToTheUpFrontBudget)
+{
+    // Same program, same arena, same stackLimit — the ONLY difference is
+    // that an extension declares helper stack. If that declaration doesn't
+    // reach requiredStackBytes, both runs behave identically and the static
+    // reservation stops being a bound at the one moment it matters: a
+    // helper runs at the deepest point of an excursion.
+    //
+    // The program contains no extension opcodes, so decode is never called;
+    // helperStackBytes is consulted regardless.
+    const Instr body[] = {CONST(37), bare(Op::RETURN)};
+    ProcSource procs[] = {{0, body, 2}};
+    uint8_t bytes[32];
+    uint32_t maxCallDepth = 0, totalDepth = 1, procCount = 1;
+    uint32_t len = makeProgram(maxCallDepth, totalDepth, procs, procCount, bytes, sizeof(bytes));
+
+    uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + GENEROUS_ARENA;
+    uint32_t stackLimit = currentSp() - needed - BOUNDARY_SLACK;
+
+    ProgramResult without = enterProgramOnStack(nullptr, 0, bytes, len, /*extension=*/nullptr,
+        GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    if(without.trapped)
+    {
+        writeHexTrap(without.value);
+    }
+    CHECK(!without.trapped);
+    CHECK(without.value == 37);
+
+    // Declaring more than the slack that just made it fit must tip it over.
+    static const ExtHooks HUNGRY = {EXT_ABI_VERSION, nullptr, nullptr, BOUNDARY_SLACK * 2};
+    ProgramResult with = enterProgramOnStack(nullptr, 0, bytes, len, &HUNGRY,
+        GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    CHECK(with.trapped);
+    CHECK(with.value == RESOURCE_EXHAUSTED_STACK_BUDGET);
 }
 
 int main(void)

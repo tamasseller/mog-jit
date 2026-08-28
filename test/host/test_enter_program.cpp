@@ -11,6 +11,7 @@
 #include "runtime_internal.h"
 #include "dispatch_abi.h"
 #include "entry_args.h"
+#include "ext.h"
 #include "encode_instr.h"
 #include "instr.h"
 #include "host_runtime_support.h"
@@ -44,6 +45,30 @@ uint32_t buildProgram(uint32_t entryArgCount, uint32_t totalDepth, uint8_t *out,
     return encodeJitProgram(/*maxCallDepth=*/0, totalDepth, procs, 1, out, cap);
 }
 
+/* Declines every byte, so a program containing one is rejected — which is
+ * observable only if enterProgram* actually installed it. */
+uint32_t decliningDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *)
+{
+    return 0;
+}
+
+uint32_t acceptingDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+{
+    *decl = extDecl(0x80, 0, /*tosDelta=*/0, /*maxTransient=*/0, /*halfwords=*/2);
+    return 1;
+}
+
+const ExtHooks DECLINING = {EXT_ABI_VERSION, decliningDecode};
+const ExtHooks ACCEPTING = {EXT_ABI_VERSION, acceptingDecode};
+
+ProgramResult enterWithExtension(const ExtHooks *ext, const uint8_t *bytes, uint32_t len)
+{
+    static uint8_t arena[512];
+    g_captured = Captured{};
+    return enterProgramSplit(nullptr, 0, bytes, len, ext,
+        (uint32_t)(uintptr_t)arena, sizeof(arena), /*stackLimit=*/0, /*interruptReserve=*/0);
+}
+
 ProgramResult enter(const uint32_t *args, uint32_t argCount, const uint8_t *bytes, uint32_t len)
 {
     static uint8_t arena[512];
@@ -52,7 +77,7 @@ ProgramResult enter(const uint32_t *args, uint32_t argCount, const uint8_t *byte
      * not what these TESTs are about — the two boundary cases for that
      * check live in test/qemu/main.cpp, against a real measured sp. */
     return enterProgramSplit(args, argCount, bytes, len,
-        (uint32_t)(uintptr_t)arena, sizeof(arena), /*stackLimit=*/0, /*interruptReserve=*/0);
+        /*extension=*/nullptr, (uint32_t)(uintptr_t)arena, sizeof(arena), /*stackLimit=*/0, /*interruptReserve=*/0);
 }
 
 } // namespace
@@ -208,4 +233,52 @@ TEST(enterProgramRejectsAProgramWithNoProcedures)
     CHECK(r.trapped == LANDING_RESOURCE_ERROR);
     CHECK(r.value == RESOURCE_PROGRAM_NO_PROCS);
     CHECK(!g_captured.called);
+}
+
+/* max_call_depth=0 total_depth=0 proc_count=1 arg_count=0 body=[0x80, RETURN] */
+static const uint8_t kExtProgram[] = {0x00, 0x00, 0x01, 0x00, 0x80, 100};
+
+TEST(TheExtensionArgumentIsWhatInstallsTheExtension)
+{
+    // With none passed, an extension byte has nothing to claim it.
+    ProgramResult none = enterWithExtension(nullptr, kExtProgram, sizeof(kExtProgram));
+    CHECK(none.trapped == LANDING_RESOURCE_ERROR);
+    CHECK(none.value == RESOURCE_PROGRAM_EXT_UNKNOWN);
+
+    // Passing one that accepts gets the same bytes all the way past the
+    // directory walk and into dispatch. (Nothing is translated here — this
+    // file's own enterDispatch stands in for runtime.S — so the codegen
+    // bail M1 stops at belongs to test_translate_proc.cpp, not here.)
+    ProgramResult ok = enterWithExtension(&ACCEPTING, kExtProgram, sizeof(kExtProgram));
+    CHECK(ok.trapped == LANDING_SUCCESS);
+    CHECK(g_captured.called);
+
+    // And one that declines is reported as such.
+    ProgramResult declined = enterWithExtension(&DECLINING, kExtProgram, sizeof(kExtProgram));
+    CHECK(declined.value == RESOURCE_PROGRAM_EXT_UNKNOWN);
+}
+
+TEST(TwoProgramsInOneImageCanUseDifferentExtensions)
+{
+    // The property that made this an argument rather than a registration:
+    // the extension is per-Runtime, so the same bytes get a different answer
+    // depending only on which extension was handed in. A file-static would
+    // let one program's extension silently service the next one's bytes.
+    CHECK(enterWithExtension(&ACCEPTING, kExtProgram, sizeof(kExtProgram)).trapped == LANDING_SUCCESS);
+    CHECK(enterWithExtension(&DECLINING, kExtProgram, sizeof(kExtProgram)).value
+        == RESOURCE_PROGRAM_EXT_UNKNOWN);
+    CHECK(enterWithExtension(&ACCEPTING, kExtProgram, sizeof(kExtProgram)).trapped == LANDING_SUCCESS);
+    CHECK(enterWithExtension(nullptr, kExtProgram, sizeof(kExtProgram)).value
+        == RESOURCE_PROGRAM_EXT_UNKNOWN);
+}
+
+TEST(AModestDeclaredHelperStackDoesNotDisturbTheBudget)
+{
+    // That the declared bytes are actually ADDED to the budget is checked in
+    // test/qemu/main.cpp, against a real measured sp: here stackLimit is 0,
+    // so the check reduces to `sp < needed` and the host's own sp is
+    // whatever ASLR chose — the same reason this file's other budget cases
+    // live over there.
+    static const ExtHooks MODEST = {EXT_ABI_VERSION, acceptingDecode, nullptr, EXT_THUNK_STACK_BYTES};
+    CHECK(enterWithExtension(&MODEST, kExtProgram, sizeof(kExtProgram)).trapped == LANDING_SUCCESS);
 }

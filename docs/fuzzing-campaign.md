@@ -676,7 +676,11 @@ Recorded because each cost real time and none is discoverable from the docs.
   argument vector (`runtime/entry_args.h`, `design.md` §9); the skip is
   gone and every entry procedure is now compared.
 - Non-terminating programs — legal per §9, and fatal to a batch.
-- `EXT` opcodes — excluded from this target by design.
+- `EXT` opcodes — the seam decodes them and validates their declarations
+  (design.md §18), but no extension is registered in either fuzz half, so
+  nothing generates one. Registering one also requires its wire format to
+  round-trip byte-exactly, or `oracle_server.ts`'s canonical-length gate
+  rejects every ext-carrying seed as malformed.
 
 ## Files touched
 

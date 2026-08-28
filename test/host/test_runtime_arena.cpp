@@ -13,6 +13,7 @@
 // its slide is covered by a QEMU fixture instead. Every method used here
 // only ever touches the dispatch table, which does live in real memory.
 #include "Test.h"
+#include "ext.h"
 #include "runtime_internal.h"
 #include "encode_instr.h"
 
@@ -171,7 +172,7 @@ TEST(InitFailsWithoutTouchingDispatchStateWhenAProcedureCantBeScanned)
     // once enterDispatch is already running. Checked as the specific code:
     // running out of stack here and a body that was never well-formed are
     // the two halves of scanProcBody's !ok, and the whole point of
-    // stackFloorHit is that they no longer arrive as the same answer.
+    // failCode is that they no longer arrive as the same answer.
     const Instr body[] = {bare(Op::RETURN)};
     ProcSource procs[] = {ProcSource{0, body, 1}};
     uint8_t programBytes[16];
@@ -225,4 +226,94 @@ TEST(InitReportsAnArgCountPastProcSlotsOwnFieldWidth)
 
     CHECK(runtime->init(programBytes, len, bodyOffset, 1, ARENA_BASE, ARENA_SIZE, 0, 0)
         == RESOURCE_LIMIT_ARG_COUNT);
+}
+
+TEST(InitReportsAnUnknownOpcodeAsADeploymentMismatch)
+{
+    // A body byte in the extension range with no extension registered. Its
+    // own code, not BODY_UNTERMINATED: it is plausibly the right program
+    // against an image built without that extension, which is a different
+    // thing from bytes that were never well-formed.
+    uint8_t programBytes[] = {0x01, 0x00, 0x80}; // proc_count=1, arg_count=0, body=[EXT 0x80]
+    const uint32_t bodyOffset = 1;
+
+    alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
+    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
+
+    CHECK(runtime->init(programBytes, sizeof(programBytes), bodyOffset, 1, ARENA_BASE, ARENA_SIZE, 0, 0,
+        /*extension=*/nullptr) == RESOURCE_PROGRAM_EXT_UNKNOWN);
+}
+
+// ── the extension seam at init (compiler/src/ext.h) ──────────────────────
+
+namespace
+{
+uint32_t extInlineDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+{
+    *decl = jitc::extDecl(0x80, 0, /*tosDelta=*/0, /*maxTransient=*/0, /*halfwords=*/2);
+    return 1;
+}
+
+uint32_t extCallShapedDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+{
+    *decl = jitc::extDecl(0x80, jitc::EXT_FLAG_CALL_SHAPED, 0, 0, 2);
+    return 1;
+}
+
+const ExtHooks EXT_OK = {jitc::EXT_ABI_VERSION, extInlineDecode};
+const ExtHooks EXT_CALL_SHAPED = {jitc::EXT_ABI_VERSION, extCallShapedDecode};
+const ExtHooks EXT_STALE_ABI = {jitc::EXT_ABI_VERSION + 1, extInlineDecode};
+
+// proc_count=1, arg_count=0, body=[0x80, RETURN]
+uint32_t extProgram(uint8_t *out)
+{
+    out[0] = 0x01;
+    out[1] = 0x00;
+    out[2] = 0x80;
+    out[3] = 100; // RETURN
+    return 4;
+}
+} // namespace
+
+TEST(InitAcceptsAWellFormedExtensionDeclaration)
+{
+    // The walk must let it through, or nothing downstream of decode is ever
+    // exercised: this is what makes proc_scan's boundary and blocks' span
+    // budget real rather than theoretical.
+    const ExtHooks *ext = &EXT_OK;
+    uint8_t programBytes[8];
+    uint32_t len = extProgram(programBytes);
+
+    alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
+    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
+
+    CHECK(runtime->init(programBytes, len, 1, 1, ARENA_BASE, ARENA_SIZE, 0, 0, ext) == 0);
+}
+
+TEST(InitRejectsAnExtensionBuiltAgainstADifferentAbiVersion)
+{
+    // Checked before the walk can call decode() at all: an extension built
+    // against a different seam must not have its declarations trusted.
+    const ExtHooks *ext = &EXT_STALE_ABI;
+    uint8_t programBytes[8];
+    uint32_t len = extProgram(programBytes);
+
+    alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
+    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
+
+    CHECK(runtime->init(programBytes, len, 1, 1, ARENA_BASE, ARENA_SIZE, 0, 0, ext)
+        == RESOURCE_PROGRAM_EXT_ABI);
+}
+
+TEST(InitRejectsACallShapedExtensionDeclarationAsUnsupported)
+{
+    const ExtHooks *ext = &EXT_CALL_SHAPED;
+    uint8_t programBytes[8];
+    uint32_t len = extProgram(programBytes);
+
+    alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
+    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
+
+    CHECK(runtime->init(programBytes, len, 1, 1, ARENA_BASE, ARENA_SIZE, 0, 0, ext)
+        == RESOURCE_PROGRAM_EXT_UNSUPPORTED);
 }

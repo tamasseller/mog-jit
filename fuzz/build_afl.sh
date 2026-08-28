@@ -25,6 +25,7 @@ afl-clang-fast++ -std=c++17 -O1 -g \
     -I ../compiler/src -I ../runtime \
     harness.cpp \
     ../compiler/src/window.cpp \
+    ../compiler/src/ext.cpp \
     ../compiler/src/accstate.cpp \
     ../compiler/src/binops.cpp \
     ../compiler/src/assembler.cpp \

@@ -4,9 +4,8 @@
 // aggregate-initializable struct (not a tagged union) so a fixture literal
 // reads almost identically to its rtl.ts source.
 //
-// EXT is absent from Op at compile time: nothing in this JIT's own scope
-// (isa-core.md §11) ever needs it, and decode_instr.h asserts on an
-// extension opcode byte instead.
+// Op::EXT is APPENDED, never inserted: isArithOp, isComparisonOp and the
+// unary range are all `op >= X && op <= Y` tests over this enum's order.
 #ifndef JIT_ARMV6M_COMPILER_INSTR_H_
 #define JIT_ARMV6M_COMPILER_INSTR_H_
 
@@ -24,6 +23,7 @@ enum class Op : uint8_t
     EQ, NE, LT_S, LE_S, GT_S, GE_S, LT_U, LE_U, GT_U, GE_U,
     NEG, NOT, CLZ, REVBITS,
     BLOCK_END, LOOP, BR_TABLE,
+    EXT, // one registered extension's opcode (isa-core.md §11); see ext.h
 };
 
 enum class Combo : uint8_t
@@ -41,8 +41,18 @@ struct Instr
         int32_t imm = 0;      // CONST's value / IMM_ACC operand / TRAP's code / BR_TABLE's N
         uint32_t target;      // LOAD/STORE/REG_ACC/REG_REG's slot index k
         uint32_t calleeIndex; // CALL only
+        uint32_t extDecl;     // EXT only: the packed declaration, ext.h's own layout.
+                              // Not the operands — those stay on the wire (§11.3) and the
+                              // extension re-reads them at emit time, so nothing about an
+                              // extension's operand shape can widen this struct.
     };
 };
+
+// The union above is what keeps an extension's declaration free: it rides in
+// storage that already existed, so DecodedInstr stays off the sret path in
+// proc_scan/blocks' recursion, where the margin against SCAN_STACK_MARGIN is
+// only ~56 bytes.
+static_assert(sizeof(Instr) == 8, "Instr must stay two words — see the union's own comment");
 
 constexpr Instr CONST(int32_t v)
 {
@@ -125,9 +135,34 @@ constexpr bool isShiftOp(Op op)
     return op == Op::SHL || op == Op::SHR || op == Op::ASR;
 }
 
+// Ends the enclosing *block*: the three ops after which no instruction may
+// follow within the same block (isa-core.md §8.4).
 constexpr bool isTerminator(Op op)
 {
     return op == Op::BLOCK_END || op == Op::RETURN || op == Op::TRAP;
+}
+
+// Ends the *procedure* (isa-core.md §4.5) — deliberately NOT BLOCK_END,
+// which closes one construct and may have the enclosing scope's own bytes
+// after it. Separate from isTerminator because proc_scan.cpp's body walk
+// needs exactly this narrower question, and because an extension opcode
+// declaring §11.2's `terminates` would join this one, not that one.
+constexpr bool isProcTerminator(Op op)
+{
+    return op == Op::RETURN || op == Op::TRAP;
+}
+
+// Instr-taking overloads: the seam an extension opcode's own declared
+// effect plugs into later, so admitting one touches these two functions
+// rather than every test site.
+constexpr bool isTerminator(const Instr &instr)
+{
+    return isTerminator(instr.op);
+}
+
+constexpr bool isProcTerminator(const Instr &instr)
+{
+    return isProcTerminator(instr.op);
 }
 
 } // namespace jitc

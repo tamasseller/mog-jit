@@ -107,7 +107,7 @@ TEST(discardWindowIsOneBareSpAdjustment)
     uint16_t buf[4];
     Assembler e(buf, 4);
     Window w(6); // 2 slots spilled (tos=6, WINDOW_SIZE=4), leaf
-    w.discardWindow(e);
+    w.discard(e);
     CHECK(e.halfwordCount() == 1);
     CHECK(buf[0] == ArmV6M::incrSp(ArmV6M::Uoff<2, 7>(8))); // ADD sp, #8
 }
@@ -122,7 +122,7 @@ TEST(discardWindowForSavesLRReclaimsOnlySelfSpilledLocals)
     uint16_t buf[4];
     Assembler e(buf, 4);
     Window w(5, /*savesLR=*/true); // tos=5, spilledCount=1, all of it "original"
-    w.discardWindow(e);
+    w.discard(e);
     CHECK(e.halfwordCount() == 0); // nothing self-spilled — nothing to reclaim here
 }
 
@@ -131,7 +131,7 @@ TEST(discardWindowAcceptsTheMaxEncodableSpAdjustment)
     uint16_t buf[4];
     Assembler e(buf, 4);
     Window w(4 + 127); // 127 words spilled -> 508 bytes, exactly Uoff<2,7>::maxValue
-    w.discardWindow(e);
+    w.discard(e);
     CHECK(e.halfwordCount() == 1);
     CHECK(buf[0] == ArmV6M::incrSp(ArmV6M::Uoff<2, 7>(508)));
 }
@@ -144,7 +144,7 @@ TEST(discardWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
     uint16_t buf[4];
     Assembler e(buf, 4);
     Window w(4 + 128); // 128 words spilled -> 512 bytes, one word past the limit
-    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_WINDOW_RECLAIM, w.discardWindow(e));
+    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_WINDOW_RECLAIM, w.discard(e));
 }
 
 TEST(restoreWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
@@ -152,7 +152,7 @@ TEST(restoreWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
     uint16_t buf[4];
     Assembler e(buf, 4);
     Window w(4 + 128);
-    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_WINDOW_RECLAIM, restoreWindow(e, w, 0));
+    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_WINDOW_RECLAIM, w.restore(e, 0));
 }
 
 TEST(callShuffleWithStackArgsExceedingWindowSize)
@@ -165,21 +165,21 @@ TEST(callShuffleWithStackArgsExceedingWindowSize)
     uint16_t buf1[8];
     Assembler e1(buf1, 8);
     Window w(6);
-    spillForCall(e1, w, 6);
+    w.spillForCall(e1, 6);
     CHECK(e1.halfwordCount() == 2);
     CHECK(buf1[0] == ArmV6M::push(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(4)).add(ArmV6M::LoReg(5)))); // PUSH {r4, r5}  (pre-wrap run, k=2,3)
     CHECK(buf1[1] == ArmV6M::push(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(6)).add(ArmV6M::LoReg(7)))); // PUSH {r6, r7}  (post-wrap run, k=4,5)
 
     uint16_t buf2[8];
     Assembler e2(buf2, 8);
-    fillCalleeArgs(e2, 6);
+    Window::fillCalleeArgs(e2, 6);
     CHECK(e2.halfwordCount() == 2);
     CHECK(buf2[0] == ArmV6M::pop(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(6)).add(ArmV6M::LoReg(7)))); // POP {r6, r7}  (larger-k run first)
     CHECK(buf2[1] == ArmV6M::pop(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(4)))); // POP {r4}      (k=3's own lone run)
 
     uint16_t buf3[8];
     Assembler e3(buf3, 8);
-    reloadAfterCall(e3, w, 0); // targetTos = tos(6) - stackArgs(6) = 0
+    w.reloadAfterCall(e3, 0); // targetTos = tos(6) - stackArgs(6) = 0
     CHECK(e3.halfwordCount() == 0); // nothing left over to restore
     CHECK(w.tos == 0);
 }
@@ -194,7 +194,7 @@ TEST(callShuffleWithLeftoverLocalsAboveTheStackArgs)
     uint16_t buf[8];
     Assembler e(buf, 8);
     Window w(5);
-    spillForCall(e, w, 2);
+    w.spillForCall(e, 2);
     CHECK(e.halfwordCount() == 3);
     CHECK(buf[0] == ArmV6M::push(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(5)).add(ArmV6M::LoReg(6)))); // PUSH {r5, r6}  (leftover locals k=1,2, one bulk push)
     CHECK(buf[1] == ArmV6M::push(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(4)))); // PUSH {r4}      (stack arg k=3)

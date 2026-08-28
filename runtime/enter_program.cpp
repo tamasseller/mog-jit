@@ -17,6 +17,7 @@
 #include <stddef.h>
 #include <cassert>
 #include "runtime_internal.h"
+#include "ext.h"
 #include "dispatch_abi.h"
 #include "entry_args.h"
 
@@ -69,13 +70,14 @@ static ProgramHeader parseProgramHeader(const uint8_t *bytes, uint32_t size)
  * exactly what init() just recorded in slot 0. */
 static ProgramResult enterProgramCore(
     const uint32_t *args, uint32_t argCount,
+    const ExtHooks *extension,
     Runtime *runtime,
     const uint8_t *programBytes, uint32_t programSize, const ProgramHeader &hdr,
     uint32_t codeArenaBase, uint32_t codeArenaSize,
     uint32_t stackLimit, uint32_t arenaOverlapsStack)
 {
     if(uint32_t code = runtime->init(programBytes, programSize, hdr.bodyOffset, hdr.procCount,
-        codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack); code != 0)
+        codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack, extension); code != 0)
     {
         return ProgramResult{ code, LANDING_RESOURCE_ERROR };
     }
@@ -135,6 +137,7 @@ static ProgramResult enterProgramCore(
  * between the two. */
 static ProgramResult enterProgramWithHeader(
     const uint32_t *args, uint32_t argCount,
+    const ExtHooks *extension,
     const uint8_t *programBytes, uint32_t programSize, const ProgramHeader &hdr,
     uint32_t codeArenaBase, uint32_t codeArenaSize,
     uint32_t stackLimit, uint32_t arenaOverlapsStack)
@@ -154,7 +157,7 @@ static ProgramResult enterProgramWithHeader(
      * hand since a plain `Runtime runtime;` local would only reserve the
      * fixed header. */
     alignas(Runtime) unsigned char runtimeStorage[Runtime::storageBytesFor(hdr.procCount)];
-    return enterProgramCore(args, argCount, reinterpret_cast<Runtime *>(runtimeStorage),
+    return enterProgramCore(args, argCount, extension, reinterpret_cast<Runtime *>(runtimeStorage),
         programBytes, programSize, hdr,
         codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack);
 }
@@ -188,15 +191,21 @@ static ProgramResult enterProgramWithHeader(
  * translator's worst case if a slot turns out to be cold. */
 static uint32_t requiredStackBytes(
     uint32_t procCount, uint32_t operandStackBytes, uint32_t maxCallDepth,
-    uint32_t interruptReserve)
+    uint32_t interruptReserve, const ExtHooks *extension)
 {
+    /* An extension's helpers run at the deepest point of an excursion, and
+     * v1 rejects call-shaped ops, so none of them recurses back into
+     * bytecode — one frame, added once, exactly like interruptReserve. */
+    uint32_t extHelperBytes = extension != nullptr ? extension->helperStackBytes : 0;
+
     return Runtime::storageBytesFor(procCount)
          + operandStackBytes
          + maxCallDepth * CALL_RECORD_BYTES
          + ENTER_DISPATCH_FIXED_BYTES
          + ENTER_PROGRAM_CORE_FRAME_BYTES
          + TRANSLATOR_ENTRY_WORST_CASE_BYTES
-         + interruptReserve;
+         + interruptReserve
+         + extHelperBytes;
 }
 
 static uint32_t currentSp()
@@ -238,19 +247,20 @@ static bool stackHasRoom(uint32_t needed, uint32_t stackLimit)
 extern "C" ProgramResult enterProgramOnStack(
     const uint32_t *args, uint32_t argCount,
     const uint8_t *programBytes, uint32_t programSize,
+    const ExtHooks *extension,
     uint32_t codeArenaSize, uint32_t stackLimit, uint32_t interruptReserve)
 {
     ProgramHeader hdr = parseProgramHeader(programBytes, programSize);
     uint32_t operandStackBytes = hdr.totalDepth * 4;
 
-    uint32_t needed = requiredStackBytes(hdr.procCount, operandStackBytes, hdr.maxCallDepth, interruptReserve)
+    uint32_t needed = requiredStackBytes(hdr.procCount, operandStackBytes, hdr.maxCallDepth, interruptReserve, extension)
                      + codeArenaSize;
     if(!stackHasRoom(needed, stackLimit))
     {
         return ProgramResult{ RESOURCE_EXHAUSTED_STACK_BUDGET, LANDING_RESOURCE_ERROR };
     }
 
-    return enterProgramWithHeader(args, argCount, programBytes, programSize, hdr,
+    return enterProgramWithHeader(args, argCount, extension, programBytes, programSize, hdr,
         stackLimit, codeArenaSize, stackLimit, /*arenaOverlapsStack=*/1);
 }
 
@@ -263,18 +273,19 @@ extern "C" ProgramResult enterProgramOnStack(
 extern "C" ProgramResult enterProgramSplit(
     const uint32_t *args, uint32_t argCount,
     const uint8_t *programBytes, uint32_t programSize,
+    const ExtHooks *extension,
     uint32_t codeArenaBase, uint32_t codeArenaSize,
     uint32_t stackLimit, uint32_t interruptReserve)
 {
     ProgramHeader hdr = parseProgramHeader(programBytes, programSize);
     uint32_t operandStackBytes = hdr.totalDepth * 4;
 
-    uint32_t needed = requiredStackBytes(hdr.procCount, operandStackBytes, hdr.maxCallDepth, interruptReserve);
+    uint32_t needed = requiredStackBytes(hdr.procCount, operandStackBytes, hdr.maxCallDepth, interruptReserve, extension);
     if(!stackHasRoom(needed, stackLimit))
     {
         return ProgramResult{ RESOURCE_EXHAUSTED_STACK_BUDGET, LANDING_RESOURCE_ERROR };
     }
 
-    return enterProgramWithHeader(args, argCount, programBytes, programSize, hdr,
+    return enterProgramWithHeader(args, argCount, extension, programBytes, programSize, hdr,
         codeArenaBase, codeArenaSize, stackLimit, /*arenaOverlapsStack=*/0);
 }

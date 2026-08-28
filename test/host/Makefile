@@ -13,6 +13,7 @@ SOURCES += test_decode_encode.cpp
 SOURCES += test_blocks.cpp
 SOURCES += test_unaryops.cpp
 SOURCES += test_proc_scan.cpp
+SOURCES += test_ext.cpp
 SOURCES += test_entry_args.cpp
 SOURCES += test_enter_program.cpp
 
@@ -24,6 +25,7 @@ SOURCES += ../../compiler/src/encode_instr.cpp
 # The compiler itself (armv6.h is header-only — test_armv6_encoding.cpp
 # reaches it straight off INCLUDE_DIRS, no extra .cpp to compile)
 SOURCES += ../../compiler/src/window.cpp
+SOURCES += ../../compiler/src/ext.cpp
 SOURCES += ../../compiler/src/accstate.cpp
 SOURCES += ../../compiler/src/binops.cpp
 SOURCES += ../../compiler/src/assembler.cpp

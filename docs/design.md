@@ -1145,6 +1145,10 @@ unencodable at any size, this backend cannot compile it at all.
 | `RESOURCE_PROGRAM_CALLEE_RANGE` | `0x52451300` | `translate_proc.cpp` `processNonControl` | `calleeIndex >= procCount` |
 | `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` | `0x52451500` | `enter_program.cpp` `enterProgramCore` | `argCount != slot(0).argCount()` |
 | `RESOURCE_PROGRAM_ENTRY_DEPTH` | `0x52451600` | `enter_program.cpp` `enterProgramCore` | the entry procedure's out-of-window args exceed `total_depth` |
+| `RESOURCE_PROGRAM_EXT_UNKNOWN` | `0x52451700` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | a wire byte past `LAST_CORE_OPCODE`: the extension range (§11) or a reserved code (§5.3) |
+| `RESOURCE_PROGRAM_EXT_UNSUPPORTED` | `0x52451800` | `Runtime::init`, and `translate_proc.cpp`'s `EXT` arm | a well-formed declaration asking for a capability this core doesn't implement |
+| `RESOURCE_PROGRAM_EXT_ABI` | `0x52451900` | `Runtime::init` | `ExtHooks::abiVersion` != `EXT_ABI_VERSION` |
+| `RESOURCE_PROGRAM_RESERVED_OPCODE` | `0x52451a00` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | one of the four core codes §5.3 reserves but hasn't assigned (124-127) |
 | `RESOURCE_EXHAUSTED_ARENA` | `0x52452100` | `assembler.cpp` `emit` | buffer full and nothing left to evict (§8) |
 | `RESOURCE_EXHAUSTED_STACK_BUDGET` | `0x52452200` | `enter_program.cpp`, both variants | the up-front §2 check; nothing was touched |
 | `RESOURCE_EXHAUSTED_TRANSLATOR_STACK` | `0x52452300` | `translate_proc.cpp` `checkStackFloor` | translator recursion reached the live floor |
@@ -1162,11 +1166,25 @@ figures and checked before use; the two `EXHAUSTED_*_STACK` codes are the
 *translator's own* C recursion against a live floor, not the compiled
 program's operand stack. And malformed wire bytes stay asserted rather
 than reported, the convention `decode_instr.h` and `proc_scan.h` already
-document: `PROGRAM_BODY_UNTERMINATED` and `PROGRAM_CALLEE_RANGE` are the
-two malformedness checks that exist because the walk needs them anyway,
-not the start of a validating decoder. `0x52451400` is reserved for a
-truncated program envelope, which `parseProgramHeader` cannot currently
-report at all — it runs before there is anywhere to report to.
+document: `PROGRAM_BODY_UNTERMINATED`, `PROGRAM_CALLEE_RANGE` and
+`PROGRAM_EXT_UNKNOWN` are the three checks that exist because the walk
+needs them anyway, not the start of a validating decoder. `0x52451400` is
+reserved for a truncated program envelope, which `parseProgramHeader`
+cannot currently report at all — it runs before there is anywhere to
+report to.
+
+`PROGRAM_EXT_UNKNOWN` is the one of those three that is not really about
+malformedness: a byte in the extension range is plausibly the *right*
+program against an image built without that extension registered, so it is
+reported rather than asserted. With an extension registered it means that
+extension declined the byte; §18 has the rest of the seam. It is also the only place that byte is
+stopped. `decodeInstr` merely asserts, and both the QEMU suite and
+`fuzz/qemu_exec` build `-DNDEBUG`, so before `scanBody` gained its own
+check a body byte of `0x80` decoded as `CONST 20` on real hardware and
+silently reinterpreted the rest of the instruction stream. The check sits
+in the pre-pass because that walk already decodes every instruction of
+every procedure before anything is translated, which is what makes one
+gate sufficient.
 
 ---
 
@@ -1531,3 +1549,159 @@ wrong number, or no answer at all:
 
 The `fuzz/seeds` corpus keeps a regression seed for each fixed finding, so
 `qemu_exec.ts seeds` is a standing check on all of them.
+
+---
+
+## 18. Extension mechanism
+
+> **Status:** the decode/declaration half is in (`compiler/src/ext.h`).
+> Codegen is not: an extension op reaching `processNonControl` bails with
+> `RESOURCE_PROGRAM_EXT_UNSUPPORTED`.
+
+isa-core.md §11 gives wire bytes **≥128** to one registered extension. The
+core never interprets them. Note the two boundaries are not the same one,
+which is the easy mistake here:
+
+| bytes | owner | a program using one |
+|---|---|---|
+| 0-123 | core, assigned (§5.2) | translated |
+| 124-127 | **core, reserved** (§5.3) — four codes it hasn't assigned yet | `RESERVED_OPCODE`: wants a newer core. Never offered to an extension, which would otherwise let one squat on core opcode space. |
+| ≥128 | the registered extension (§5.1, §11) | `EXT_UNKNOWN` if nothing claims it |
+
+The core needs exactly two things per extension opcode:
+
+1. the **byte length**, so `proc_scan.cpp`'s body-boundary walk and
+   `blocks.cpp`'s branch-span walk can step over it;
+2. the **declared effect** (§11.2), so `needsLRSave` and the span budget
+   stay right without knowing semantics.
+
+Both come from `ExtHooks::decode`, packed into one 32-bit word carried in
+`Instr`'s existing union. That is the load-bearing choice:
+`instrMaxBytes(const Instr&)` and `triggersLRSave(const Instr&)` keep their
+signatures and become bitfield reads, so `maxSpanBytes` — which re-walks
+every instruction once per enclosing nesting level — pays a shift rather
+than an indirect call per level, `sizeof(Instr)` stays 8 (a `static_assert`
+holds it there, keeping `DecodedInstr` off the sret path where the margin
+against `SCAN_STACK_MARGIN` is ~56 bytes), and the span budget, the
+prologue's `lr` decision and codegen cannot see different answers.
+
+**Operands never reach the core.** They are literal constants (§11.3), so
+the extension re-reads them from the wire when it emits. The core carries a
+length and an effect; that is the whole coupling. It also means
+`encode_instr.cpp` structurally cannot rebuild an extension instruction
+from an `Instr`, so a fixture needing one splices its own bytes.
+
+**One gate, not three.** `Runtime::init`'s directory walk already decodes
+every instruction of every procedure before anything is translated, so the
+extension is consulted there and `decodeInstr` trusts the result. Two things
+the core checks rather than trusts, because both would turn a bad extension
+into a hang or an overrun instead of a diagnostic: a claimed length of zero
+(no forward progress), and one running past `bytesLen`.
+
+**What v1 rejects**, each at `init` with `EXT_UNSUPPORTED`:
+
+| declared | why |
+|---|---|
+| call-shaped (§11.2) | control re-enters a procedure through its own prologue stub (§9), so nothing an extension leaves in a register survives a `CALL`. Needs per-frame state in memory, a depth bound, and a reset path for the `TRAP`/`RESOURCE_ERROR` unwind — none of which exist. |
+| `terminates` | honored in exactly one of three places on the TS side (`validate.ts` yes; `vm.ts`'s `EXT` case does `pc++` unconditionally; `bytecode.ts`'s `decodeProcBody` considers only `RETURN`/`TRAP`), so a terminating extension op is already broken upstream. `isProcTerminator` (`instr.h`) is the seam for admitting it later. |
+| `maxTransient > 0` | `window.tos` must agree with the real `sp` exactly — there is no per-procedure reservation (§5) — so a transient push reopens a desync class for no shipped client. |
+| net TOS push | not representable on the TS side either (`extension.ts`: no net push), and v1 stages the popped values, so the count staged is `-tosDelta`. |
+
+`EXT_ABI_VERSION` is compared once at `init`, before the walk can call
+`decode` at all. It is the only *enforced* point of the rule that a native
+declaration is a subset of the TS one: the wire carries only the
+consequences of effects (`max_call_depth`, `total_depth`), never the
+effects, and there is no runtime depth check anywhere.
+
+`Window` and `AccState` are forward-declared and never defined in `ext.h`,
+so an extension TU that names one fails to compile — the availability
+boundary is a compile error rather than a guideline.
+
+**The extension is per-program state, not per-image.** It arrives as an
+`enterProgram*` argument and is stored on the `Runtime` that program runs
+under, then threaded from there into the three walks that decode
+instructions. It has to be stored rather than only passed down because
+compilation is lazy — a procedure is translated on its first dispatch, long
+after `enterProgram*` returned — and `Runtime` is the context that lives
+that long and is already threaded everywhere the translator looks. The word
+it costs shifts `RUNTIME_DISPATCH_TABLE_OFFSET` from 40 to 44, which
+`runtime.S` picks up from the macro rather than hardcoding.
+
+> That shift is also how `test/qemu/Makefile` acquired an explicit
+> dependency from `runtime.S`'s object to `runtime_host.h`.
+> Makefile.ultimate generates header dependencies for `.c`/`.cpp` but its
+> `%.S.o` rule has neither `DEPFLAGS` nor a `.d` prerequisite, so a stale
+> assembly object kept the old offset while the C++ half used the new one —
+> a binary whose two halves disagree about a struct offset, which builds
+> cleanly, asserts nothing, and hangs on the first dispatch.
+
+### 18.1 Extension state
+
+Three words of per-excursion scratch at `RUNTIME_EXT_STATE_OFFSET`, for
+whatever an extension needs to carry (a stream cursor, a buffer base, an
+object handle). They are the sentinel `ProcSlot`'s own
+`lastUsed`/`bodyPtr`/`staticInfo`: `slots[0]` exists only so a real
+procedure index can be offset by one, and nothing but its `codePtr` is ever
+touched — runtime.S writes that, `sentinelLandingAddress()` reads it, and
+every loop over procedures runs over `slot(i) == slots[i+1]`. So the words
+are already allocated, already reachable through the pointer emitted code
+has, and cost no layout change at all. `Runtime::init` zeroes them; a
+`static_assert` ties the offset to the real struct.
+
+`extEmitStateBase(a, dst)` is one instruction — a whole-register `MOV` out
+of r9, one of the three things Thumb-1 lets a hi register do, so it pays no
+mirror tax — and `extStateOffset(i)` rides in the load's own immediate.
+That is why the offsets are absolute rather than starting at zero: biasing
+the base would cost an extra `ADD` at every site, and the immediate has room
+either way.
+
+### 18.2 Contiguous sequences
+
+`Assembler::AtomicBlock` reserves and only then suppresses the pool-reach
+check, in that order. Suppressing first and reserving inside would let the
+very flush being guarded against land in the middle of the guarded
+sequence. That ordering used to be prose with every caller honouring it by
+hand; `AtomicScope` is now private, so constructing an `AtomicBlock` is the
+only way to obtain the suppression, and the two halves cannot be separated
+or reversed. Note `ensurePoolRoom` is advisory rather than a reservation —
+it returns immediately when the pending set is empty — which is exactly why
+the count belongs in the type rather than in a call the author might omit.
+
+### 18.1 Helper reach
+
+Two forms, both costing one **pooled literal word** for the helper's address
+rather than a slot in the flash-resident r10 vector. That vector is a fixed
+core array, so handing out indices would make every extension's helper set
+part of the core's own ABI; a pooled word needs no index, deduplicates
+within a chunk, and is compaction-safe for the same reason every other
+literal is. The price is pool-reach pressure — `poolDebt()` is charged
+against `SAFE_COND_BRANCH_SPAN`.
+
+| form | emitted | for |
+|---|---|---|
+| `extEmitHelperCall` | pooled address into r3, `BLX r3` | hand-written Thumb with a known clobber set, like the core's own `clzHelper`. No AAPCS guarantees — sp is legitimately 4-mod-8 inside an excursion. |
+| `extEmitCHelperCall` | address into r12, then the r10-vector reach to `extThunkHelper` | independently-compiled C. |
+
+`extThunkHelper` (runtime.S, helper index 9) is `push {lr}` /
+`REALIGN_ENTER` / `blx r12` / `REALIGN_LEAVE` / `pop {pc}`. It exists for
+two things emitted code cannot do itself: realign sp to 8 for AAPCS, and
+preserve `lr` across the call — emitted code cannot, because `lr` carries
+the live call/return record rather than a return address. The target
+travels in **r12/ip**, the AAPCS intra-procedure scratch register, which is
+exactly what a veneer is for and leaves r0-r3 to the callee's arguments.
+
+`REALIGN_ENTER` clobbers r2/r3, so **a C helper takes at most two
+arguments**, in r0 and r1 — the same arity limit §3 already argues for on
+cost grounds. Both forms require `EXT_FLAG_NEEDS_LR` in the declaration,
+since a `BLX` clobbers `lr` and the prologue's decision to save it was made
+from that flag back in the pre-pass.
+
+**Stack cost.** `ExtHooks::helperStackBytes` is the extension's declared
+worst case, including `EXT_THUNK_STACK_BYTES` (12: 4 for the pushed `lr`, 8
+for the realignment slack). `enterProgram*` folds it into the up-front
+budget once, like `interruptReserve` — helpers do not recurse into bytecode
+while call-shaped ops are rejected, so the worst case is the deepest
+bytecode stack plus one helper frame. Nothing verifies the number: too
+small and the static reservation stops being a bound, so prove it the way
+the core proves its own (§3) — `-Wstack-usage=0` promoted to an error, or
+hand-written naked Thumb.

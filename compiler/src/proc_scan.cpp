@@ -1,4 +1,5 @@
 #include "proc_scan.h"
+#include "ext.h"
 #include "decode_instr.h"
 #include "instr.h"
 
@@ -27,6 +28,12 @@ static bool triggersLRSave(const Instr &instr)
     // here must still agree that it's ">2" (translateSwitch's helper-
     // vector path, which clobbers lr), or needsLRSave comes out false for
     // a body that actually goes on to clobber it.
+    if(instr.op == Op::EXT)
+    {
+        // Decided here, in the pre-pass, because the prologue is emitted
+        // from ProcSlot's needsLRSave long before codegen sees the op.
+        return extDeclHas(instr.extDecl, EXT_FLAG_NEEDS_LR);
+    }
     return instr.op == Op::CALL
         || (instr.op == Op::BR_TABLE && (uint32_t)instr.imm > 2)
         || instr.op == Op::CLZ
@@ -52,18 +59,58 @@ struct ScanFrame
 // *either* reason below); `foundEnd` means the reason was a genuine
 // top-level terminator, not an overflow — the two must stay separate so a
 // stack overflow can never be misreported as a clean scan.
-static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool &needsLRSave, ScanFrame *frame, uint32_t stackFloor, bool &stop, bool &foundEnd)
+static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool &needsLRSave, ScanFrame *frame, uint32_t stackFloor, const ExtHooks *ext, bool &stop, bool &foundEnd, uint32_t &failCode)
 {
     register uint32_t sp asm("sp");
     if(sp < SCAN_STACK_MARGIN || sp - SCAN_STACK_MARGIN < stackFloor)
     {
         stop = true; // foundEnd stays false — caller reports !ok
+        failCode = RESOURCE_EXHAUSTED_SCAN_STACK;
         return;
     }
 
     while(pc < maxBytes)
     {
-        DecodedInstr d = decodeInstr(bytes, maxBytes, pc);
+        // Before decoding, not after: decodeInstr trusts that this walk
+        // already vetted the byte, and every shipping build is -DNDEBUG so
+        // its own assert is gone. This is the one place a byte in the
+        // extension range (isa-core.md §11) or a reserved code (§5.3) is
+        // stopped, or handed to the registered extension for its length.
+        // Every instruction of every procedure passes through here before
+        // anything is translated, which is what makes one gate sufficient.
+        if(bytes[pc] > LAST_CORE_OPCODE)
+        {
+            // Three distinct cases, and the middle one is easy to get wrong:
+            // 124-127 are reserved to the CORE (§5.3), not extension space,
+            // so an extension is never offered one. Only >= 128 is its range.
+            if(bytes[pc] < EXT_OPCODE_BASE)
+            {
+                stop = true; // foundEnd stays false — caller reports !ok
+                failCode = RESOURCE_PROGRAM_RESERVED_OPCODE;
+                return;
+            }
+
+            uint32_t decl = 0;
+            if(extDecodeLength(bytes, maxBytes, pc, decl, ext) == 0)
+            {
+                stop = true;
+                failCode = RESOURCE_PROGRAM_EXT_UNKNOWN;
+                return;
+            }
+            if(extDeclHas(decl, EXT_FLAG_CALL_SHAPED) || extDeclHas(decl, EXT_FLAG_TERMINATES)
+                || extDeclMaxTransient(decl) != 0 || extDeclTosDelta(decl) > 0)
+            {
+                // Well-formed, but declares a capability v1 doesn't
+                // implement. Reported separately from "unknown opcode"
+                // because the remedy differs: a newer core, not a
+                // different image.
+                stop = true;
+                failCode = RESOURCE_PROGRAM_EXT_UNSUPPORTED;
+                return;
+            }
+        }
+
+        DecodedInstr d = decodeInstr(bytes, maxBytes, pc, ext);
         if(triggersLRSave(d.instr))
         {
             needsLRSave = true;
@@ -73,14 +120,14 @@ static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool
         if(d.instr.op == Op::BR_TABLE)
         {
             ScanFrame inner{ScanFrameKind::Case, (uint32_t)d.instr.imm};
-            scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, stop, foundEnd);
+            scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, ext, stop, foundEnd, failCode);
             if(stop) return;
             continue;
         }
         if(d.instr.op == Op::LOOP)
         {
             ScanFrame inner{ScanFrameKind::LoopCond, 0};
-            scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, stop, foundEnd);
+            scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, ext, stop, foundEnd, failCode);
             if(stop) return;
             continue;
         }
@@ -104,7 +151,7 @@ static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool
             continue;
         }
 
-        if(d.instr.op == Op::RETURN || d.instr.op == Op::TRAP)
+        if(isProcTerminator(d.instr))
         {
             // Empty (frame == nullptr) *before* considering this terminator
             // at all is the real end. A frame closing right here (a loop's
@@ -147,14 +194,23 @@ static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool
     // stays false, so the top-level caller reports !ok.
 }
 
-BodyScanResult scanProcBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t startOffset, uint32_t stackFloor)
+BodyScanResult scanProcBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t startOffset,
+    const ExtHooks *ext, uint32_t stackFloor)
 {
     uint32_t pc = startOffset;
     bool needsLRSave = false;
     bool stop = false;
     bool foundEnd = false;
-    scanBody(bytes, maxBytes, pc, needsLRSave, nullptr, stackFloor, stop, foundEnd);
-    return BodyScanResult{pc - startOffset, needsLRSave, foundEnd, stop && !foundEnd};
+    uint32_t failCode = 0;
+    scanBody(bytes, maxBytes, pc, needsLRSave, nullptr, stackFloor, ext, stop, foundEnd, failCode);
+    // Ran off maxBytes with a level still open: the one rejection no site
+    // above names for itself, since it is discovered by falling out of the
+    // walk rather than by hitting anything.
+    if(!foundEnd && failCode == 0)
+    {
+        failCode = RESOURCE_PROGRAM_BODY_UNTERMINATED;
+    }
+    return BodyScanResult{pc - startOffset, needsLRSave, failCode == 0, failCode};
 }
 
 } // namespace jitc

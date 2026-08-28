@@ -9,6 +9,7 @@
 #include <cassert>
 #include "runtime_host.h"
 #include "proc_scan.h"
+#include "ext.h"
 #include "decode_instr.h"
 
 /* LANDING_SUCCESS/LANDING_TRAP/LANDING_RESOURCE_ERROR live in
@@ -108,6 +109,15 @@ public:
     uint32_t arenaEnd;
     uint32_t arenaCursor;
     uint32_t procCount;
+    /* The extension serving THIS program's bytes (compiler/src/ext.h),
+     * from enterProgram*'s own argument. Here rather than in a file-static
+     * because it is per-program state: lazy compilation means the
+     * translator reads it back on each procedure's first dispatch, long
+     * after enterProgram* returned, and Runtime is the context that lives
+     * that long and is already threaded everywhere the translator looks.
+     * Costs one word and shifts RUNTIME_DISPATCH_TABLE_OFFSET, which
+     * runtime.S picks up from the macro rather than hardcoding. */
+    const ExtHooks *ext;
     /* The lowest address the translator's own LOOP/BR_TABLE recursion may
      * safely reach, checked live via liveStackFloor() below by
      * translateBody's own guard (translate_proc.cpp), reached through the
@@ -172,8 +182,10 @@ public:
      * codeArenaBase's own storage; where that lives is the caller's
      * choice. */
     uint32_t init(const uint8_t *programBytes, uint32_t programSize, uint32_t bodyOffset, uint32_t procCount,
-        uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit, uint32_t arenaOverlapsStack)
+        uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit, uint32_t arenaOverlapsStack,
+        const ExtHooks *extension = nullptr)
     {
+        this->ext = extension;
         /* Rounded down, mirroring arenaCursor's own rounding up just below:
          * allocate()'s reserveFor() rounds every reservation up to a
          * multiple of 4, so if the gap between arenaCursor and arenaEnd
@@ -199,7 +211,23 @@ public:
         assert(arenaCursor <= arenaEnd); // GCOV_EXCL_LINE
         this->procCount = procCount;
         this->stackLimit = stackLimit;
+        /* The sentinel's own tail is the extension's scratch
+         * (RUNTIME_EXT_STATE_OFFSET). Nothing else writes it and the storage
+         * is a caller's VLA, so without this it starts as whatever was on
+         * the stack. */
+        slots[0].lastUsed = 0;
+        slots[0].bodyPtr = 0;
+        slots[0].staticInfo = 0;
         this->arenaOverlapsStack = arenaOverlapsStack;
+
+        /* Checked once, before the walk can call into the extension: an
+         * extension built against a different seam version must not have
+         * its decode() trusted at all. Nothing else can catch it — the wire
+         * carries only the consequences of effects, never the effects. */
+        if(extension != nullptr && extension->abiVersion != jitc::EXT_ABI_VERSION)
+        {
+            return RESOURCE_PROGRAM_EXT_ABI;
+        }
 
         uint32_t pos = bodyOffset;
         for(uint32_t i = 0; i < procCount; i++)
@@ -207,13 +235,13 @@ public:
             assert(pos < programSize); // GCOV_EXCL_LINE — malformed/truncated program, matching decode_instr.cpp's own convention
             uint32_t argCount = jitc::decodeLeb128(programBytes, pos, pos);
             uint32_t bodyStart = pos;
-            jitc::BodyScanResult scan = jitc::scanProcBody(programBytes, programSize, bodyStart, stackLimit);
+            jitc::BodyScanResult scan = jitc::scanProcBody(programBytes, programSize, bodyStart, extension, stackLimit);
             /* Four separate rejections, not one: "this program is malformed"
              * and "this deployment is out of stack" want different answers
              * from whoever gets the ProgramResult back. */
             if(!scan.ok)
             {
-                return scan.stackFloorHit ? RESOURCE_EXHAUSTED_SCAN_STACK : RESOURCE_PROGRAM_BODY_UNTERMINATED;
+                return scan.failCode; // the walk already named which of its five rejections this is
             }
             if(argCount > ProcSlot::MAX_ARG_COUNT)
             {
@@ -233,6 +261,12 @@ public:
             pos = bodyStart + scan.bodyBytes;
         }
         return 0;
+    }
+
+    /* The extension serving this program, or nullptr. */
+    const ExtHooks *extension() const
+    {
+        return ext;
     }
 
     /* Procedure idx's own slot — [0] is the sentinel, so every real
@@ -416,8 +450,62 @@ public:
 #if UINTPTR_MAX == 0xFFFFFFFFu
 static_assert(offsetof(Runtime, slots) + sizeof(ProcSlot) == RUNTIME_DISPATCH_TABLE_OFFSET,
     "runtime.S's own RUNTIME_DISPATCH_TABLE_OFFSET must match Runtime's real layout");
+/* The extension scratch words are the sentinel slot's three untouched
+ * fields. Emitted code addresses them by this constant, so it has to track
+ * the struct rather than be believed. */
+static_assert(offsetof(Runtime, slots) + offsetof(ProcSlot, lastUsed) == RUNTIME_EXT_STATE_OFFSET,
+    "RUNTIME_EXT_STATE_OFFSET must be the sentinel slot's first unused word");
+static_assert(RUNTIME_EXT_STATE_WORDS * 4 + offsetof(ProcSlot, lastUsed) == sizeof(ProcSlot),
+    "the extension scratch must be exactly the sentinel slot's unused tail");
 #endif
 static_assert(sizeof(ProcSlot) == DISPATCH_SENTINEL_OFFSET,
     "runtime.S's own DISPATCH_SENTINEL_OFFSET must match sizeof(ProcSlot)");
+
+/* Every RESOURCE_* code must be distinct. Nothing else enforces it: they
+ * are #defines, so two names holding the same value compile fine and even
+ * compare equal, which is exactly how a duplicate survived long enough to
+ * make a test pass for the wrong reason. Add a code above, add it here. */
+namespace
+{
+constexpr uint32_t RESOURCE_CODES[] = {
+    RESOURCE_PROGRAM_NO_PROCS, RESOURCE_PROGRAM_BODY_UNTERMINATED,
+    RESOURCE_PROGRAM_CALLEE_RANGE, RESOURCE_PROGRAM_ENTRY_ARG_COUNT,
+    RESOURCE_PROGRAM_ENTRY_DEPTH, RESOURCE_PROGRAM_EXT_UNKNOWN,
+    RESOURCE_PROGRAM_EXT_UNSUPPORTED, RESOURCE_PROGRAM_EXT_ABI,
+    RESOURCE_PROGRAM_RESERVED_OPCODE,
+    RESOURCE_EXHAUSTED_ARENA, RESOURCE_EXHAUSTED_STACK_BUDGET,
+    RESOURCE_EXHAUSTED_TRANSLATOR_STACK, RESOURCE_EXHAUSTED_SCAN_STACK,
+    RESOURCE_LIMIT_WINDOW_RECLAIM, RESOURCE_LIMIT_SPILL_OFFSET,
+    RESOURCE_LIMIT_BRANCH_RANGE, RESOURCE_LIMIT_LOOP_BACK_EDGE,
+    RESOURCE_LIMIT_ARG_COUNT, RESOURCE_LIMIT_BODY_BYTES,
+};
+
+constexpr bool resourceCodesDistinct()
+{
+    for(unsigned i = 0; i < sizeof(RESOURCE_CODES) / sizeof(RESOURCE_CODES[0]); i++)
+    {
+        for(unsigned j = i + 1; j < sizeof(RESOURCE_CODES) / sizeof(RESOURCE_CODES[0]); j++)
+        {
+            if(RESOURCE_CODES[i] == RESOURCE_CODES[j])
+            {
+                return false;
+            }
+        }
+        /* The signature and a nonzero class nibble are what make a code
+         * recognizable in a raw hex dump; the low byte stays reserved for a
+         * future detail payload (runtime_host.h). */
+        if((RESOURCE_CODES[i] >> 16) != RESOURCE_ERROR_SIGNATURE
+            || RESOURCE_ERROR_CLASS(RESOURCE_CODES[i]) == 0
+            || (RESOURCE_CODES[i] & 0xffu) != 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+static_assert(resourceCodesDistinct(),
+    "RESOURCE_* codes must be distinct, carry the 0x5245 signature and a class nibble, and leave the low byte zero");
 
 #endif /* RUNTIME_INTERNAL_H */

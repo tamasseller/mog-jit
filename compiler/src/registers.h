@@ -18,6 +18,7 @@ constexpr uint32_t WINDOW_SIZE = 4; // r4..r7
 constexpr uint32_t ENTRY_IDX_REG = 1;              // r1
 constexpr uint32_t ENTRY_OFFSET_REG = SCRATCH_REG; // r2
 constexpr uint32_t ENTRY_JUMP_REG = 3;             // r3
+constexpr uint32_t RUNTIME_PTR_REG = 9;            // r9 — docs/design.md §3
 constexpr uint32_t HELPER_VEC_REG = 10;            // r10
 constexpr uint32_t LRU_TICK_REG = 11;              // r11
 
@@ -35,6 +36,7 @@ constexpr uint32_t HELPER_REVBITS_OFFSET = 20;                   // revbitsHelpe
 constexpr uint32_t HELPER_BR_TABLE_JUMP_OFFSET = 24;             // brTableJumpHelper (index 6)
 constexpr uint32_t HELPER_RETURN_FROM_STACK_RECLAIM_OFFSET = 28; // returnHelperFromStackReclaim (index 7)
 constexpr uint32_t HELPER_TRAP_OFFSET = 32;                      // trapHelper (index 8)
+constexpr uint32_t HELPER_EXT_THUNK_OFFSET = 36;                 // extThunkHelper (index 9)
 
 } // namespace jitc
 

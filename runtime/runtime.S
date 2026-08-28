@@ -206,6 +206,30 @@ trapHelper:
     mov  sp, r3
 .endm
 
+// Veneer for calling an independently-compiled C helper belonging to an
+// extension (compiler/src/ext.h). Target address in r12/ip — the AAPCS
+// intra-procedure scratch register, which is exactly what a veneer is for,
+// and which leaves r0-r3 entirely to the callee's own arguments.
+//
+// Two things it exists to do, neither of which an emitted BLX can do on its
+// own. It realigns sp to 8 for AAPCS, since sp is legitimately 4-mod-8
+// inside an excursion (see REALIGN_ENTER above). And it preserves lr across
+// the call, which emitted code cannot, because lr carries the live
+// call/return record rather than a return address.
+//
+// REALIGN_ENTER clobbers r2/r3, so a C helper reached this way takes at
+// most two arguments, in r0 and r1 — the same arity limit docs/design.md §3
+// already argues for on cost grounds. Costs 12 bytes of stack: 4 for lr,
+// 8 for the realignment slack (EXT_THUNK_STACK_BYTES, dispatch_abi.h).
+.thumb_func
+.global extThunkHelper
+extThunkHelper:
+    push {lr}
+    REALIGN_ENTER
+    blx  r12
+    REALIGN_LEAVE
+    pop  {pc}
+
 // Translator-entry trampoline — what every uncompiled dispatch slot's
 // codePtr points at. Reached by a bare BX from callHelper/returnHelper/the
 // prologue stub, exactly like any other slot target: r0 = acc (must
