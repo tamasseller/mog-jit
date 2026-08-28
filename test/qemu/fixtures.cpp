@@ -1,6 +1,7 @@
 #include "fixtures.h"
 #include "instr.h"
 #include "encode_instr.h"
+#include "corpus_programs.h" // fixtures 28-32's own Instr[] bodies, shared with test/tools/dump_corpus.cpp
 
 using namespace jitc;
 
@@ -338,6 +339,161 @@ static const Instr f27Proc1[] = {
 static const Instr f27Proc2[] = {LOAD(0), opImm(Op::ADD, 1000), bare(Op::RETURN)};
 static Program f27Prog;
 
+// ---- Fixture 28: nested LOOP-in-LOOP, sum of triangular numbers
+// (sum_{i=1..n} sum_{j=1..i} j). First fixture with 2-level LOOP nesting
+// (maxSpanBytes/translateLoop recursion at depth 2 — every existing LOOP
+// fixture nests one level only). All four working locals (k1..k4) are
+// PUSHed once, ahead of the outer LOOP, and only ever STOREd inside either
+// loop body — tos stays fixed at 5 (k0 arg + k1..k4) across both loops' own
+// back-edges, which also spills k0 out of the window for free (WINDOW_SIZE
+// is 4). Body lives in corpus_programs.h, shared with
+// test/tools/dump_corpus.cpp. expect n=3 -> 10 (3+2+1 via 6+3+1), n=1 -> 1,
+// n=0 -> 0.
+static Program f28Prog;
+
+// ---- Fixture 29: BR_TABLE nested inside a LOOP body. Each iteration
+// dispatches on counter&1 (even -> total += counter*10, odd ->
+// total += counter), both cases closed via BLOCK_END so control rejoins
+// the loop's own decrement before the back-edge — the interaction between
+// fused-branch dispatch and a live loop back-edge, distinct from fixture
+// 23's fused *loop condition* itself. Body lives in corpus_programs.h.
+// expect n=4 -> 64, n=5 -> 69, n=0 -> 0.
+static Program f29Prog;
+
+// ---- Fixture 30: LOOP nested inside a BR_TABLE case — the mirror image of
+// fixture 29. A single-argument entry procedure can only receive one value
+// via argIn (enterDispatch's own boot call passes argIn through acc alone,
+// with no caller-side PUSH shuffle to also populate window slots for a
+// second argument — unlike an ordinary in-program CALL), so selector and n
+// both travel packed into that one argIn: selector in bits[15:8], n in
+// bits[7:0]. Case 0 runs a full sum(1..n) LOOP using two extra PUSHed
+// locals, then POPs them off again before the case's own BLOCK_END so tos
+// returns to its pre-brTable value (1), matching case 1 (which never
+// touches tos) — POP() mirrors PUSH() by loading the popped slot's own
+// value back into acc (see fixture 17's own "acc poisoned" comment), so
+// k1 (total) is pushed *before* k2 (counter): the first POP discards
+// counter's spent (zero) value, and the second POP is the one that lands
+// the real result in acc. Body lives in corpus_programs.h. expect
+// (selector=0,n=4) -> 10; (selector=1,n=4) -> 12.
+static Program f30Prog;
+
+// ---- Fixture 31: large BR_TABLE (N=20) with a CALL inside one case. The
+// first fixture combining a jump table with N well past 4 (stressing
+// brTableJumpHelper's relocation math and the jump table's own literal-
+// pool sizing at real scale) with a real CALL inside a case — re-exercises
+// proc_scan.cpp's triggersLRSave/`(uint32_t)instr.imm > 2` fix end-to-end,
+// since a large N combined with a real CALL is exactly the combination
+// that bug could disagree on between the scan pass and the real
+// translation pass. Body lives in corpus_programs.h. expect selector=7 ->
+// 1005, selector=3 -> 30, selector=19 -> 190.
+static Program f31Prog;
+
+// ---- Fixture 32: deep operand stack, 24 live locals. Everything past k3
+// is out-of-window (WINDOW_SIZE=4), so the chain of ADDs reload-addresses
+// 20 spilled slots in one procedure — several times deeper than the
+// existing widest case (fixture 4's 6 stack args). Body lives in
+// corpus_programs.h. expect 1+2+...+24 = 300.
+static Program f32Prog;
+
+// ---- Fixture 33: acc-fold thrash inside a loop. Per iteration:
+// total := (total + 7) & 0xF -- an operand-fold-eligible ADD immediately
+// followed by a never-folds AND, repeated across several loop iterations
+// (existing fixtures 5/6/17 exercise fold/no-fold transitions exactly
+// once; this repeats it every back-edge). expect n=5 -> 3 (0->7->14->5->
+// 12->3, four decrements shown: 7,14,5,12,3 over 5 iterations).
+static const Instr f33Proc0[] = {
+    LOAD(0), PUSH(),  // k1 = counter := n
+    CONST(0), PUSH(), // k2 = total := 0
+    bare(Op::LOOP),
+        LOAD(1),
+    bare(Op::BLOCK_END), // while(counter != 0)
+        LOAD(2), opImm(Op::ADD, 7), opImm(Op::AND, 0xF), STORE(2), // total := (total+7)&0xF
+        LOAD(1), opImm(Op::SUB, 1), STORE(1),
+    bare(Op::BLOCK_END), // back-edge
+    LOAD(2), bare(Op::RETURN),
+};
+static Program f33Prog;
+
+// ---- Fixtures 34/35: NEG/NOT consuming an out-of-window (spilled)
+// operand. Mirrors fixtures 13/14, but with 4 PUSHes ahead of the arg so
+// k0 is spilled by the time LOAD(0) reloads it, immediately followed by
+// the unary op -- the exact shape emitUnary's src-parameter path needs
+// (reading the reload's own destination register directly instead of
+// forcing a flush through ACC_REG first). No existing fixture or host
+// unit test covers a spilled operand here. expect arg=5 -> NEG:
+// 0xFFFFFFFB, NOT: 0xFFFFFFFA (same values as fixtures 13/14).
+static const Instr f34Proc0[] = {
+    CONST(1), PUSH(), CONST(2), PUSH(), CONST(3), PUSH(), CONST(4), PUSH(),
+    LOAD(0), bare(Op::NEG), bare(Op::RETURN),
+};
+static Program f34Prog;
+static const Instr f35Proc0[] = {
+    CONST(1), PUSH(), CONST(2), PUSH(), CONST(3), PUSH(), CONST(4), PUSH(),
+    LOAD(0), bare(Op::NOT), bare(Op::RETURN),
+};
+static Program f35Prog;
+
+// ---- Fixture 36: LOOP back-edge forced into the long-branch form.
+// Padded with 20 bare(Op::NOT)s inside the loop body (mirroring fixture
+// 18's technique, but applied to translateLoop's own back-edge rather
+// than an if/else guard -- 21*ORDINARY_MAX_BYTES(16) = 336 >
+// SAFE_COND_BRANCH_SPAN(240)). Counts down to 0 regardless of padding;
+// the interesting part is that it compiles and runs at all. expect
+// arg=1 -> 0, arg=50 -> 0.
+static const Instr f36Proc0[] = {
+    LOAD(0), PUSH(), // k1 = counter := n
+    bare(Op::LOOP),
+        LOAD(1),
+    bare(Op::BLOCK_END), // while(counter != 0)
+        bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT),
+        bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT),
+        bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT),
+        bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT),
+        LOAD(1), opImm(Op::SUB, 1), STORE(1),
+    bare(Op::BLOCK_END), // back-edge, forced into the long form
+    LOAD(1), bare(Op::RETURN),
+};
+static Program f36Prog;
+
+// ---- Fixture 37: two-level savesLR/returnHelperFromStackReclaim chain,
+// extending fixture 27's shape (one non-leaf procedure with an
+// out-of-window arg below its own pushed call record) to two nested
+// levels: proc0 -> proc1 (argCount=5, out-of-window arg, calls proc2) ->
+// proc2 (argCount=5, out-of-window arg, calls proc3) -> proc3 (leaf).
+// Exercises returnHelperFromStackReclaim at two call depths instead of
+// one. expect proc3(10)=1010; proc2 = proc3(10)+arg4(500) = 1510; proc1 =
+// proc2(...)+ownArg0(1)+ownArg4(50) = 1510+1+50 = 1561.
+static const Instr f37Proc0[] = {
+    CONST(1), PUSH(),  // arg0 for proc1 -- k=0, proc1's out-of-window arg
+    CONST(2), PUSH(),  // arg1 -- k=1
+    CONST(3), PUSH(),  // arg2 -- k=2
+    CONST(4), PUSH(),  // arg3 -- k=3
+    CONST(50),          // arg4 -- last, via acc
+    call(1),
+    bare(Op::RETURN),
+};
+static const Instr f37Proc1[] = {
+    LOAD(0),               // acc = arg0 (k=0, out-of-window)
+    PUSH(),                 // k=5 = saved copy of proc1's own arg0, survives across the nested call
+    CONST(10), PUSH(),      // arg0 for proc2 -- k=6, proc2's own out-of-window arg
+    CONST(11), PUSH(),      // arg1 -- k=7
+    CONST(12), PUSH(),      // arg2 -- k=8
+    CONST(13), PUSH(),      // arg3 -- k=9
+    CONST(500),              // arg4 -- last, via acc
+    call(2),                  // proc2(10,11,12,13,500) -- makes proc1 non-leaf (savesLR)
+    opReg(Op::ADD, 5),         // acc += proc1's own saved arg0 (k=5)
+    opReg(Op::ADD, 4),          // acc += arg4 (k=4, still in-window)
+    bare(Op::RETURN),
+};
+static const Instr f37Proc2[] = {
+    LOAD(0),           // acc = arg0 (k=0, out-of-window)
+    call(3),            // proc3(arg0) -- makes proc2 non-leaf (savesLR)
+    opReg(Op::ADD, 4),   // acc += arg4 (k=4, still in-window)
+    bare(Op::RETURN),
+};
+static const Instr f37Proc3[] = {LOAD(0), opImm(Op::ADD, 1000), bare(Op::RETURN)};
+static Program f37Prog;
+
 // Every original fixture's own compiled output measures well under 110
 // bytes — fixture 18 is a deliberate exception (it pads its own source
 // body specifically to force the long-branch form). This is a bump
@@ -489,6 +645,46 @@ void initFixtures()
         ProcSource procs[] = {PROC(0, f27Proc0), PROC(5, f27Proc1), PROC(1, f27Proc2)};
         f27Prog = finishProgram(procs, 3);
     }
+    {
+        ProcSource procs[] = {PROC(1, corpusNestedLoopProc0)};
+        f28Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, corpusBrTableInLoopProc0)};
+        f29Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, corpusLoopInBrTableProc0)};
+        f30Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, corpusLargeBrTableProc0), PROC(1, corpusLargeBrTableProc1)};
+        f31Prog = finishProgram(procs, 2);
+    }
+    {
+        ProcSource procs[] = {PROC(0, corpusDeepStackProc0)};
+        f32Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f33Proc0)};
+        f33Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f34Proc0)};
+        f34Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f35Proc0)};
+        f35Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(1, f36Proc0)};
+        f36Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f37Proc0), PROC(5, f37Proc1), PROC(5, f37Proc2), PROC(1, f37Proc3)};
+        f37Prog = finishProgram(procs, 4);
+    }
 }
 
 Fixture fixtures[] = {
@@ -552,5 +748,33 @@ Fixture fixtures[] = {
     {"pooled literal in a procedure past an odd-sized one", &f26Prog, false, 0x0F0F0F0Bu},
 
     {"savesLR return with out-of-window args below the pushed record", &f27Prog, false, 1501},
+
+    {"nested LOOP-in-LOOP: sum of triangular numbers, n=3", &f28Prog, false, 10, 3},
+    {"nested LOOP-in-LOOP: sum of triangular numbers, n=1", &f28Prog, false, 1, 1},
+    {"nested LOOP-in-LOOP: sum of triangular numbers, n=0", &f28Prog, false, 0, 0},
+
+    {"BR_TABLE nested inside LOOP body, n=4", &f29Prog, false, 64, 4},
+    {"BR_TABLE nested inside LOOP body, n=5", &f29Prog, false, 69, 5},
+    {"BR_TABLE nested inside LOOP body, n=0", &f29Prog, false, 0, 0},
+
+    // argIn packs selector<<8 | n (see corpusLoopInBrTableProc0's own comment in corpus_programs.h).
+    {"LOOP nested inside BR_TABLE case, selector=0,n=4", &f30Prog, false, 10, 4},
+    {"LOOP nested inside BR_TABLE case, selector=1,n=4", &f30Prog, false, 12, 260},
+
+    {"large BR_TABLE (N=20) with CALL, selector=7", &f31Prog, false, 1005, 7},
+    {"large BR_TABLE (N=20) with CALL, selector=3", &f31Prog, false, 30, 3},
+    {"large BR_TABLE (N=20) with CALL, selector=19", &f31Prog, false, 190, 19},
+
+    {"deep operand stack, 24 live locals", &f32Prog, false, 300},
+
+    {"acc-fold thrash inside a loop, n=5", &f33Prog, false, 3, 5},
+
+    {"NEG on out-of-window (spilled) operand", &f34Prog, false, 0xFFFFFFFBu, 5},
+    {"NOT on out-of-window (spilled) operand", &f35Prog, false, 0xFFFFFFFAu, 5},
+
+    {"LOOP back-edge forced into long-branch form, n=1", &f36Prog, false, 0, 1},
+    {"LOOP back-edge forced into long-branch form, n=50", &f36Prog, false, 0, 50},
+
+    {"two-level savesLR/returnHelperFromStackReclaim chain", &f37Prog, false, 1561},
 };
 const uint32_t fixtureCount = sizeof(fixtures) / sizeof(fixtures[0]);

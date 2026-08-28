@@ -1,5 +1,6 @@
 fuzz_driver
 fuzz_driver_afl
+dump_seeds
 repro_driver*
 last_input.bin
 out/

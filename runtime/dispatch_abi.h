@@ -49,56 +49,51 @@ extern uint64_t enterDispatch(uint32_t argIn, Runtime *runtime); /* runtime.S */
 #define ENTER_DISPATCH_FIXED_BYTES 40
 
 /* Fixed, one-time cost of getting from translatorTrampoline's own entry
- * down to translateBody's own first call. The recursion beyond that point
- * has no static whole-program worst case; that is policed live instead
- * (Runtime::liveStackFloor(), read fresh by translateBody's own guard).
+ * down to the point where the real per-level recursion begins
+ * (processNonTerminators/processUntilTerminator, translate_proc.cpp).
+ * That recursion has no static whole-program worst case; it is policed
+ * live instead, at every level (translate_proc.cpp's checkStackFloor,
+ * reading Runtime::liveStackFloor() fresh on each call — see
+ * test/qemu/Makefile's stack-usage-check target for how its own per-level
+ * byte cost is kept honest against what GCC actually measures).
  *
- * STALE, NEEDS RE-DERIVING: the 96 below (and so the 488 total) was
- * measured against an Assembler::materializeImm32 that no longer exists
- * in this shape — it called out to a separate emitSynthesizeImm32Into for
- * byte-by-byte synthesis; that's gone, folded into materializeImm32
- * itself (an imm8-direct / bitwise-NOT-of-imm8 / shifted-imm8 repertoire,
- * falling back to the pool only outside all three). Re-deriving isn't
- * just a search-and-replace: the "last-argument-fold scan" call site this
- * 96 was anchored on (translate_proc.cpp's accState.flush(a,
- * physReg(lastArgSlot)) right before translateBody's first call) turns
- * out to never actually reach materializeImm32 at all — accState is
- * freshly constructed (Kind::Clean) and every producer() call reaching
- * that point sets Shape::ofReg(ACC_REG), never a pending immediate, so
- * materializeShape's imm branch is dead code from there. Whatever the
- * true second-deepest one-time chain is (through Assembler::reserve at
- * the top of translateProc, or through CONST/IMM_ACC's own
- * materializeImm32 call inside translateBody — which may belong to the
- * *live*, per-recursion-level budget instead, not this fixed one-time
- * one) needs re-tracing before this number can be trusted again.
+ * Re-derived from scratch via `arm-none-eabi-g++ -Os -fstack-usage`
+ * against the exact flags test/qemu's own build uses (optimization/
+ * inlining-dependent — re-derive from a real build, never estimate).
+ * `translateBody`/`translateLoop`/`translateIfThen`/`translateIfThenElse`/
+ * `translateSwitch` do not appear in `.su` output at all at this
+ * optimization level — confirmed fully inlined into `translateProc`/
+ * `processNonTerminators` respectively, not separate frames to budget
+ * here. The one real, straight-line chain from `translatorTrampoline`'s
+ * entry to the deepest point that can run before the per-level recursion
+ * takes over is:
  *
- * Last known-good derivation (for compileProc as of the Assembler
- * restructuring, docs/assembler-restructuring.md), via `-fstack-usage`
- * against every function actually on this path — kept here as the
- * starting point for the re-derivation above, not as a currently
- * accurate one: two candidate chains both run sequentially before
- * translateBody's first call — prologue emission, then the
- * last-argument-fold scan — so the worse of the two, not their sum, sets
- * this constant: translatorTrampoline's own push{r0,r1,r2} plus
- * REALIGN_ENTER's worst-case reservation (24, asm, unchanged from
- * before); compileProc's own static frame (224 — up from 96: it now
- * holds the Assembler object itself as a local rather than a separate
- * RuntimeArenaRoom; the calleeArgCounts VLA this frame size once excluded
- * and budgeted separately has since been deleted entirely, dead code —
- * nothing to account for on that front any more); translateProc's own frame (144, includes Ctx as a
- * local; translateBody's own recursive frames are a separate call, not
- * folded in here); then the deeper of — a.reserve(STUB_SIZE+2) (16) +
- * Assembler::growForAttached (48), called once before abiEmitPrologue
- * even runs, versus AccState::flush (32) + materializeShape (8) +
- * Assembler::materializeImm32 (16) + Assembler::emitSynthesizeImm32Into
- * (40) = 96 (the reachability of which is exactly what's now in
- * question, above) — the second chain taken as deeper.
- * 24+224+144+96 = 488.
+ *   translatorTrampoline's push{r0,r1,r2,lr} (16, runtime.S:196) +
+ *   REALIGN_ENTER's worst case (12: up to 4 for 8-byte realignment,
+ *   always 8 more to save the pre-realignment sp, runtime.S:165-171) = 28
+ *   (asm, not `.su`-measurable — re-verify by re-reading runtime.S
+ *   directly if either macro/prologue ever changes shape)
+ * + compileProc (200, runtime/compile_proc.cpp — down from a previously
+ *   documented 224 now that the dead `calleeArgCounts` VLA is gone)
+ * + translateProc (120, compiler/src/translate_proc.cpp — includes
+ *   translateBody's own inlined body; previously documented as 144
+ *   modeling translateBody as a separate frame, which is no longer how
+ *   this compiles)
+ * + the deepest a single `emit()` call inside `emitPrologueStub` can
+ *   reach if the arena happens to be full at that exact moment:
+ *   abiEmitPrologue (16) + emitPrologueStub (16) + Assembler::emit (16) +
+ *   Assembler::growForAttached (48) = 96 (compiler/src/abi_strategy.cpp,
+ *   compiler/src/assembler.cpp — Runtime::findEvictionVictim/evict, both
+ *   defined in runtime_internal.h, are confirmed inlined into
+ *   growForAttached, not separate frames)
  *
- * Not yet enforced at build time via a per-file `-Wstack-usage=`/
- * `-Werror=stack-usage=` pin — wiring that into this Makefile's own
- * ultimate-makefile-based object rules is a reasonable follow-up, not done
- * here. */
-#define TRANSLATOR_ENTRY_WORST_CASE_BYTES (24 + 224 + 144 + 96)
+ * 28 + 200 + 120 + 96 = 444.
+ *
+ * Enforced at build time by test/qemu/Makefile's `stack-usage-check`
+ * target: every named function above is checked against this same
+ * expected value on every build, failing loudly (not just on increase —
+ * also if one shrinks, which is exactly how this constant went stale
+ * last time) if `-fstack-usage`'s real measurement ever drifts. */
+#define TRANSLATOR_ENTRY_WORST_CASE_BYTES (28 + 200 + 120 + 96)
 
 #endif /* JIT_ARMV6M_RUNTIME_DISPATCH_ABI_H_ */

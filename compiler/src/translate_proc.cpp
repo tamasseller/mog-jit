@@ -22,7 +22,48 @@ namespace jitc
 using R = ArmV6M::LoReg;
 using Cond = ArmV6M::Condition;
 
-static constexpr uint32_t TRANSLATE_BODY_STACK_MARGIN = 512;
+// Re-derived from real `-fstack-usage` measurements (test/qemu's build,
+// same flags as production), not a round guess: the sustained chain from
+// one checkStackFloor call succeeding to the next one running one level
+// deeper is processNonTerminators (104) + processUntilTerminator (56),
+// both simultaneously live (the outer's frame stays reserved while it
+// calls the inner, which stays reserved while it recurses back into the
+// next level's processNonTerminators) + checkStackFloor's own frame (8) at
+// that deeper call = 168. The transient calls a construct handler makes
+// before reaching that recursive call (testAccNonzero=16,
+// emitGuardedBranch=40, handleComparisonEmission=40) are all smaller and
+// have already returned by the time the deeper call happens, so none of
+// them add to this. a.fail()'s own path was previously assumed to need
+// margin too ("fail()'s own unwind path") — checked directly and it
+// doesn't: runtimeBail() (dispatch_abi.cpp) never walks back through
+// frames, it restores sp from Runtime::savedSp via inline asm and jumps
+// straight to the landing point, so there's nothing proportional to depth
+// to budget for there. 168 + a 56-byte pad for future drift = 224.
+// test/qemu/Makefile's stack-usage-check target asserts this constant
+// stays above the tracked 104+56+8 total on every build, so a future
+// change to any of those three frames can't silently invalidate this
+// number the way TRANSLATOR_ENTRY_WORST_CASE_BYTES once did.
+static constexpr uint32_t TRANSLATE_BODY_STACK_MARGIN = 224;
+
+// The real recursion isn't translateBody calling itself — it's
+// translateLoop/translateIfThen/translateIfThenElse/translateSwitch each
+// calling processUntilTerminator -> processNonTerminators -> back into any
+// of those four (translateBody is only ever the depth-0 entry, never
+// re-entered). So this needs checking at the top of all five, not just
+// translateBody, for a nested LOOP/BR_TABLE to ever re-verify live SP as it
+// recurses. r.liveStackFloor() is read fresh on every call (never cached),
+// so this is self-correcting by construction — the only thing that can go
+// stale is the margin itself (see its own derivation comment above).
+static bool checkStackFloor(Assembler &a, const Runtime &r)
+{
+    register uint32_t sp asm("sp");
+    if(sp < TRANSLATE_BODY_STACK_MARGIN || sp - TRANSLATE_BODY_STACK_MARGIN < r.liveStackFloor())
+    {
+        a.fail();
+        return false;
+    }
+    return true;
+}
 
 struct FoldResult
 {
@@ -511,15 +552,35 @@ static void handleGlobalJump(Ctx &ctx, Assembler& a, Instr term, uint32_t tos)
 
 static void translateIfThen(Ctx &ctx, Assembler& a, const Runtime& r)
 {
+    if(!checkStackFloor(a, r))
+    {
+        return;
+    }
+
     const auto entryTos = ctx.window.tos;
     const bool fused = ctx.hasPendingComparisonCondition;
     ctx.hasPendingComparisonCondition = false;
 
-    Label end;
+    Label skip;
+
+    // What acc holds on the skip edge -- isa-core.md §4.5's implicit
+    // default (acc >= N runs no case at all) leaves acc untouched, so that
+    // edge re-establishes it for the merge below exactly as a case body
+    // does, and validateProgram's own AND-across-cases model (§8.7)
+    // therefore lets a RETURN downstream read it. Captured before the CMP:
+    // testAccNonzero may peek a pending immediate into SCRATCH_REG, and
+    // the fixup below wants the original description, not that scratch
+    // copy. Nothing between here and the fixup can invalidate it -- the
+    // fixup is only ever reached via the skip branch, i.e. with the body's
+    // own code (window restore included) unexecuted. Fused, acc was never
+    // materialized at all, but the skip edge is by construction the
+    // "comparison true" one, so acc is 1 there (§7.3's complementary
+    // comparison).
+    const Shape skipEdgeAcc = fused ? Shape::ofImm(1) : ctx.accState.peek();
 
     const auto cond = fused ? ctx.pendingComparisonCondition : testAccNonzero(a, ctx.accState);
 
-    emitGuardedBranch(a, end, cond, ctx.bytes, ctx.bytesLen, ctx.pc, 1);
+    emitGuardedBranch(a, skip, cond, ctx.bytes, ctx.bytesLen, ctx.pc, 1);
 
     if(fused)
     {
@@ -527,28 +588,48 @@ static void translateIfThen(Ctx &ctx, Assembler& a, const Runtime& r)
     }   
     
     const auto term = processUntilTerminator(ctx, a, r, false);
-    if(term.op == Op::BLOCK_END)
-    {
-        localJumpCleanup(ctx, a, entryTos);
-    }
-    else
+
+    if(term.op != Op::BLOCK_END)
     {
         handleGlobalJump(ctx, a, term, entryTos);
+        // The body left through its own terminator, so the skip edge is
+        // the only one that reaches here -- no merge to reconcile, acc is
+        // just whatever that one edge carries.
+        a.bind(skip);
+        ctx.accState.producer(skipEdgeAcc);
+        return;
     }
 
-    // "end" is also reached directly from the guarded branch above, on the
-    // edge that skips the body entirely. isa-core.md §8.7: a merge point
-    // is live only if every edge into it explicitly re-established a
-    // value -- neither this skip edge nor a body that closed via
-    // BLOCK_END did, so nothing downstream may read acc without its own
-    // fresh producer.
-    ctx.accState.poison();
+    localJumpCleanup(ctx, a, entryTos);
 
+    if(!ctx.accState.live())
+    {
+        // The body's edge arrives dead, so nothing downstream may read acc
+        // regardless of which edge ran (isa-core.md §8.7) -- no fixup
+        // needed, and the skip edge's own value goes unused.
+        a.bind(skip);
+        return;
+    }
+
+    // Both edges reach the merge live, but with the body's value in
+    // ACC_REG (localJumpCleanup's flushLive) and the skip edge's still
+    // wherever it started -- so the skip edge gets a fixup stub of its
+    // own, placed after the body where only its branch can reach it.
+    Label end;
+    a.branchTo(end);
+    a.bind(skip);
+    skipEdgeAcc.materialize(a, ACC_REG);
     a.bind(end);
+    ctx.accState.setClean(ACC_REG);
 }
 
 static void translateIfThenElse(Ctx &ctx, Assembler& a, const Runtime& r)
 {
+    if(!checkStackFloor(a, r))
+    {
+        return;
+    }
+
     const auto entryTos = ctx.window.tos;
     const bool fused = ctx.hasPendingComparisonCondition;
     ctx.hasPendingComparisonCondition = false;
@@ -564,10 +645,13 @@ static void translateIfThenElse(Ctx &ctx, Assembler& a, const Runtime& r)
         ctx.accState.producer(Shape::ofImm(0));
     }
 
+    bool mergeLive = true; // vacuously, until an edge that actually reaches it says otherwise
+
     const auto term = processUntilTerminator(ctx, a, r, false);
     if(term.op == Op::BLOCK_END)
     {
         localJumpCleanup(ctx, a, entryTos);
+        mergeLive = mergeLive && ctx.accState.live();
         a.branchTo(end);
     }
     else
@@ -596,6 +680,7 @@ static void translateIfThenElse(Ctx &ctx, Assembler& a, const Runtime& r)
     if(term2.op == Op::BLOCK_END)
     {
         localJumpCleanup(ctx, a, entryTos);
+        mergeLive = mergeLive && ctx.accState.live();
     }
     else
     {
@@ -604,11 +689,22 @@ static void translateIfThenElse(Ctx &ctx, Assembler& a, const Runtime& r)
 
     // "end" merges two edges -- "then"'s branch (taken when "then" ran and
     // fell through its own BLOCK_END) and "otherwise"'s fallthrough (taken
-    // when "otherwise" ran). isa-core.md §8.7: a merge point is live only
-    // if every edge into it explicitly re-established a value for
-    // whoever's downstream -- neither arm did that here, they each just
-    // left whatever their own body computed.
-    ctx.accState.poison();
+    // when "otherwise" ran); the two cases exhaust this form's successors,
+    // since N == 2's implicit default is folded into "otherwise" by the
+    // single conditional branch above. isa-core.md §8.7: live past the
+    // merge only if every edge that actually reaches it re-established a
+    // value -- localJumpCleanup's own flushLive already put each such
+    // edge's value in ACC_REG, so agreement is all that's left to check.
+    // An arm that left through a terminator never reaches here at all, and
+    // if neither did, this is dead code and the answer doesn't matter.
+    if(mergeLive)
+    {
+        ctx.accState.setClean(ACC_REG);
+    }
+    else
+    {
+        ctx.accState.poison();
+    }
 
     if(end.chain != -1)
     {
@@ -618,7 +714,10 @@ static void translateIfThenElse(Ctx &ctx, Assembler& a, const Runtime& r)
 
 static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n)
 {
-    // XXX stack check
+    if(!checkStackFloor(a, r))
+    {
+        return;
+    }
 
     const auto entryTos = ctx.window.tos;
     assert(ctx.hasPendingComparisonCondition == false);
@@ -653,6 +752,13 @@ static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n
 
     Label end;
 
+    // Vacuously true: the implicit default (isa-core.md §4.5) always
+    // reaches the merge and always arrives live -- the flush() above put
+    // the dispatch value in ACC_REG, and the helper's own clamped index
+    // register is deliberately never acc (docs/design.md §12), so that
+    // edge leaves it untouched. Only the cases can spoil it.
+    bool mergeLive = true;
+
     for(uint32_t i = 0; i < n; i++)
     {
         a.patchRawHalfword(base + i * 2, (uint16_t)(a.pc() - base));
@@ -671,6 +777,7 @@ static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n
         if(term.op == Op::BLOCK_END)
         {
             localJumpCleanup(ctx, a, entryTos);
+            mergeLive = mergeLive && ctx.accState.live();
             if(i + 1 < n)
             {
                 a.branchTo(end);
@@ -686,13 +793,20 @@ static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n
 
     a.patchRawHalfword(base + n * 2, (uint16_t)(a.pc() - base));
 
-    // "end" merges however many of the n cases branched here (each
-    // leaving ctx.accState as whatever its own body did) plus the
-    // fallthrough from the last case. isa-core.md §8.7: none of those
-    // edges explicitly re-established a value for whoever's downstream,
-    // so this stays poisoned rather than adopting whatever the
-    // textually-last case happened to leave behind.
-    ctx.accState.poison();
+    // "end" merges however many of the n cases branched here plus the
+    // implicit default's own table slot, just patched above. isa-core.md
+    // §8.7: live past the merge only if every edge that reaches it
+    // re-established a value -- localJumpCleanup's own flushLive put each
+    // BLOCK_END-closing case's value in ACC_REG and the default edge left
+    // the dispatch value there, so agreement is all that's left to check.
+    if(mergeLive)
+    {
+        ctx.accState.setClean(ACC_REG);
+    }
+    else
+    {
+        ctx.accState.poison();
+    }
 
     if(end.chain != -1)
     {
@@ -702,7 +816,11 @@ static void translateSwitch(Ctx &ctx, Assembler& a, const Runtime& r, uint32_t n
 
 static void translateLoop(Ctx &ctx, Assembler& a, const Runtime& r)
 {
-    // XXX stack check
+    if(!checkStackFloor(a, r))
+    {
+        return;
+    }
+
     const auto entryTos = ctx.window.tos;
 
     ctx.accState.flushLive(a, ACC_REG);
@@ -755,10 +873,8 @@ static void translateLoop(Ctx &ctx, Assembler& a, const Runtime& r)
 
 static void translateBody(Ctx &ctx, Assembler& a, const Runtime& r)
 {
-    register uint32_t sp asm("sp");
-    if(sp < TRANSLATE_BODY_STACK_MARGIN || sp - TRANSLATE_BODY_STACK_MARGIN < r.liveStackFloor())
+    if(!checkStackFloor(a, r))
     {
-        a.fail();
         return;
     }
 

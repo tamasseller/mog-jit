@@ -7,10 +7,16 @@
 namespace jitc
 {
 
-// This function's own frame is tiny (no Emitter/Window/AccState, just a
-// couple of scalars) — far less than translate_proc.cpp's own
-// TRANSLATE_BODY_STACK_MARGIN, whose figure is dominated by exactly that
-// state.
+// Bounds scanBody's *own* recursion only — this runs before any Runtime/
+// Assembler exists, so nothing else protects it. It is not, and was never
+// meant to be, a proxy for the real translator's later recursion: this
+// function's own frame is tiny (no Emitter/Window/AccState, just a couple
+// of scalars), while translate_proc.cpp's translateLoop/translateIfThen/
+// translateIfThenElse/translateSwitch carry exactly that state, so a depth
+// this margin accepts can still exceed what real translation needs. That
+// gap is closed directly at those four functions' own entry points
+// (translate_proc.cpp's checkStackFloor, checked at every level of the
+// real recursion) — not by trying to keep this number in sync with theirs.
 static constexpr uint32_t SCAN_STACK_MARGIN = 128;
 
 static bool triggersLRSave(const Instr &instr)

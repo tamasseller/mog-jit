@@ -1316,34 +1316,52 @@ this cleanly.
 
 ---
 
-## 16. Known gaps and follow-ups
+## 16. Stack safety
 
-G2 No build-time enforcement (e.g. a per-file `-Wstack-usage=`/
-  `-Werror=stack-usage=` pin) catches future drift in
-  `TRANSLATOR_ENTRY_WORST_CASE_BYTES` — the fixed value itself is correct,
-  automatic drift detection is a follow-up.
+Consolidated strategy for what were three separate gaps (a missing
+build-time check, a stale hand-derived constant, and a live guard that
+only ran at recursion depth 0) into one: the real recursion
+(`translateLoop`/`translateIfThen`/`translateIfThenElse`/`translateSwitch`
+→ `processUntilTerminator` → `processNonTerminators`, back into those) now
+checks live SP at every one of those four entry points via a shared
+`checkStackFloor` (`translate_proc.cpp`) — not just once, at
+`translateBody`'s own depth 0 — closing the actual gap directly rather
+than trying to keep a separate static margin in sync with it.
+`proc_scan.cpp`'s own pre-compilation `scanBody` recursion keeps its own
+`SCAN_STACK_MARGIN`, now documented as bounding only its own (lighter)
+frame — it was never a valid proxy for the real translator's heavier one,
+and no longer needs to be, since `checkStackFloor` covers that directly.
 
-G3 `TRANSLATOR_ENTRY_WORST_CASE_BYTES`'s 488 total has two stale components,
-  both flagged in `dispatch_abi.h`'s own comment: its "second chain" was
-  anchored on a call site (`translate_proc.cpp`'s last-argument-fold
-  `accState.flush`) that turns out to never actually reach
-  `materializeImm32` at all; and its "24" first term attributes
-  `translatorTrampoline`'s entry push to `push{r0,r1,r2}`, but
-  `runtime.S:196` actually pushes `{r0,r1,r2,lr}` (16 bytes, not 12) —
-  potentially under-reserving by up to 4 bytes depending on
-  `REALIGN_ENTER`'s own worst case. Left as the last known-good number
-  rather than an unverified guess; a correct re-derivation is still owed.
+`TRANSLATOR_ENTRY_WORST_CASE_BYTES` (`dispatch_abi.h`) is re-derived from
+a real `-fstack-usage` measurement rather than hand-traced: 444
+(28 asm-verified + 200 + 120 + 96, see the constant's own comment for the
+full chain) — `translateLoop`/`translateIfThen`/`translateIfThenElse`/
+`translateSwitch`/`translateBody` are confirmed fully inlined into
+`translateProc`/`processNonTerminators` at `-Os` and don't appear as
+separate frames to budget.
 
-G5 `translateBody`'s live stack-nesting guard (`translate_proc.cpp`) only
-  ever runs once, at recursion depth 0 — the real recursion
-  (`translateLoop`/`translateIfThen`/`translateIfThenElse`/`translateSwitch`
-  → `processUntilTerminator` → `processNonTerminators`, back into those)
-  never re-enters `translateBody`, so nothing checks the stack floor at
-  deeper levels, while `proc_scan.cpp`'s own nesting walk does check at
-  every level with a much smaller margin — `Runtime::init` can accept a
-  nesting depth that then silently blows the stack during compilation, on
-  a target where that stack holds the operand stack, the dispatch table,
-  and (under `enterProgramOnStack`) the arena itself. `blocks.cpp`'s
-  `maxSpanBytes` recurses over the same nesting with no guard at all, at
-  the deepest point. The check needs to move to where the recursion
-  actually is.
+`test/qemu/Makefile`'s `stack-usage-check` target (`check_stack_usage.py`)
+verifies every function on both the fixed one-time chain and the
+recursive cluster against checked-in expected byte counts on every build,
+failing on drift in either direction — including a value that's silently
+gotten *smaller* than expected, which is exactly how
+`TRANSLATOR_ENTRY_WORST_CASE_BYTES` went stale before. A per-file
+`-Werror=stack-usage=512` backstops the one thing a static byte-count
+comparison can't catch on its own: an accidental unbounded `alloca`/VLA
+in a tracked function.
+
+`test/qemu/stack_paint.cpp` corroborates all of the above empirically on
+real QEMU — the only independent check available on this hardware
+(Cortex-M0 has no MPU, no `MSPLIM`, and `vectors.S` never switches to
+PSP, so this is one flat MSP stack with nothing hardware-enforced to
+catch an overflow; `linker.ld`'s own header already documents a real past
+incident of exactly this). Painting the stack region with a sentinel
+before any test runs, then measuring how far it's overwritten afterward,
+caught a real bug during development: at `-Os`, GCC rewrote the fill loop
+into a `memset` call, which needed its own stack frame at the exact
+moment the paint region's own upper bound was the pre-call `sp` — the
+call overwrote its own return address with the sentinel and jumped into
+`0xAAAAAAAA` on return. Fixed with `volatile` (blocks the rewrite
+entirely) plus a fixed safety margin below the measured `sp` regardless
+(defense in depth) — see `stack_paint.cpp`'s own comment for the full
+diagnosis via `qemu-system-arm -d exec`.

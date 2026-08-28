@@ -37,6 +37,7 @@ SOURCES += ../../compiler/src/translate_proc.cpp
 SOURCES += ../../compiler/src/encode_instr.cpp
 SOURCES += fixtures.cpp
 SOURCES += smoke_test.cpp
+SOURCES += stack_paint.cpp
 SOURCES += semihosting_output.cpp
 SOURCES += cxx_stubs.cpp
 SOURCES += main.cpp
@@ -49,6 +50,7 @@ SOURCES += ../../vendor/1test/TestRunner.cpp
 INCLUDE_DIRS += ../../compiler/src   # jitc:: headers, armv6.h
 INCLUDE_DIRS += ../../runtime         # runtime_host.h / runtime_internal.h
 INCLUDE_DIRS += .                      # fixtures.h / semihosting_output.h
+INCLUDE_DIRS += ..                      # corpus_programs.h, shared with test/tools/dump_corpus.cpp
 INCLUDE_DIRS += ../../vendor/1test      # Test.h
 
 # arm-none-eabi-g++ for AS too (not arm-none-eabi-as): runtime.S has a real
@@ -72,6 +74,32 @@ ASMFLAGS += -mcpu=cortex-m0 -mthumb
 # the invariants compiled *out*, not checked.
 CXXFLAGS += -mcpu=cortex-m0 -mthumb -Os -DNDEBUG
 CXXFLAGS += -std=gnu++17 -fno-exceptions -fno-rtti
+
+# Emits a .su file per translation unit (one line per function: frame
+# bytes, "static"/"dynamic"/"dynamic,bounded") next to its .o, under
+# these exact -Os/-mcpu flags — optimization/inlining-dependent, so this
+# must be measured from a real build with real flags, never estimated.
+# check_stack_usage.py verifies these against the hand-derived constants
+# in runtime/dispatch_abi.h and compiler/src/translate_proc.cpp/
+# proc_scan.cpp (docs/design.md G2/G3/G5) — see `stack-usage-check` below.
+CXXFLAGS += -fstack-usage
+
+# Cheap backstop for the one thing check_stack_usage.py's static-byte-count
+# comparison can't catch on its own: if a future change ever introduces an
+# unbounded alloca/VLA into a tracked function, -fstack-usage reports it as
+# "dynamic" with an unreliable byte count, silently voiding the whole
+# per-level budget this build's stack-safety strategy depends on.
+# -Werror=stack-usage=N fails the build immediately in that case instead —
+# N is deliberately generous (double the largest tracked frame today) so
+# this never fires on an ordinary size change, only on genuinely unbounded
+# stack usage. Per-file, via ultimate-makefile's own flag-hook convention
+# (<FILE_FLAGS>, e.g. TRANSLATE_PROC_CPP_FLAGS), on every file with a
+# function this build tracks.
+COMPILE_PROC_CPP_FLAGS += -Werror=stack-usage=512
+TRANSLATE_PROC_CPP_FLAGS += -Werror=stack-usage=512
+PROC_SCAN_CPP_FLAGS += -Werror=stack-usage=512
+ABI_STRATEGY_CPP_FLAGS += -Werror=stack-usage=512
+ASSEMBLER_CPP_FLAGS += -Werror=stack-usage=512
 
 # runtime.S's own hand-written asm (and every `register ... asm("r8"/"r9"/
 # "r10"/"r11")` C++ site built alongside it — dispatch base, the Runtime
@@ -116,4 +144,11 @@ qemu-debug: $(OUTPUT)
 	qemu-system-arm -M lm3s811evb -m 8k -nographic -monitor none -s -S \
 	    -semihosting-config enable=on,target=native -kernel $(OUTPUT)
 
-.PHONY: qemu-test qemu-debug
+# Depends on $(OUTPUT) (not just the .o rules directly) so every tracked
+# .su file is guaranteed fresh from a real build with real flags before
+# comparison — see check_stack_usage.py's own header for what this
+# verifies and why (docs/design.md G2/G3/G5).
+stack-usage-check: $(OUTPUT)
+	python3 check_stack_usage.py $(OBJDIR)
+
+.PHONY: qemu-test qemu-debug stack-usage-check

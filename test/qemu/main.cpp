@@ -18,8 +18,10 @@
 #include "encode_instr.h"
 #include "translate_proc.h"
 #include "runtime_internal.h" // pulls in runtime_host.h itself (ProgramResult/enterProgram*) — it has no include guard, so it can't also be included directly here
+#include "dispatch_abi.h" // CALL_RECORD_BYTES/ENTER_DISPATCH_FIXED_BYTES/TRANSLATOR_ENTRY_WORST_CASE_BYTES, for the stack-budget boundary TESTs below to compute the exact same requiredStackBytes enter_program.cpp does
 #include "Test.h"
 #include "semihosting_output.h"
+#include "stack_paint.h"
 
 using namespace jitc;
 
@@ -390,10 +392,237 @@ TEST(ResourceErrorSingleProcedureLargerThanArena)
     CHECK(r.value == 0x52455343u); // RESOURCE_ERROR_CODE, "RESC"
 }
 
+TEST(EvictionChurnUnderLoopedCallChain)
+{
+    // Same shape as EvictionThreeDeepCallChain, but the 4-deep callee
+    // chain is invoked repeatedly from inside proc0's own LOOP instead of
+    // once. The arena is sized to fit only the two smallest of the five
+    // procedures at a time, so every iteration but (at most) the first has
+    // to evict and recompile something — exercising findEvictionVictim/
+    // evict across many rounds, where every existing eviction fixture
+    // evicts exactly once.
+    const Instr proc0Body[] = {
+        LOAD(0), PUSH(),  // k1 = counter := L
+        CONST(0), PUSH(), // k2 = total := 0
+        bare(Op::LOOP),
+            LOAD(1),
+        bare(Op::BLOCK_END), // while(counter != 0)
+            CONST(1), call(1), opReg(Op::ADD, 2), STORE(2), // total += proc1(1)
+            LOAD(1), opImm(Op::SUB, 1), STORE(1),
+        bare(Op::BLOCK_END), // back-edge
+        LOAD(2), bare(Op::RETURN),
+    };
+    const Instr proc1Body[] = {LOAD(0), call(2), opImm(Op::ADD, 1), bare(Op::RETURN)};
+    const Instr proc2Body[] = {LOAD(0), call(3), opImm(Op::ADD, 10), bare(Op::RETURN)};
+    const Instr proc3Body[] = {LOAD(0), call(4), opImm(Op::ADD, 100), bare(Op::RETURN)};
+    const Instr proc4Body[] = {LOAD(0), opImm(Op::ADD, 1000), bare(Op::RETURN)};
+    uint32_t n0 = sizeof(proc0Body) / sizeof(proc0Body[0]);
+    uint32_t n1 = sizeof(proc1Body) / sizeof(proc1Body[0]);
+    uint32_t n2 = sizeof(proc2Body) / sizeof(proc2Body[0]);
+    uint32_t n3 = sizeof(proc3Body) / sizeof(proc3Body[0]);
+    uint32_t n4 = sizeof(proc4Body) / sizeof(proc4Body[0]);
+
+    uint8_t b0[48], b1[16], b2[16], b3[16], b4[16];
+    Proc procs[] = {
+        makeProc(1, proc0Body, n0, b0, sizeof(b0)),
+        makeProc(1, proc1Body, n1, b1, sizeof(b1)),
+        makeProc(1, proc2Body, n2, b2, sizeof(b2)),
+        makeProc(1, proc3Body, n3, b3, sizeof(b3)),
+        makeProc(1, proc4Body, n4, b4, sizeof(b4)),
+    };
+    uint32_t argCounts[] = {1, 1, 1, 1, 1};
+    bool savesLR[] = {true, true, true, true, false}; // proc0..proc3 each CALL; proc4 doesn't
+    uint32_t sizes[5];
+    for(uint32_t i = 0; i < 5; i++)
+    {
+        sizes[i] = measuredHalfwords(procs[i], i, argCounts, 5, savesLR[i]) * 2;
+    }
+    // Insertion sort (5 elements) to find the two smallest sizes — an
+    // arena that fits exactly those two forces every third resident
+    // procedure to evict something.
+    for(uint32_t i = 1; i < 5; i++)
+    {
+        uint32_t v = sizes[i];
+        uint32_t j = i;
+        while(j > 0 && sizes[j - 1] > v)
+        {
+            sizes[j] = sizes[j - 1];
+            j--;
+        }
+        sizes[j] = v;
+    }
+    uint32_t arenaSize = sizes[0] + sizes[1] + 4;
+
+    ProcSource procSources[] = {
+        {1, proc0Body, n0}, {1, proc1Body, n1}, {1, proc2Body, n2}, {1, proc3Body, n3}, {1, proc4Body, n4},
+    };
+    uint8_t progBytes[160];
+    uint32_t progLen = makeProgram(0, 0, procSources, 5, progBytes, sizeof(progBytes));
+
+    static constexpr uint32_t L = 4;
+    ProgramResult r = enterProgramWithSharedArena(L, progBytes, progLen, arenaSize);
+
+    if(r.trapped)
+    {
+        writeHexTrap(r.value);
+    }
+    CHECK(!r.trapped);
+    // Each pass through the chain contributes 1112 (proc1(1)=1112, see the
+    // per-proc bodies above); L=4 passes accumulate 4448.
+    CHECK(r.value == 1112u * L);
+}
+
+// requiredStackBytes, reproduced from enter_program.cpp's own static
+// function of the same name (not exported — computed here from the same
+// public Runtime::storageBytesFor and dispatch_abi.h constants it uses) so
+// the two boundary TESTs below can derive stackLimit from the exact
+// formula the real upfront check applies, rather than the deliberately
+// generous stackLimitAboveBss() every other enterProgramOnStack TEST here
+// relies on. fixtures.cpp's own finishProgram comment flags this as the
+// one thing nothing here yet exercises: real, hand-derived max_call_depth/
+// total_depth values pushed right up against the computed floor.
+static uint32_t requiredStackBytesFor(uint32_t procCount, uint32_t totalDepth, uint32_t maxCallDepth)
+{
+    return Runtime::storageBytesFor(procCount)
+         + totalDepth * 4
+         + maxCallDepth * CALL_RECORD_BYTES
+         + ENTER_DISPATCH_FIXED_BYTES
+         + TRANSLATOR_ENTRY_WORST_CASE_BYTES;
+}
+
+// A margin comfortably larger than the handful of stack frames between
+// where this TEST measures currentSp() and where enterProgramOnStack's own
+// stackHasRoom() re-measures it a few calls deeper — large enough to
+// absorb that gap reliably, small enough (versus TRANSLATOR_ENTRY_WORST_
+// CASE_BYTES=488 alone) that the boundary is still meaningfully tight
+// rather than arbitrarily generous.
+static constexpr uint32_t BOUNDARY_SLACK = 256;
+
+TEST(OnStackAcceptsAtComputedBudgetBoundary)
+{
+    // The same 3-deep chain as SplitThreeDeepCallChainSucceeds
+    // (maxCallDepth=2, totalDepth=2, procCount=3), with stackLimit set
+    // just under the real computed floor.
+    const Instr proc0Body[] = {CONST(5), call(1), bare(Op::RETURN)};
+    const Instr proc1Body[] = {LOAD(0), call(2), opImm(Op::ADD, 1), bare(Op::RETURN)};
+    const Instr proc2Body[] = {LOAD(0), opImm(Op::ADD, 100), bare(Op::RETURN)};
+    ProcSource procs[] = {{0, proc0Body, 3}, {1, proc1Body, 4}, {1, proc2Body, 3}};
+    uint8_t bytes[48];
+    uint32_t maxCallDepth = 2, totalDepth = 2, procCount = 3;
+    uint32_t len = makeProgram(maxCallDepth, totalDepth, procs, procCount, bytes, sizeof(bytes));
+
+    uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + GENEROUS_ARENA;
+    uint32_t stackLimit = currentSp() - needed - BOUNDARY_SLACK;
+
+    ProgramResult r = enterProgramOnStack(0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+
+    if(r.trapped)
+    {
+        writeHexTrap(r.value);
+    }
+    CHECK(!r.trapped);
+    CHECK(r.value == 106);
+}
+
+TEST(OnStackRejectsJustAboveComputedBudget)
+{
+    // Same program and formula as above, but stackLimit sits just above
+    // the computed floor instead of just below it — the upfront check
+    // should reject based on the real arithmetic, not the trivial
+    // stackLimit==currentSp() case OnStackRejectsBeforeTouchingAnything
+    // already covers.
+    const Instr proc0Body[] = {CONST(5), call(1), bare(Op::RETURN)};
+    const Instr proc1Body[] = {LOAD(0), call(2), opImm(Op::ADD, 1), bare(Op::RETURN)};
+    const Instr proc2Body[] = {LOAD(0), opImm(Op::ADD, 100), bare(Op::RETURN)};
+    ProcSource procs[] = {{0, proc0Body, 3}, {1, proc1Body, 4}, {1, proc2Body, 3}};
+    uint8_t bytes[48];
+    uint32_t maxCallDepth = 2, totalDepth = 2, procCount = 3;
+    uint32_t len = makeProgram(maxCallDepth, totalDepth, procs, procCount, bytes, sizeof(bytes));
+
+    uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + GENEROUS_ARENA;
+    uint32_t stackLimit = currentSp() - needed + BOUNDARY_SLACK;
+
+    ProgramResult r = enterProgramOnStack(0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+
+    if(r.trapped)
+    {
+        writeHexTrap(r.value);
+    }
+    else
+    {
+        writeHexResult(r.value);
+    }
+    CHECK(r.trapped);
+    CHECK(r.value == 0x52455343u); // RESOURCE_ERROR_CODE, "RESC"
+}
+
+TEST(OnStackSucceedsWithBothArenaAndStackBudgetTight)
+{
+    // Runtime::liveStackFloor() (runtime_internal.h): enterProgramOnStack
+    // anchors the code arena's own base at stackLimit itself, so
+    // arenaCursor advances past stackLimit as soon as even one procedure
+    // compiles — at that point the translator's own live-recursion floor
+    // tracks arenaCursor instead of the flat stackLimit. Every other
+    // enterProgramOnStack TEST here crosses that line incidentally (a
+    // generous arena/stack budget just makes it harmless); this one makes
+    // both budgets tight at once — the arena just barely fits the whole
+    // chain, and stackLimit sits right at the formula's own computed
+    // floor — so the crossing actually matters to whether this succeeds.
+    const Instr proc0Body[] = {CONST(5), call(1), bare(Op::RETURN)};
+    const Instr proc1Body[] = {LOAD(0), call(2), opImm(Op::ADD, 1), bare(Op::RETURN)};
+    const Instr proc2Body[] = {LOAD(0), opImm(Op::ADD, 100), bare(Op::RETURN)};
+    uint8_t measureBytes0[16], measureBytes1[16], measureBytes2[16];
+    Proc measureProcs[] = {
+        makeProc(0, proc0Body, 3, measureBytes0, sizeof(measureBytes0)),
+        makeProc(1, proc1Body, 4, measureBytes1, sizeof(measureBytes1)),
+        makeProc(1, proc2Body, 3, measureBytes2, sizeof(measureBytes2)),
+    };
+    uint32_t argCounts[] = {0, 1, 1};
+    bool savesLR[] = {true, true, false}; // proc0Body/proc1Body each CALL; proc2Body doesn't
+    uint32_t tightArena = 4; // + each measured procedure's own size, below
+    for(uint32_t i = 0; i < 3; i++)
+    {
+        tightArena += measuredHalfwords(measureProcs[i], i, argCounts, 3, savesLR[i]) * 2;
+    }
+
+    ProcSource procs[] = {{0, proc0Body, 3}, {1, proc1Body, 4}, {1, proc2Body, 3}};
+    uint8_t bytes[48];
+    uint32_t maxCallDepth = 2, totalDepth = 2, procCount = 3;
+    uint32_t len = makeProgram(maxCallDepth, totalDepth, procs, procCount, bytes, sizeof(bytes));
+
+    // A bigger margin than BOUNDARY_SLACK above: with both the arena and
+    // the overall stack budget shrunk to near their real minimum, there's
+    // no leftover slack (the totalDepth/maxCallDepth terms that normally
+    // provide it) left to absorb translate_proc.cpp's own independent,
+    // separately-checked TRANSLATE_BODY_STACK_MARGIN (512) live guard —
+    // discovered empirically while tuning this TEST. This isn't trying to
+    // find that exact minimum (deliberately out of scope — see this
+    // corpus expansion's own plan on avoiding G5-adjacent edge-probing);
+    // it just needs enough over BOUNDARY_SLACK to clear that margin too.
+    static constexpr uint32_t TIGHT_TEST_SLACK = BOUNDARY_SLACK + 512;
+    uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + tightArena;
+    uint32_t stackLimit = currentSp() - needed - TIGHT_TEST_SLACK;
+
+    ProgramResult r = enterProgramOnStack(0, bytes, len, tightArena, stackLimit, /*interruptReserve=*/0);
+
+    if(r.trapped)
+    {
+        writeHexTrap(r.value);
+    }
+    CHECK(!r.trapped);
+    CHECK(r.value == 106);
+}
+
 int main(void)
 {
+    // Must run before anything else pushes a single frame — see
+    // stack_paint.cpp's own header comment for why (docs/design.md
+    // G2/G3/G5's empirical corroboration).
+    paintStack();
+
     initFixtures();
     bool ok = test::TestRunner::runAllTests(&SemihostingOutput::instance);
+    ok = reportStackHighWaterMark() && ok;
     semihostingExit(ok ? 0 : 1);
     return 0;
 }

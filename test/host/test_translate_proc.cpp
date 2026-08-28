@@ -1281,6 +1281,68 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     EXPECT_RESOURCE_ERROR(translateProc(proc, 0, a, rt.runtime()));
 }
 
+TEST(FlatBodySucceedsWithSlackThatOnlyCoversTranslateBodysOwnDepthZeroCheck)
+{
+    // Companion to NestedIfChainReportsOverflowWithTheSameSlackADepthZeroBodyTolerates
+    // below — establishes the baseline half of the comparison. A floor with
+    // comfortable slack beyond translateBody's own margin lets a body with
+    // no nesting at all (never reaching translateIfThen/translateLoop/
+    // translateSwitch) succeed outright.
+    const Instr body[] = {bare(Op::RETURN)};
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
+    rt.runtime().stackLimit = currentSp() - 1024; // generous slack — see the paired test below for why 1024
+    uint8_t bodyBytes[8];
+    Proc proc = makeProc(0, body, 1, bodyBytes, sizeof(bodyBytes));
+    uint16_t buf[16];
+    Assembler a(buf, 16);
+    translateProc(proc, 0, a, rt.runtime());
+}
+
+TEST(NestedIfChainReportsOverflowWithTheSameSlackADepthZeroBodyTolerates)
+{
+    // Proves the new per-construct checkStackFloor calls (translateIfThen
+    // and friends) are what catch this, not just translateBody's own
+    // depth-0 check: the exact same floor the companion test above shows a
+    // flat body tolerates comfortably (1024 bytes of slack beyond
+    // TRANSLATE_BODY_STACK_MARGIN(224)'s own headroom need) is exhausted
+    // once real translation recurses 8 levels deep through BR_TABLE(1) ->
+    // translateIfThen -> processUntilTerminator -> processNonTerminators ->
+    // back into translateIfThen — each level a handful of real,
+    // un-inlined -O0 stack frames. Before this fix, only translateBody's
+    // one check (at depth 0) ever ran, so this exact program and floor
+    // would have silently compiled the whole 8-level chain instead of
+    // bailing. Deliberately doesn't try to calibrate "exactly one level" —
+    // that would be exact-byte-fragile on an -O0 host build that doesn't
+    // resemble the real target's -Os codegen (see the depth-0 test above's
+    // own reasoning); 8 levels against 1024 bytes of slack only needs "one
+    // level costs a small double-digit-or-more number of bytes," true by a
+    // wide margin for a handful of un-inlined function calls.
+    constexpr int kDepth = 8;
+    Instr body[2 * kDepth + 2];
+    for(int i = 0; i < kDepth; i++)
+    {
+        body[i] = brTable(1);
+    }
+    for(int i = 0; i < kDepth; i++)
+    {
+        body[kDepth + i] = bare(Op::BLOCK_END);
+    }
+    body[2 * kDepth] = CONST(0);
+    body[2 * kDepth + 1] = bare(Op::RETURN);
+
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false);
+    rt.runtime().stackLimit = currentSp() - 1024;
+    uint8_t bodyBytes[512];
+    Proc proc = makeProc(0, body, 2 * kDepth + 2, bodyBytes, sizeof(bodyBytes));
+    uint16_t buf[512];
+    Assembler a(buf, 512);
+
+    MOCK(runtime)::EXPECT(runtimeBail).withParam(RESOURCE_ERROR_CODE);
+    EXPECT_RESOURCE_ERROR(translateProc(proc, 0, a, rt.runtime()));
+}
+
 // ── Literal pooling ─────────────────────────────────────────────────────
 
 TEST(LargeConstAndLargeOperandBothPoolIntoOneChunk)

@@ -48,6 +48,11 @@ public:
         }
     }
 
+    // Whether anything downstream may still read acc — the merge-point
+    // question translate_proc.cpp's own BR_TABLE reconciliation asks
+    // (isa-core.md §8.7), same predicate flushLive() already gates on.
+    bool live() const { return kind != Kind::Poisoned; }
+
     void setClean(uint32_t r)
     {
         kind = Kind::Clean;
