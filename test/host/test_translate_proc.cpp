@@ -44,6 +44,15 @@ static constexpr uint32_t PC = 15;
     ArmV6M::ldr(ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(4)), \
     ArmV6M::bx(ArmV6M::AnyReg(ENTRY_JUMP_REG)) /* returnHelperFromLr */
 
+// A TRAP's own dispatch: the same three-instruction helper-vector jump,
+// aimed at slot 8 (trapHelper) instead of a return slot. No window
+// discard and no record retrieval precede it — trapHelper restores the
+// excursion's whole saved sp instead (runtime/runtime.S).
+#define TRAP_VIA_HELPER \
+    ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)), \
+    ArmV6M::ldr(ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(HELPER_TRAP_OFFSET)), \
+    ArmV6M::bx(ArmV6M::AnyReg(ENTRY_JUMP_REG)) /* trapHelper */
+
 // proc0 (argCount 0): CONST(37), call(1), RETURN
 static const Instr kProc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
 // proc1 (argCount 1): LOAD(0), opImm(ADD, 5), RETURN
@@ -635,16 +644,15 @@ TEST(TrapAtTopLevel)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    // The 0x80000003 sentinel takes 5 synthesis halfwords, so it pools
-    // instead: one LDR plus a word at the end. pc lands word-aligned
-    // here, so no pad halfword.
-    CHECK(halfwordCount == 12);
+    // The code goes into ACC_REG plainly — no high-bit sentinel to widen
+    // it past MOVS's own imm8, so nothing pools and no window teardown
+    // precedes the dispatch either (trapHelper restores savedSp instead).
+    CHECK(halfwordCount == 10);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
-        ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(4)), // LDR r0,[pc,#4] — Align(12+4,4)=16, +4 -> byte 20
-        RETURN_VIA_LR,
-        0x0003, 0x8000,                                          // pooled word: the 0x80000003 sentinel, not TRAP's own raw decoded imm
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(3)), // MOVS r0, #3 — the trap code itself
+        TRAP_VIA_HELPER,
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
     {
@@ -657,12 +665,10 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
     // Same shape as CaseClosesViaTerminatorThroughFullPipeline above, but
     // with TRAP as the terminator instead of RETURN — closeFrameForTerminator's
     // "frame != nullptr" guard around TRAP is a distinct source line from
-    // RETURN's identically-shaped guard. trapInstr(9)'s sentinel pools
-    // (synthesis cost 5); case0's own terminator close (returnSequence's
-    // own BX already departs unconditionally) flushes that pending pool
-    // entry with flushPoolNoGuard() right there — no branch-around
-    // needed since nothing ever falls through into it, just the usual
-    // alignment pad — *before* case1 (a plain CONST(2)) ever runs.
+    // RETURN's identically-shaped guard. Nothing pools here: trapInstr(9)'s
+    // code is emitted plainly, so it fits MOVS's own imm8 and case0's
+    // terminator close has no pending pool entry to flush (which is why
+    // there is no alignment pad between case0 and case1 either).
     const Instr body[] = {
         CONST(5), opImm(Op::GT_U, 3), brTable(2),
             CONST(1), trapInstr(9),
@@ -680,17 +686,15 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
     uint16_t buf[32];
     Assembler a(buf, 32);
     uint32_t halfwordCount = translateProc(proc, 0, a, rt.runtime());
-    CHECK(halfwordCount == 21);
+    CHECK(halfwordCount == 18);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(5)), // MOVS r0, #5  (CONST 5)
         ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(3)),  // CMP r0, #3  (opImm(GT_U,3), fused straight into the brTable guard)
-        ArmV6M::bhi(ArmV6M::Ioff<1, 8>(12)),               // BHI -> case1's CONST(2), skipping case0's TRAP
-        ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(8)), // LDR r0,[pc,#8] — TRAP's sentinel 0x80000009, pooled
-        RETURN_VIA_LR, // TRAP's own returnSequence() dispatch — same call as an ordinary RETURN, not this procedure's final one
-        ArmV6M::nop(),                                     // case0's terminator-close flush: alignment pad, no branch-around needed
-        0x0009, 0x8000,                                    // pool word: TRAP sentinel 0x80000009
+        ArmV6M::bhi(ArmV6M::Ioff<1, 8>(6)),                // BHI -> case1's CONST(2), skipping case0's TRAP
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(9)), // MOVS r0, #9  (TRAP's own code)
+        TRAP_VIA_HELPER, // *not* RETURN_VIA_LR: a nested TRAP unwinds rather than returning to its caller
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(2)), // MOVS r0, #2  (case1's CONST 2)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)), // MOVS r0, #0  (trailing RETURN's flush of the post-construct CONST(0) — the merge point's own fresh producer)
         RETURN_VIA_LR,

@@ -5,7 +5,10 @@ versions of the conclusions live in `design.md` §17 and `target-profile.md`;
 this file is the working detail behind them — what was run, what broke, and
 which side of each disagreement was wrong.
 
-**Nine findings: eight fixed, one left open** (`TRAP` does not unwind, §1).
+**Nine findings, all fixed.** §1 (`TRAP` does not unwind) was the one left
+open at the end of the campaign, as a deliberate decision rather than an
+oversight — it needed new runtime asm and an ABI contract change. It has
+since been fixed too; that section records both the finding and the fix.
 Five of the nine were invisible to the pre-existing harness by construction:
 it never executed the code it emitted.
 
@@ -20,15 +23,16 @@ justification the first pass gave.
 | Crash campaign, final run | ~4.3M executions (720k × 6 workers), 94k validator-approved per worker, **0 crashes** |
 | Execution sweep, final run | 12,000 inputs → 11,084 runnable → 10,287 compared on emulated ARM, **0 mismatches, 0 hangs** |
 | Throughput, before → after | 170 → ~3,000 exec/s |
-| Test suites | `machine` 439/439, `core` 103/103, `test/host` 174/174 (clean build), `test/qemu` 14/14, `stack-usage-check` clean |
-| Pre-existing failures, untouched | `packages/codecs` 5 (11 at HEAD; 4 cleared by §2, 1 by §9's `writesAcc`), `packages/target-js` 1 |
+| Test suites | all green: `machine` 443/443, `core` 103/103, `codecs` 126/126, `target-js` 79/79, `target-cpp` 18/18, `example` 33/33, `test/host` 174/174 (clean build), `test/qemu` 14/14, `stack-usage-check` clean |
+| Codecs suite, over the campaign | 11 failures at the campaign's starting commit → 0. Five cleared here (§2's missing producers, §9's `writesAcc`, §4.6's bare-`RETURN` corollary), the rest alongside |
 | Re-verification after §2's re-decision | 2.76M executions, 359k validator-approved, **0 crashes**; 32 seeds (29 comparable) and a 3,000-program corpus sample (2,884 comparable) on emulated ARM, **0 mismatches, 0 hangs** |
+| Re-verification after §1's fix | 2.72M executions, 336k validator-approved, **0 crashes**; 34 seeds (32 comparable, up from 30 — the ambiguity skip is gone), a 3,000-program sample, and a 400-program trap-only corpus filtered out of 76k approved programs (6 nested traps, 394 entry traps, **all 400 compared and matched**) |
 
 ## Findings at a glance
 
 | # | Finding | Class | Wrong side | Status |
 |---|---|---|---|---|
-| 1 | `TRAP` does not unwind; a nested trap becomes a return value | miscompilation | jit-armv6m ABI | **open** |
+| 1 | `TRAP` does not unwind; a nested trap becomes a return value | miscompilation | jit-armv6m ABI | fixed (helper slot 8) |
 | 2 | `BR_TABLE` → `RETURN` asserts on a poisoned `acc` | crash | **validator** (fixed on the translator side first — see §2) | fixed |
 | 3 | `LOOP` condition's `BLOCK_END` not checked for `acc` liveness | crash | validator | fixed |
 | 4 | `CALL` flushes `acc` even for a zero-argument callee | crash | translator | fixed |
@@ -40,9 +44,10 @@ justification the first pass gave.
 
 ---
 
-## 1. `TRAP` does not unwind — open, needs a decision
+## 1. `TRAP` does not unwind — fixed by a new helper-vector slot
 
-`translate_proc.cpp`'s `handleGlobalJump` compiles `TRAP #code` to
+**Symptom.** Wrong answer, no crash, no bail. `translate_proc.cpp`'s
+`handleGlobalJump` compiled `TRAP #code` to
 
 ```cpp
 a.materializeImm32(ACC_REG, 0x80000000u | (uint32_t)term.imm);
@@ -50,12 +55,13 @@ returnSequence(ctx, a);            // an ordinary return
 ```
 
 Correct for the **entry** procedure: that word *is* `ProgramResult.value`,
-and `runtime_host.h` documents the high bit as this slice's trap sentinel.
-Wrong for any **nested** procedure — the callee returns normally, the
-sentinel lands in the caller's `acc` as an ordinary return value, and the
-caller keeps executing.
+and `runtime_host.h` documented the high bit as this slice's trap sentinel.
+Wrong for any **nested** procedure — the callee returned normally, the
+sentinel landed in the caller's `acc` as an ordinary return value, and the
+caller kept executing.
 
-Minimized from a 195-instruction fuzz input to four instructions:
+**Repro.** Minimized from a 195-instruction fuzz input to four
+instructions:
 
 ```
 proc 0 (argCount 0):  CALL 1 ; CONST 92 ; RETURN
@@ -64,7 +70,7 @@ proc 1 (argCount 0):  TRAP 754
 
 Reference VM traps with 754 — a bytecode trap unwinds the whole program
 there, and `ProgramResult`/isa-core §9 model it the same way. Emitted code
-returns 92. Disassembled (`fuzz/dump_code.sh`):
+returned 92. Disassembled (`fuzz/dump_code.sh`):
 
 ```
 proc 1:  ldr r0, [pc,#4]      ; r0 = 0x800002f2
@@ -74,21 +80,71 @@ proc 1:  ldr r0, [pc,#4]      ; r0 = 0x800002f2
 proc 0:  movs r0, #92         ; ← straight over the sentinel
 ```
 
-**What a fix needs.** A real unwind: a helper-vector slot doing for a
-bytecode trap what `dispatch_abi.cpp`'s `runtimeBail` already does for
-`RESOURCE_ERROR` — restore `Runtime::savedSp`, transfer to the landing,
-carrying the trap code. That is a new reserved slot in §11's table,
-hand-written asm in `runtime.S`, a new fixed constant, and a change to the
-dispatch ABI's contract about what may leave a compiled procedure. Not
-something to fold into a fuzzing pass.
+**Why it was left open at the end of the campaign.** Not a codegen slip: a
+real unwind needs a route out of compiled code that isn't a return, and
+compiled code cannot `BL` an arbitrary address — every fixed routine it
+reaches comes through the `r10` helper vector. So the fix meant new
+hand-written asm in `runtime.S`, a new reserved vector slot, a new fixed
+constant, and a change to the dispatch ABI's contract about what may leave
+a compiled procedure. Deliberately not folded into a fuzzing pass.
 
-**Until then.** `vm.ts`'s `VmResult` gained `trapDepth` (frames below the
-entry procedure), and `fuzz/qemu_exec` skips anything above 0 with a named
-reason instead of re-reporting it. Such programs are still translated, still
-run, and still checked for crashes and hangs — only the *result comparison*
-is set aside.
+**Fix.** Helper slot 8, `trapHelper` — six instructions:
 
----
+```asm
+trapHelper:                 @ in: r0 = trap code, r9 = runtime
+    mov   r1, r9
+    ldr   r3, [r1, #24]     @ slots[0].codePtr — the sentinel landing
+    ldr   r1, [r1, #0]      @ runtime->savedSp
+    movs  r2, #LANDING_TRAP
+    mov   sp, r1
+    bx    r3
+```
+
+The mechanism already existed, twice over, and neither half was reachable
+from emitted code: `dispatch_abi.cpp`'s `runtimeBail` does exactly this
+from C++ for `RESOURCE_ERROR`, and `enterDispatch` already parks a sentinel
+landing below the dispatch table and already reads a tag out of `r2` at it.
+What was missing was a door onto that path from the compiled side.
+
+Three consequences fell out, each simplifying something:
+
+- **A trap needs no teardown at all.** One `mov sp, savedSp` discards every
+  window spill, every pushed call record and every out-of-window argument
+  block across every frame between the trap and the entry procedure. So
+  `handleGlobalJump`'s `TRAP` path emits no `discardWindow`, no record
+  retrieval and no reclaim — a trap is now *cheaper* to emit than a return
+  (`TrapAtTopLevel` went from 12 emitted halfwords to 10, and that with the
+  pooled literal gone).
+- **The high-bit sentinel is retired.** `ProgramResult.trapped` carries one
+  of three `LANDING_*` tags instead, so nothing is encoded in `value`: a
+  program may return any `uint32_t` and trap with any code without the two
+  aliasing. `runtimeBail` took a distinct tag
+  (`LANDING_RESOURCE_ERROR`), since "the program chose to stop" and "this
+  implementation ran out of room" are different answers to the caller.
+- **`fuzz/qemu_exec` lost two skip categories** — the `trapDepth > 0`
+  set-aside and the "result ambiguous under the high-bit trap encoding"
+  one. On the seed corpus that moved 30 comparable programs to 32 of 34,
+  and the last sweep before this change had set aside 65 of 2,951 corpus
+  programs as ambiguous.
+
+One incidental defect fixed on the way: `runtime_host.h` had no include
+guard, only an `#ifndef __ASSEMBLER__`. That held while exactly one
+translation unit included it and broke the moment a second did.
+
+**Coverage.** `test/qemu` fixtures 38-40 — the nested repro above, a trap
+in the entry procedure with five live pushed locals, and a trap two levels
+down out of a frame whose out-of-window arguments sit *below* its pushed
+call record (the `returnHelperFromStackReclaim` shape, whose teardown the
+trap skips entirely). All three assert the tag exactly, which is why
+`Fixture::expectTrapped` became `expectLanding`, a `uint32_t`. Plus fuzz
+seeds `nested_trap` / `deep_nested_trap`, and host test
+`TrapInsideCaseClosesItAndContinuesToNextCase` now expecting
+`TRAP_VIA_HELPER` where it expected `RETURN_VIA_LR`.
+
+The `test/qemu` image also had to grow: `rom` went from `0x8000` to
+`0xA000`, which is the flash this QEMU machine model actually decodes —
+measured via `-device loader` (a write past `0xA000` is silently dropped),
+not the 64KB the linker script's own comment had assumed.
 
 ## 2. `BR_TABLE` → `RETURN` asserts on a poisoned `acc`
 
@@ -602,25 +658,24 @@ Recorded because each cost real time and none is discoverable from the docs.
   single `argIn`, so there is no counterpart on the emulated side (~1% of
   corpus).
 - Non-terminating programs — legal per §9, and fatal to a batch.
-- Results ambiguous under the high-bit trap encoding (a `RETURN` value or
-  trap code ≥ 2³¹). Run, not compared; the underlying lossiness is its own
-  `target-profile.md` entry.
 - `EXT` opcodes — excluded from this target by design.
 
 ## Files touched
 
 New: `fuzz/README.md`, `fuzz/make_seeds.ts`, `fuzz/dump_code.{cpp,sh}`,
 `fuzz/probe_arena.cpp`, `fuzz/qemu_exec/` (runner image, driver, minimizer),
-23 seeds, this document. A further 9 pre-existing seeds were rewritten into
-the whole-program envelope format (32 in `seeds/` in total).
+25 seeds, this document. A further 9 pre-existing seeds were rewritten into
+the whole-program envelope format (34 in `seeds/` in total).
 
-Modified — translator: `binops.cpp`, `blocks.cpp`, `translate_proc.cpp`,
-`accstate.h`. Harness: `harness.cpp`, `oracle_server.ts`,
+Modified — runtime: `runtime.S` (`trapHelper`), `dispatch_abi.{h,cpp}`,
+`runtime_host.h`, `runtime_internal.h`, `enter_program.cpp`. Translator:
+`binops.cpp`, `blocks.cpp`, `translate_proc.cpp`, `abi_strategy.{h,cpp}`,
+`registers.h`, `accstate.h`. Harness: `harness.cpp`, `oracle_server.ts`,
 `dump_seeds.{cpp,sh}`, `make_seeds.ts`. `@ppl/machine`: `vm.ts`,
 `validate.ts`, `extension.ts`. `@ppl/codecs`:
 `engine/codec-extension.ts`, `test/list-union.test.ts`. Tests:
-`test_binops.cpp`, `test_blocks.cpp`, `test/corpus_programs.h`,
-`test/qemu/fixtures.cpp`,
+`test_binops.cpp`, `test_blocks.cpp`, `test_translate_proc.cpp`,
+`test/corpus_programs.h`, `test/qemu/{fixtures.h,fixtures.cpp,main.cpp,linker.ld}`,
 `machine/test/{validate,extension}.test.ts`.
 Docs: `design.md` §10 (the `BR_TABLE` bullet), §10.1's acc-fold
 paragraph and the new §17, `target-profile.md`, `isa-core.md`

@@ -9,6 +9,8 @@
 
 #include <cstdint>
 
+#include "runtime_host.h" // LANDING_* — Fixture::expectLanding's own value space
+
 // One whole encoded program (bytes + length). A plain struct rather than
 // two separate Fixture fields: fixtures[] (below) is itself a static
 // array, initialized at static-init time — before initFixtures() ever
@@ -27,7 +29,12 @@ struct Fixture
 {
     const char *name;
     const Program *program;
-    bool expectTrapped;
+    // One of runtime_host.h's LANDING_* tags, compared exactly rather than
+    // for truthiness: a bytecode TRAP and a RESOURCE_ERROR are distinct
+    // outcomes now, and a fixture that means one must not pass on the
+    // other. Every plain-return row spells this `false`, which is 0 —
+    // LANDING_SUCCESS.
+    uint32_t expectLanding;
     uint32_t expectValue;
     uint32_t argIn = 0;       // fed to enterProgramSplit as its own argIn — only meaningful when procs[0].argCount >= 1
     uint32_t arenaSize = 400; // generous by default — no fixture currently overrides it; main.cpp's separate eviction/resource-error TEST cases construct their own tiny programs instead of using this array

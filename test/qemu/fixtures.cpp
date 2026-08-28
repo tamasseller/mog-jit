@@ -497,6 +497,56 @@ static const Instr f37Proc2[] = {
 static const Instr f37Proc3[] = {LOAD(0), opImm(Op::ADD, 1000), bare(Op::RETURN)};
 static Program f37Prog;
 
+// ---- Fixtures 38/39/40: a bytecode TRAP really unwinds (isa-core.md
+// §4.5/§9). Fixture 38 is the four-instruction program fuzz/qemu_exec
+// minimized the original 195-instruction finding down to: the trap sits in
+// a *nested* procedure, so a TRAP compiled as an ordinary return handed
+// 0x800002f2 to proc0 as a return value and proc0 went on to return 92.
+// Now it reaches enterDispatch's landing directly, tagged LANDING_TRAP,
+// with the code untouched in value. expect trapped=LANDING_TRAP, 754.
+static const Instr f38Proc0[] = {call(1), CONST(92), bare(Op::RETURN)};
+static const Instr f38Proc1[] = {trapInstr(754)};
+static Program f38Prog;
+
+// Fixture 39: TRAP in the *entry* procedure, the one case the old
+// sentinel encoding got right — kept because it is now right for a
+// different reason (the tag, not bit 31 of the value), and because five
+// live pushed locals mean sp is nowhere near its entry value when the
+// trap fires. trapHelper's own `mov sp, savedSp` is what makes that
+// irrelevant; the old code needed discardWindow first. expect
+// trapped=LANDING_TRAP, 41.
+static const Instr f39Proc0[] = {
+    CONST(1), PUSH(), CONST(2), PUSH(), CONST(3), PUSH(), CONST(4), PUSH(), CONST(5), PUSH(),
+    trapInstr(41),
+};
+static Program f39Prog;
+
+// Fixture 40: the worst frame shape to unwind out of — proc1 has
+// argCount 5, so its own arg0 sits out of window *below* the call record
+// its prologue pushed (abi_strategy.cpp's returnHelperFromStackReclaim
+// case), and both frames have live pushed locals at the moment proc2
+// traps two levels down. Nothing on any of the three frames is unwound a
+// step at a time; the single sp restore subsumes all of it. expect
+// trapped=LANDING_TRAP, 1000.
+static const Instr f40Proc0[] = {
+    CONST(7), PUSH(),   // k0 -- live across the call, never read again
+    CONST(10), PUSH(),  // arg0 for proc1 -- k=1, proc1's own out-of-window arg
+    CONST(11), PUSH(),  // arg1 -- k=2
+    CONST(12), PUSH(),  // arg2 -- k=3
+    CONST(13), PUSH(),  // arg3 -- k=4
+    CONST(14),          // arg4 -- last, via acc
+    call(1),
+    opReg(Op::ADD, 0), bare(Op::RETURN), // unreachable once proc2 traps
+};
+static const Instr f40Proc1[] = {
+    LOAD(0), PUSH(),    // k5 -- proc1's own saved copy of its out-of-window arg0
+    CONST(21),          // proc2's only argument, via acc
+    call(2),            // makes proc1 non-leaf: its prologue pushes the record
+    bare(Op::RETURN),   // unreachable
+};
+static const Instr f40Proc2[] = {trapInstr(1000)};
+static Program f40Prog;
+
 // Every original fixture's own compiled output measures well under 110
 // bytes — fixture 18 is a deliberate exception (it pads its own source
 // body specifically to force the long-branch form). This is a bump
@@ -688,6 +738,18 @@ void initFixtures()
         ProcSource procs[] = {PROC(0, f37Proc0), PROC(5, f37Proc1), PROC(5, f37Proc2), PROC(1, f37Proc3)};
         f37Prog = finishProgram(procs, 4);
     }
+    {
+        ProcSource procs[] = {PROC(0, f38Proc0), PROC(0, f38Proc1)};
+        f38Prog = finishProgram(procs, 2);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f39Proc0)};
+        f39Prog = finishProgram(procs, 1);
+    }
+    {
+        ProcSource procs[] = {PROC(0, f40Proc0), PROC(5, f40Proc1), PROC(1, f40Proc2)};
+        f40Prog = finishProgram(procs, 3);
+    }
 }
 
 Fixture fixtures[] = {
@@ -779,5 +841,9 @@ Fixture fixtures[] = {
     {"LOOP back-edge forced into long-branch form, n=50", &f36Prog, false, 0, 50},
 
     {"two-level savesLR/returnHelperFromStackReclaim chain", &f37Prog, false, 1561},
+
+    {"nested TRAP unwinds instead of returning its code", &f38Prog, LANDING_TRAP, 754},
+    {"TRAP in the entry procedure, five live locals deep", &f39Prog, LANDING_TRAP, 41},
+    {"TRAP two levels down, out-of-window args below a pushed record", &f40Prog, LANDING_TRAP, 1000},
 };
 const uint32_t fixtureCount = sizeof(fixtures) / sizeof(fixtures[0]);

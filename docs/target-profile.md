@@ -147,84 +147,77 @@ regardless of which one. Treated the same as a plain decode failure
 "real but unrealistic" value question — it's a wire-encoding
 well-formedness one.
 
-## `TRAP` code vs. the trap-return sentinel
+## `TRAP` unwinds through a helper-vector slot
 
-**The ambiguity this documents:** `runtime_host.h`'s `ProgramResult` packs
-both outcomes of a whole excursion into one word, and
-`translate_proc.cpp`'s `TRAP` handling tags a bytecode trap by setting bit
-31 (`0x80000000u | (uint32_t)term.imm`), leaving `ProgramResult.trapped`
-for `RESOURCE_ERROR` alone. That header's own comment already says this
-slice "has no real error-reporting model" for `TRAP` and sentinel-encodes
-it; what it doesn't say is that the encoding is *lossy in two directions*:
+**How a whole excursion ends.** Three ways, and `ProgramResult.trapped`
+names which by carrying one of `runtime_host.h`'s `LANDING_*` tags:
 
-- a `RETURN` whose value has bit 31 set is indistinguishable from a `TRAP`
-- a `TRAP` whose code already has bit 31 set aliases the same code with it
-  cleared (`TRAP 0x80000005` and `TRAP 5` report identically)
-
-isa-core.md §4.5 makes the trap code a full u32 ("an opaque error code;
-`0` is unreachable/panic by convention, the rest of the space is
-host-defined"), and §4.2's values are u32 throughout, so both halves of
-the space are legal input.
-
-| | value | meaning |
+| `trapped` | reached by | `value` |
 |---|---|---|
-| Unambiguous return values | `acc < 2³¹` | above this, the caller cannot tell a returned value from a trap |
-| Unambiguous trap codes | `code < 2³¹` | above this, the code aliases `code & 0x7fffffff` |
+| `LANDING_SUCCESS` (0) | the entry procedure's own `RETURN`, resolved against the boot record's `procIdx = -1` | the returned value |
+| `LANDING_TRAP` (1) | `runtime.S`'s `trapHelper`, helper slot 8 — a bytecode `TRAP` at any call depth | the trap code |
+| `LANDING_RESOURCE_ERROR` (2) | `dispatch_abi.cpp`'s `runtimeBail` — the translator could not free arena room, or the up-front stack budget failed | `RESOURCE_ERROR_CODE` |
 
-**Not gated, deliberately.** `jit-armv6m/fuzz/qemu_exec` *runs* programs
-whose result falls in the ambiguous half (they still have to not hang or
-fault) and only skips the result *comparison*, since comparing under a
-lossy encoding manufactures false mismatches. Nothing about the
-translation of a large `RETURN` value or `TRAP` code is itself suspect —
-the gap is in the one-word result channel, and closing it means a real
-error-reporting model (a second out-parameter, or a distinct `trapped`
-value for a bytecode trap), not a cap on the ISA.
+All three land at the same place: the sentinel slot's `codePtr`, parked at
+`dispatchBase - DISPATCH_SENTINEL_OFFSET` by `enterDispatch` before it
+enters procedure 0, which is `.Lresume` — the point that restores the
+caller's `r4-r11` and returns an ordinary AAPCS result.
 
-## `TRAP` does not unwind — a nested trap becomes a return value
+**Nothing is encoded in `value`.** A program may return any `uint32_t` and
+trap with any `uint32_t` code without the two aliasing, because the tag is
+a separate word. This was not always so: a bytecode trap used to be
+sentinel-encoded as `0x80000000 | code` into `value`, which was lossy in
+both directions (a `RETURN` with bit 31 set was indistinguishable from a
+trap; `TRAP 0x80000005` and `TRAP 5` reported identically) and, worse, only
+correct for the entry procedure at all — see below. isa-core.md §4.5 makes
+the trap code a full u32 and §4.2's values are u32 throughout, so both
+halves of both spaces are legal input and neither needs a cap. `test/qemu`
+fixture 16 is the standing proof: `REVBITS(1)` returns exactly
+`0x80000000`, and it is compared as an ordinary return.
 
-**Structural, not a local codegen mistake.** `translate_proc.cpp`'s
-`handleGlobalJump` compiles `TRAP #code` to
+**What `trapHelper` does**, and why a trap needs no teardown at its call
+site:
 
+```asm
+trapHelper:                 @ in: r0 = trap code, r9 = runtime
+    mov   r1, r9
+    ldr   r3, [r1, #24]     @ slots[0].codePtr — the sentinel landing
+    ldr   r1, [r1, #0]      @ runtime->savedSp
+    movs  r2, #LANDING_TRAP
+    mov   sp, r1
+    bx    r3
 ```
-    materializeImm32(ACC_REG, 0x80000000 | code)
-    returnSequence(...)          // an ordinary return
-```
 
-For the *entry* procedure that is exactly right: that word is
-`ProgramResult.value`, and `runtime_host.h` already documents the high bit
-as this slice's trap sentinel. For any *nested* procedure it is wrong. The
-callee returns normally, the sentinel lands in the caller's `acc` as an
-ordinary return value, and the caller keeps executing — usually
-overwriting it immediately.
+One `mov sp, savedSp` discards the entire operand stack: every window
+spill, every pushed call/return record, every out-of-window argument block,
+across every frame between the trapping procedure and the entry. So
+`handleGlobalJump`'s `TRAP` path emits no `discardWindow`, no record
+retrieval and no reclaim — unlike `RETURN`, which needs all three. It is
+also the reason a trap is *cheaper* to emit than a return: the code into
+`ACC_REG`, then a three-instruction helper-vector jump.
 
-Minimal repro (`fuzz/qemu_exec/minimize_exec.ts` reduced a 195-instruction
-input to this):
+This is the same escape `runtimeBail` takes from C++ for a resource error,
+reached through the r10 vector instead because emitted code has no way to
+`BL` an arbitrary address.
+
+**Formerly: `TRAP` did not unwind.** `handleGlobalJump` compiled `TRAP
+#code` to `materializeImm32(ACC_REG, 0x80000000 | code)` followed by an
+ordinary `returnSequence`. Right for the entry procedure, wrong for any
+nested one: the callee returned normally, the sentinel landed in the
+caller's `acc` as an ordinary return value, and the caller kept executing.
+`fuzz/qemu_exec/minimize_exec.ts` reduced a 195-instruction input to
 
 ```
 proc 0 (argCount 0):  CALL 1 ; CONST 92 ; RETURN
 proc 1 (argCount 0):  TRAP 754
 ```
 
-The reference VM traps with 754 (a bytecode trap unwinds the whole program
-there, and `ProgramResult`/§9 model it the same way). The emitted code
-returns 92. Disassembled, `proc 1` is
-`ldr r0, =0x800002f2 ; bx returnHelperFromLr` — a plain return — and
-`proc 0` then does `movs r0, #92` straight over it.
-
-**What a fix needs**, and why it isn't done here: a real unwind, i.e. a
-helper-vector slot that does for a bytecode trap what
-`dispatch_abi.cpp`'s `runtimeBail` already does for `RESOURCE_ERROR` —
-restore `Runtime::savedSp` and transfer to the landing, carrying the trap
-code. That is a new reserved slot (§11's table), hand-written asm in
-`runtime.S`, a new fixed constant, and a change to the dispatch ABI's own
-contract about what may leave a compiled procedure. Worth doing
-deliberately, not folded into a fuzzing pass.
-
-**Meanwhile:** `fuzz/qemu_exec` sets these aside explicitly rather than
-reporting them repeatedly — `vm.ts`'s `VmResult.trapDepth` says how many
-frames below the entry the trap fired, and the harness skips anything above
-0 with a named reason. Nothing else about such a program is exempt: it is
-still translated, still run, and still checked for crashes and hangs.
+where the reference VM traps 754 and the emitted code returned 92 —
+`proc 1` was `ldr r0, =0x800002f2 ; bx returnHelperFromLr`, and `proc 0`
+then did `movs r0, #92` straight over it. Pinned by `test/qemu`'s fixtures
+38-40 (nested, entry-procedure-with-live-locals, and two levels down out of
+a frame whose out-of-window arguments sit below a pushed record) and by the
+`nested_trap` / `deep_nested_trap` fuzz seeds.
 
 ## Whole-program procedure count
 

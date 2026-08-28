@@ -11,7 +11,9 @@
 #include "proc_scan.h"
 #include "decode_instr.h"
 
-#define LANDING_TRAP 1u /* enterDispatch's boot-record tag for a trapped return; 0 means success */
+/* LANDING_SUCCESS/LANDING_TRAP/LANDING_RESOURCE_ERROR live in
+ * runtime_host.h — they are part of ProgramResult's own contract, and
+ * runtime.S needs LANDING_TRAP under __ASSEMBLER__. */
 #define RESOURCE_ERROR_CODE 0x52455343u /* "RESC", arbitrary/distinct */
 
 class Runtime;

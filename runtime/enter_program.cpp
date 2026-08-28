@@ -71,7 +71,7 @@ static ProgramResult enterProgramCore(
     if(!runtime->init(programBytes, programSize, hdr.bodyOffset, hdr.procCount,
         codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack))
     {
-        return ProgramResult{ RESOURCE_ERROR_CODE, 1 };
+        return ProgramResult{ RESOURCE_ERROR_CODE, LANDING_RESOURCE_ERROR };
     }
 
     uint64_t packed = enterDispatch(argIn, runtime);
@@ -100,7 +100,7 @@ static ProgramResult enterProgramWithHeader(
      * before any of that storage is even sized. */
     if(hdr.procCount == 0)
     {
-        return ProgramResult{ RESOURCE_ERROR_CODE, 1 };
+        return ProgramResult{ RESOURCE_ERROR_CODE, LANDING_RESOURCE_ERROR };
     }
 
     /* One flexible-array-member object, over-allocated to fit
@@ -189,7 +189,7 @@ extern "C" ProgramResult enterProgramOnStack(
                      + codeArenaSize;
     if(!stackHasRoom(needed, stackLimit))
     {
-        return ProgramResult{ RESOURCE_ERROR_CODE, 1 };
+        return ProgramResult{ RESOURCE_ERROR_CODE, LANDING_RESOURCE_ERROR };
     }
 
     return enterProgramWithHeader(argIn, programBytes, programSize, hdr,
@@ -214,7 +214,7 @@ extern "C" ProgramResult enterProgramSplit(
     uint32_t needed = requiredStackBytes(hdr.procCount, operandStackBytes, hdr.maxCallDepth, interruptReserve);
     if(!stackHasRoom(needed, stackLimit))
     {
-        return ProgramResult{ RESOURCE_ERROR_CODE, 1 };
+        return ProgramResult{ RESOURCE_ERROR_CODE, LANDING_RESOURCE_ERROR };
     }
 
     return enterProgramWithHeader(argIn, programBytes, programSize, hdr,

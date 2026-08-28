@@ -55,6 +55,14 @@ void abiEmitCall(Assembler &a, uint32_t procIdx, uint32_t calleeIndex);
  *  parameterless routine can know: this procedure's own byte count. */
 void abiEmitReturn(Assembler &a, bool savesLR, uint32_t initialSpilledCount);
 
+/** A bytecode TRAP's own dispatch (isa-core.md §4.5): jump to runtime.S's
+ *  trapHelper with the trap code already in ACC_REG. Takes neither of
+ *  abiEmitReturn's two parameters and emits no teardown of its own,
+ *  because it isn't a return — trapHelper restores the excursion's whole
+ *  saved sp, which subsumes every window spill and pushed call record in
+ *  one instruction, at any call depth. */
+void abiEmitTrap(Assembler &a);
+
 } // namespace jitc
 
 #endif // JIT_ARMV6M_COMPILER_ABI_STRATEGY_H_

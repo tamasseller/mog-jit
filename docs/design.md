@@ -1015,13 +1015,27 @@ needs nothing beyond the index:
 | 1 | `returnHelperFromLr` |
 | 2 | `returnHelperFromStack` |
 | 3 | `returnHelperTail` |
-| 4-6 | reserved: `CLZ`, `REVBITS`, extension calls |
+| 4-6 | `clzHelper`, `revbitsHelper`, `brTableJumpHelper` |
 | 7 | `returnHelperFromStackReclaim` |
+| 8 | `trapHelper` |
 
-The reserved slots are not padding. A small, stable table of host-provided
-functions the bytecode invokes by index is the on-device form of the same
-extension point `@ppl/machine`'s reference interpreter already has a hook
-for (`run<E>(prog, extension?)`).
+Slot 8 is the odd one out: every other entry either returns to its caller
+or tail-jumps into another procedure's code, while `trapHelper` ends the
+whole excursion. A bytecode `TRAP` (isa-core.md §4.5) unwinds every frame
+between itself and the entry procedure, which it does the same way
+`runtimeBail` handles a resource error — restore `Runtime::savedSp`, jump
+to the sentinel landing `enterDispatch` parked below the dispatch table,
+carrying `LANDING_TRAP` in `r2` and the trap code in `r0`. One
+`mov sp, savedSp` subsumes every window spill, pushed call record and
+out-of-window argument block in one instruction, which is why a `TRAP`
+call site emits no teardown at all — no `discardWindow`, no record
+retrieval, no reclaim — and ends up shorter than a `RETURN`.
+
+Slots 4-6 started as reserved space, and a stable table of host-provided
+functions the bytecode invokes by index remains the on-device form of the
+same extension point `@ppl/machine`'s reference interpreter already has a
+hook for (`run<E>(prog, extension?)`) — the next such addition takes slot
+9.
 
 Reaching a helper is `MOV r3, r10` / `LDR r3, [r3, #idx*4]` / `BLX r3` for a
 returning helper such as `CLZ` (which returns via `BX LR`, so §3's
@@ -1442,15 +1456,16 @@ wrong number, or no answer at all:
   accumulator. Fixing the second needed `ExtOpEffect.writesAcc`, since an
   extension op that assigns `acc` had no way to say so.
 
-**And one it found that is structural, left open deliberately:** `TRAP`
-does not unwind. It compiles to a normal return carrying
-`0x80000000 | code`, which is correct for the entry procedure and silently
-wrong for a nested one, whose caller reads the sentinel as an ordinary
-return value. Fixing it means a new helper-vector slot doing what
-`runtimeBail` does for `RESOURCE_ERROR` — new asm, a new reserved slot, and
-a change to what may leave a compiled procedure. See
-docs/target-profile.md; `fuzz/qemu_exec` sets these programs aside by
-`VmResult.trapDepth` rather than reporting them repeatedly.
+- The structural one: `TRAP` did not unwind. It compiled to a normal
+  return carrying `0x80000000 | code` — correct for the entry procedure,
+  silently wrong for a nested one, whose caller read the sentinel as an
+  ordinary return value and carried on. Now helper slot 8, `trapHelper`
+  (§11), doing for a bytecode trap what `runtimeBail` does for a resource
+  error: restore `Runtime::savedSp`, jump to the sentinel landing carrying
+  `LANDING_TRAP`. That retired the sentinel encoding altogether —
+  `ProgramResult.trapped` distinguishes the three outcomes now, so a
+  program may return any `uint32_t` and trap with any code
+  (docs/target-profile.md).
 
 The `fuzz/seeds` corpus keeps a regression seed for each fixed finding, so
 `qemu_exec.ts seeds` is a standing check on all of them.

@@ -1,5 +1,5 @@
 // The fixed, flash-resident runtime machinery: callHelper, returnHelper,
-// the translator-entry trampoline, and enterDispatch. All four sit at one
+// trapHelper, the translator-entry trampoline, and enterDispatch. All four sit at one
 // link-time-fixed address for the whole program's lifetime, reached via the
 // r10 helper vector (the first two), a dispatch slot's initial codePtr (the
 // trampoline), or an ordinary bl from runtime_host.cpp (enterDispatch) —
@@ -148,6 +148,36 @@ brTableJumpHelper:
     adds  r3, #1                  @ restore the Thumb-mode bit for the final BX
     bx    r3
 
+// A bytecode TRAP (isa-core.md §4.5) — the one way a compiled procedure
+// ends that is not a return to *somebody*. It has to unwind the whole
+// excursion, at any call depth: a nested TRAP that merely returned would
+// hand its own code to the caller as an ordinary return value, and the
+// caller would keep running (which is exactly what this JIT used to do).
+//
+// So the entire operand stack, every pushed call/return record and every
+// window spill in it go away in one `mov sp, savedSp` — nothing needs
+// discarding a frame at a time, and the call site emits no window teardown
+// and no record retrieval at all. Structurally identical to
+// dispatch_abi.cpp's runtimeBail, which does this from C++ for
+// RESOURCE_ERROR; this is the same escape reached from compiled code
+// through the r10 vector, since emitted code has no way to BL an arbitrary
+// address.
+//
+// in: r0 = the trap code (survives untouched — it becomes
+// ProgramResult.value), r9 = runtime. out: never returns. Clobbers
+// r1/r2/r3, none of which any caller expects to survive a terminator.
+.thumb_func
+.global trapHelper
+trapHelper:
+    mov   r1, r9                @ r1 = runtime
+    ldr   r3, [r1, #(RUNTIME_DISPATCH_TABLE_OFFSET - DISPATCH_SENTINEL_OFFSET)] @ = slots[0].codePtr,
+                                  @ the sentinel landing enterDispatch parked below — reached from r9
+                                  @ directly rather than via r8, so this needs one live register, not two
+    ldr   r1, [r1, #0]            @ r1 = runtime->savedSp (savedSp is Runtime's own first field)
+    movs  r2, #LANDING_TRAP        @ the landing reads its own tag out of r2
+    mov   sp, r1
+    bx    r3
+
 // Realign sp down to an 8-byte boundary right before handing off to
 // independently-compiled C (the translator today, and eventually any
 // C-implemented extension helper reached through the r10 vector). Nothing
@@ -219,10 +249,11 @@ translatorTrampoline:
 // Only two inputs: runtime (r9 from here on) is the whole story —
 // dispatchBase (r8) is runtime + RUNTIME_DISPATCH_TABLE_OFFSET, and there's
 // no separate control-stack base to pass at all. r10 (helper vector base)
-// isn't a parameter either: helperVec (runtime_host.cpp, 8 entries:
+// isn't a parameter either: helperVec (dispatch_abi.cpp, 9 entries:
 // callHelper, returnHelperFromLr, returnHelperFromStack, returnHelperTail,
-// clzHelper, revbitsHelper, brTableJumpHelper, returnHelperFromStackReclaim)
-// is link-time const, so it's loaded here by name.
+// clzHelper, revbitsHelper, brTableJumpHelper,
+// returnHelperFromStackReclaim, trapHelper) is link-time const, so it's
+// loaded here by name.
 //
 // Result comes back as a uint64_t (r0 = value, r1 = trapped), not a 2-word
 // struct: AAPCS32 returns composites over 4 bytes through a hidden pointer,
@@ -269,7 +300,9 @@ enterDispatch:
     movs  r2, #0                   @ Q_idx = entry procedure (index 0)
     b     callHelper               @ tail-branch — callHelper never returns via bx lr
 .Lresume:
-    mov   r1, r2                   @ trapped = whatever tag came back (0 success / 1 LANDING_TRAP)
+    mov   r1, r2                   @ trapped = whichever LANDING_* tag came back (runtime_host.h):
+                                   @ 0 from the boot record's own zero resume-offset field on an
+                                   @ ordinary return, 1 from trapHelper, 2 from runtimeBail
     pop   {r4, r5, r6, r7}         @ the caller's own r8-r11, still mirrored through low registers
     mov   r8, r4
     mov   r9, r5

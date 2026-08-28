@@ -34,6 +34,7 @@ constexpr uint32_t HELPER_CLZ_OFFSET = 16;                       // clzHelper (i
 constexpr uint32_t HELPER_REVBITS_OFFSET = 20;                   // revbitsHelper (index 5)
 constexpr uint32_t HELPER_BR_TABLE_JUMP_OFFSET = 24;             // brTableJumpHelper (index 6)
 constexpr uint32_t HELPER_RETURN_FROM_STACK_RECLAIM_OFFSET = 28; // returnHelperFromStackReclaim (index 7)
+constexpr uint32_t HELPER_TRAP_OFFSET = 32;                      // trapHelper (index 8)
 
 } // namespace jitc
 

@@ -441,6 +441,52 @@ const shift: RtlProgram = {
 /** The one seed reaching a terminator that isn't RETURN. */
 const trap: RtlProgram = { procedures: [{ argCount: 0, body: [{ op: "TRAP", imm: 5 }] }] }
 
+/** A TRAP in a *nested* procedure — the four-instruction program
+ *  qemu_exec minimized the original 195-instruction finding down to.
+ *  Compiled as an ordinary return, proc1's code landed in proc0's acc as a
+ *  return value and proc0 carried on to return 92; it has to trap 754
+ *  (runtime.S's trapHelper unwinds the whole excursion). */
+const nestedTrap: RtlProgram = {
+    procedures: [
+        { argCount: 0, body: [{ op: "CALL", calleeIndex: 1 }, { op: "CONST", imm: 92 }, { op: "RETURN" }] },
+        { argCount: 0, body: [{ op: "TRAP", imm: 754 }] },
+    ],
+}
+
+/** The same two levels down, out of the frame shape that is worst to
+ *  unwind: proc1 takes 5 arguments, so its own arg0 sits out of window
+ *  below the call record its prologue pushed, and both frames have live
+ *  pushed locals when proc2 traps. One `mov sp, savedSp` has to subsume
+ *  all of it — no window discard, no record retrieval, no reclaim. */
+const deepNestedTrap: RtlProgram = {
+    procedures: [
+        {
+            argCount: 0,
+            body: [
+                { op: "CONST", imm: 7 }, { op: "PUSH" },
+                { op: "CONST", imm: 10 }, { op: "PUSH" },
+                { op: "CONST", imm: 11 }, { op: "PUSH" },
+                { op: "CONST", imm: 12 }, { op: "PUSH" },
+                { op: "CONST", imm: 13 }, { op: "PUSH" },
+                { op: "CONST", imm: 14 },
+                { op: "CALL", calleeIndex: 1 },
+                { op: "ADD", combo: "REG_ACC", target: 0 },
+                { op: "RETURN" },
+            ],
+        },
+        {
+            argCount: 5,
+            body: [
+                { op: "LOAD", target: 0 }, { op: "PUSH" },
+                { op: "CONST", imm: 21 },
+                { op: "CALL", calleeIndex: 2 },
+                { op: "RETURN" },
+            ],
+        },
+        { argCount: 1, body: [{ op: "TRAP", imm: 1000 }] },
+    ],
+}
+
 /** PEEK_PEEK plus POP: the two combos that read the operand stack in
  *  place, which none of the register-combo shapes cover. */
 const arith: RtlProgram = {
@@ -608,6 +654,8 @@ const authored: [string, RtlProgram][] = [
     ["const_return", constReturn],
     ["shift", shift],
     ["trap", trap],
+    ["nested_trap", nestedTrap],
+    ["deep_nested_trap", deepNestedTrap],
     ["arith", arith],
     ["long_branch_span", longBranchSpan],
     ["long_loop_back_edge", longLoopBackEdge],

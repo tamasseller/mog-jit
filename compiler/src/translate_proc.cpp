@@ -555,14 +555,30 @@ static void handleGlobalJump(Ctx &ctx, Assembler& a, Instr term, uint32_t tos)
     if(term.op == Op::RETURN)
     {
         ctx.accState.flush(a, ACC_REG);
+        returnSequence(ctx, a);
     }
     else
     {
         assert(term.op == Op::TRAP);
-        a.materializeImm32(ACC_REG, 0x80000000u | (uint32_t)term.imm);
+
+        // A TRAP is not a return, and this is the whole difference: no
+        // window discard, no call-record retrieval, no reclaim of
+        // out-of-window arguments. trapHelper restores the excursion's own
+        // saved sp, which subsumes every one of those in one instruction —
+        // and has to, since a nested TRAP unwinds every frame between here
+        // and the entry procedure, not just this one (isa-core.md §4.5,
+        // §9). Emitting the ordinary return sequence instead is what made
+        // a nested TRAP hand its code to its caller as a return value;
+        // found by fuzz/qemu_exec.
+        //
+        // The code goes to ACC_REG plainly, with no sentinel bit: the
+        // landing tag (runtime_host.h's LANDING_TRAP) is what tells the
+        // host this was a trap, so the code needs no room stolen out of
+        // its own value space.
+        a.materializeImm32(ACC_REG, (uint32_t)term.imm);
+        abiEmitTrap(a);
     }
 
-    returnSequence(ctx, a);
     globalJumpCleanup(ctx, a, tos);
 }
 

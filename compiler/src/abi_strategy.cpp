@@ -117,4 +117,16 @@ void abiEmitReturn(Assembler &a, bool savesLR, uint32_t initialSpilledCount)
     a.emit(ArmV6M::bx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
 }
 
+void abiEmitTrap(Assembler &a)
+{
+    // Kept contiguous like the other three helper-vector jumps. Nothing
+    // here is self-referential, and unlike abiEmitReturn there is nothing
+    // to materialize either: the trap code is already in ACC_REG (its
+    // caller put it there) and trapHelper takes no other input beyond r9.
+    Assembler::AtomicScope atomic(a);
+    a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
+    a.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(HELPER_TRAP_OFFSET)));
+    a.emit(ArmV6M::bx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
+}
+
 } // namespace jitc

@@ -55,10 +55,6 @@ interface Candidate
     file: string
     bytes: Buffer
     expected: Expected
-    /** Set when this program's reference result cannot be told apart from
-     *  the other kind under the runtime's own high-bit trap encoding — run
-     *  it (it still has to not hang or fault), but don't compare. */
-    ambiguous: boolean
 }
 
 const skipped: Record<string, number> = {}
@@ -113,23 +109,13 @@ function classify(file: string): Candidate | null
     {
         const result = run(program, undefined, entryArgs, REFERENCE_MAX_STEPS)
 
-        // A trap below the entry procedure has no counterpart on this
-        // target: jit-armv6m's TRAP does not unwind. It compiles to a plain
-        // return with `0x80000000 | code` in acc (translate_proc.cpp's
-        // handleGlobalJump), which is exactly right for the entry procedure
-        // — that word *is* ProgramResult.value — and silently wrong for any
-        // nested one, where the caller reads the sentinel as an ordinary
-        // return value and keeps going. runtime_host.h already says this
-        // slice has no error-reporting model for TRAP; the consequence for a
-        // nested trap is recorded in docs/target-profile.md. Set aside here
-        // rather than reported over and over, so the sweep keeps surfacing
-        // everything else.
-        if(!result.ok && (result.trapDepth ?? 0) > 0)
-        {
-            skip("TRAP below the entry procedure (no unwinding on this target)")
-            return null
-        }
-
+        // A trap at any call depth is comparable: runtime.S's trapHelper
+        // unwinds the whole excursion and reports through
+        // ProgramResult::trapped's own LANDING_TRAP tag, so a nested trap
+        // means here exactly what it means to the reference VM. This used
+        // to be set aside — the translator compiled TRAP as an ordinary
+        // return, which handed a nested trap's code to its caller as a
+        // return value.
         expected = result.ok
             ? { kind: "return", acc: result.acc >>> 0 }
             : { kind: "trap", code: (result.trapCode ?? 0) >>> 0 }
@@ -154,19 +140,7 @@ function classify(file: string): Candidate | null
         skip("reference VM threw"); return null
     }
 
-    // runtime_host.h's ProgramResult packs both outcomes into one word,
-    // tagging a bytecode TRAP by setting bit 31 (translate_proc.cpp's
-    // `0x80000000 | code`). So a RETURN whose value has bit 31 set is
-    // indistinguishable from a TRAP, and a TRAP code with bit 31 already
-    // set aliases the same code with it cleared. Neither is this harness's
-    // bug to fix — it is a documented limit of the slice
-    // (docs/target-profile.md) — but comparing under it would manufacture
-    // false mismatches, so these are run and not compared.
-    const ambiguous = expected.kind === "return"
-        ? (expected.acc & 0x80000000) !== 0
-        : (expected.code & 0x80000000) !== 0
-
-    return { file, bytes, expected, ambiguous }
+    return { file, bytes, expected }
 }
 
 function collect(targets: string[]): string[]
@@ -292,7 +266,7 @@ for(const [reason, n] of Object.entries(skipped).sort((a, b) => b[1] - a[1]))
     console.log(`  skipped ${n}: ${reason}`)
 if(candidates.length === 0) process.exit(0)
 
-let matched = 0, resourceError = 0, ambiguousRun = 0, rejected = 0
+let matched = 0, resourceError = 0, rejected = 0
 const resourceExamples: string[] = []
 const mismatches: string[] = []
 const hangs: string[] = []
@@ -366,8 +340,6 @@ for(let bi = 0; bi < pending.length; bi++)
             if(resourceExamples.length < 5) resourceExamples.push(c.file)
             return
         }
-        if(c.ambiguous) { ambiguousRun++; return }
-
         const actual: Expected = kind === "T" ? { kind: "trap", code: value } : { kind: "return", acc: value }
 
         const agrees = actual.kind === c.expected.kind
@@ -399,7 +371,6 @@ console.log(`matched            ${matched}`)
 console.log(`RESOURCE_ERROR     ${resourceError}   (arena/stack budget — legitimate, not comparable)`)
 if(resourceExamples.length > 0)
     console.log(`  e.g. ${resourceExamples.join("\n       ")}`)
-console.log(`ran, not compared  ${ambiguousRun}   (result ambiguous under the high-bit trap encoding)`)
 if(rejected) console.log(`rejected by runner ${rejected}`)
 console.log(`HANGS/FAULTS       ${hangs.length}`)
 console.log(`MISMATCHES         ${mismatches.length}`)

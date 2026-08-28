@@ -159,20 +159,17 @@ int main(void)
 
         ran++;
 
-        if(r.trapped)
+        /* Three fully distinguishable outcomes, straight off
+         * ProgramResult::trapped's own LANDING_* tag (runtime_host.h) —
+         * nothing is encoded in `value`'s bits, so a program may return
+         * any uint32_t and trap with any code without the two aliasing. */
+        if(r.trapped == LANDING_TRAP)
+        {
+            semihostWriteTagged("T:", r.value);
+        }
+        else if(r.trapped)
         {
             semihostWriteTagged("E:", r.value);
-        }
-        else if(r.value & 0x80000000u)
-        {
-            /* translate_proc.cpp encodes a bytecode TRAP as 0x80000000 |
-             * code into the same word a RETURN puts its value in
-             * (runtime_host.h's own ProgramResult comment says as much), so
-             * the two are not fully distinguishable — see
-             * docs/target-profile.md. qemu_exec.ts runs but does not
-             * compare any program whose reference result is ambiguous under
-             * that encoding, rather than pretending it can tell. */
-            semihostWriteTagged("T:", r.value & 0x7FFFFFFFu);
         }
         else
         {

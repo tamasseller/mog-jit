@@ -4,7 +4,14 @@
  * internal (runtime_internal.h) — this header's own job is staying safe
  * for runtime.S to #include under __ASSEMBLER__ (see the two #defines at
  * the bottom), so it carries nothing beyond what a plain-C caller and the
- * assembler both need. */
+ * assembler both need.
+ *
+ * Include-guarded like any other header: it was previously only
+ * __ASSEMBLER__-guarded, which was enough while exactly one translation
+ * unit included it, and stopped being enough the moment a second one did
+ * (ProgramResult would be redeclared). Safe under __ASSEMBLER__ too. */
+#ifndef JIT_ARMV6M_RUNTIME_HOST_H_
+#define JIT_ARMV6M_RUNTIME_HOST_H_
 
 /* runtime.S includes this too (for the two #defines at the bottom),
  * preprocessed but never compiled as C — __ASSEMBLER__ is predefined by GCC
@@ -22,10 +29,12 @@ extern "C" {
 
 typedef struct
 {
-    uint32_t value;   /* the entry procedure's own result, or (if trapped) RESOURCE_ERROR_CODE */
-    uint32_t trapped; /* 0: normal return — including a bytecode TRAP, which this slice has no
-                        * real error-reporting model for and sentinel-encodes into value instead
-                        * (translate_proc.cpp's own high-bit-set convention). nonzero: RESOURCE_ERROR. */
+    /* What `value` means is decided entirely by `trapped` — see the
+     * LANDING_* tags at the bottom of this header. Nothing is encoded in
+     * `value`'s own bits: a program may return any uint32_t, and a trap
+     * code may be any uint32_t, without either aliasing the other. */
+    uint32_t value;
+    uint32_t trapped;
 } ProgramResult;
 
 /* programBytes/programSize is one whole serialized jit-armv6m program: the
@@ -125,3 +134,22 @@ ProgramResult enterProgramSplit(
  * assert is what catches the mismatch. */
 #define RUNTIME_DISPATCH_TABLE_OFFSET 40 /* &runtime + this = dispatchBase (== &slots[1]) */
 #define DISPATCH_SENTINEL_OFFSET 16      /* dispatchBase - this = &slots[0] (the sentinel) */
+
+/* ProgramResult::trapped — how the excursion ended, and therefore what
+ * `value` holds. These are the tags enterDispatch's own sentinel landing
+ * receives in r2 (runtime.S's .Lresume), so they live in this header
+ * rather than runtime_internal.h: runtime.S #includes this file under
+ * __ASSEMBLER__ and needs LANDING_TRAP by name.
+ *
+ * Every one of the three arrives at the same landing, and the three
+ * routes to it are the whole story of how a compiled excursion can end:
+ * an ordinary RETURN from the entry procedure (returnHelperTail resolving
+ * the boot record's own procIdx of -1, whose "resume offset" field is
+ * zero and so doubles as LANDING_SUCCESS), a bytecode TRAP at any call
+ * depth (trapHelper, helper slot 8), or the translator running out of
+ * arena (runtimeBail, from C++). */
+#define LANDING_SUCCESS 0u        /* value = the entry procedure's own result */
+#define LANDING_TRAP 1u           /* value = the bytecode TRAP's own code, at any call depth */
+#define LANDING_RESOURCE_ERROR 2u /* value = RESOURCE_ERROR_CODE — no arena/stack room, nothing ran or ran to completion */
+
+#endif /* JIT_ARMV6M_RUNTIME_HOST_H_ */

@@ -24,6 +24,7 @@ extern const uint16_t clzHelper[];               /* runtime.S */
 extern const uint16_t revbitsHelper[];           /* runtime.S */
 extern const uint16_t brTableJumpHelper[];       /* runtime.S */
 extern const uint16_t returnHelperFromStackReclaim[]; /* runtime.S */
+extern const uint16_t trapHelper[];              /* runtime.S */
 extern uint64_t enterDispatch(uint32_t argIn, Runtime *runtime); /* runtime.S */
 }
 

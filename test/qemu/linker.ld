@@ -4,8 +4,11 @@
  * memcpy-only mock), and grew further once this test's own fixture corpus
  * did (LOOP/BR_TABLE/comparisons/unary ops/eviction/enter_program_on_stack
  * /_split coverage — a much larger .rodata than the original 7
- * straight-line-only fixtures). 32KB is still half of the lm3s811evb's
- * real 64KB flash.
+ * straight-line-only fixtures), and again when the TRAP-unwinding
+ * fixtures (38-40) landed. 40KB is what this QEMU machine model actually
+ * decodes as flash — measured, not the 64KB the datasheet implies: a
+ * `-device loader` write past 0xA000 is silently dropped, which is how
+ * fuzz/qemu_exec found the real ceiling.
  *
  * ram was bumped for a real reason, not just symmetry with rom: the real
  * translator's own recursive translateBody (one C call frame per open
@@ -32,7 +35,7 @@
 
 MEMORY
 {
-    rom : ORIGIN = 0x00000000, LENGTH = 0x8000
+    rom : ORIGIN = 0x00000000, LENGTH = 0xA000
     ram : ORIGIN = 0x20000000, LENGTH = 0x2000
 }
 

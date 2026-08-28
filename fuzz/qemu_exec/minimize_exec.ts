@@ -47,8 +47,7 @@ const PROGRAM_MAX = 4096
 interface Variant { program: RtlProgram; bytes: Buffer; expected: { trap: boolean; value: number } }
 
 /** A candidate worth testing at all: encodes canonically, validates, has a
- *  runnable entry procedure, terminates under the reference VM, and its
- *  reference result isn't ambiguous under the high-bit trap encoding. */
+ *  runnable entry procedure, and terminates under the reference VM. */
 function prepare(program: RtlProgram): Variant | null
 {
     let bytes: Buffer
@@ -65,7 +64,6 @@ function prepare(program: RtlProgram): Variant | null
     {
         const r = run(program, undefined, entryArgCount === 1 ? [0] : [])
         const value = (r.ok ? r.acc : (r.trapCode ?? 0)) >>> 0
-        if(value & 0x80000000) return null
         return { program, bytes, expected: { trap: !r.ok, value } }
     }
     catch(e)

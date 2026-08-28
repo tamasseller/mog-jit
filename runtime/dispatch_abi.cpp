@@ -18,14 +18,17 @@ extern const uint32_t trampolineAddr = (uint32_t)(uintptr_t)translatorTrampoline
 /* r10 (helper vector base) — fixed for the whole program's lifetime, so
  * link-time const rather than something enterProgram fills in on every
  * call. No `| 1u` needed: .thumb_func (runtime.S) already bakes the Thumb
- * bit into each of these eight symbols' own value. Every RETURN/TRAP
- * dispatches to exactly one of indices 1/2/3/7 depending on savesLR and
+ * bit into each of these nine symbols' own value. Every RETURN dispatches
+ * to exactly one of indices 1/2/7 depending on savesLR and
  * initialSpilledCount (abi_strategy.cpp's abiEmitReturn) — index 3
  * (returnHelperTail) is also reached directly, by a plain branch, from
- * indices 1 and 7. Indices 4-6 (clzHelper/revbitsHelper/brTableJumpHelper)
- * are the reserved software-helper slots — see runtime.S's own header above
- * those three symbols. */
-extern const uint32_t helperVec[8] = {
+ * indices 1 and 7. A TRAP dispatches to index 8 instead and never touches
+ * the return path at all: it unwinds the whole excursion rather than
+ * returning to anybody (runtime.S's trapHelper). Indices 4-6
+ * (clzHelper/revbitsHelper/brTableJumpHelper) are the reserved
+ * software-helper slots — see runtime.S's own header above those three
+ * symbols. */
+extern const uint32_t helperVec[9] = {
     (uint32_t)(uintptr_t)callHelper,
     (uint32_t)(uintptr_t)returnHelperFromLr,
     (uint32_t)(uintptr_t)returnHelperFromStack,
@@ -34,21 +37,25 @@ extern const uint32_t helperVec[8] = {
     (uint32_t)(uintptr_t)revbitsHelper,
     (uint32_t)(uintptr_t)brTableJumpHelper,
     (uint32_t)(uintptr_t)returnHelperFromStackReclaim,
+    (uint32_t)(uintptr_t)trapHelper,
 };
 
 /* An attached Assembler's own direct exit when it cannot free enough
  * arena room even after evicting everything resident
  * (compiler/src/assembler.cpp's fail()) — restores the caller's own saved
- * sp and transfers to the sentinel landing, tagged LANDING_TRAP,
- * unwinding the entire excursion including the trampoline's own pushed
- * frame. Never returns. Exactly parallel to enterDispatch's own
- * .Lresume/sentinel mechanism (runtime.S) — this is the same "get back to
- * the landing point from deep inside an excursion" convention, just
- * reached from C++ instead of from the callHelper/returnHelper* chain. */
+ * sp and transfers to the sentinel landing, tagged
+ * LANDING_RESOURCE_ERROR, unwinding the entire excursion including the
+ * trampoline's own pushed frame. Never returns. Exactly parallel to
+ * enterDispatch's own .Lresume/sentinel mechanism (runtime.S) — this is
+ * the same "get back to the landing point from deep inside an excursion"
+ * convention, just reached from C++ instead of through the r10 vector the
+ * way runtime.S's trapHelper is. A distinct tag from that one because the
+ * two mean genuinely different things to the caller: a program that chose
+ * to stop, versus this implementation running out of room to compile it. */
 extern "C" void runtimeBail(Runtime *runtime, uint32_t trapCode)
 {
     register uint32_t trapCodeReg asm("r0") = trapCode;
-    register uint32_t tagReg asm("r2") = LANDING_TRAP;
+    register uint32_t tagReg asm("r2") = LANDING_RESOURCE_ERROR;
     register uint32_t landingReg asm("r3") = runtime->sentinelLandingAddress();
     register uint32_t savedSpReg asm("r1") = runtime->savedSp;
     asm volatile("mov sp, r1\n\tbx r3" : : "r"(trapCodeReg), "r"(savedSpReg), "r"(tagReg), "r"(landingReg));

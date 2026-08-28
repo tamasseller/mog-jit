@@ -64,10 +64,12 @@ diffs. `minimize_exec.ts` shrinks a mismatching program by deleting whole
 instructions and re-encoding, so every candidate stays validator-approved —
 one QEMU boot per pass, not per candidate.
 
-Two things it deliberately does not compare: a `RESOURCE_ERROR` (a
-legitimate outcome with no reference counterpart) and a result that is
-ambiguous under the runtime's high-bit trap encoding (see
-`docs/target-profile.md`).
+One thing it deliberately does not compare: a `RESOURCE_ERROR`, a
+legitimate outcome with no reference counterpart. Everything else is
+comparable, traps at any call depth included —
+`ProgramResult.trapped`'s own `LANDING_*` tag distinguishes the three
+outcomes, so nothing is encoded in the result value
+(`docs/target-profile.md`).
 
 ## Seeds
 

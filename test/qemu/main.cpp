@@ -96,7 +96,7 @@ TEST(HandTranscribedFixturesMatchExpectedResults)
 
         ProgramResult r = enterProgramWithSharedArena(fx.argIn, fx.program->bytes, fx.program->size, fx.arenaSize);
 
-        bool ok = (r.trapped != 0) == fx.expectTrapped && r.value == fx.expectValue;
+        bool ok = r.trapped == fx.expectLanding && r.value == fx.expectValue;
         allOk = allOk && ok;
 
         // Every fixture runs regardless of an earlier one's own result —
