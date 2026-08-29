@@ -19,7 +19,7 @@
 #include "window.h"
 #include "armv6.h"
 
-#include "runtime_internal.h"
+#include "runtime.h"
 #include "entry_args.h"
 #include "host_runtime_support.h"
 

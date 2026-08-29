@@ -33,20 +33,15 @@ returnHelperFromStack:                      @ ordinary non-leaf procedures: retr
 .global returnHelperTail
 returnHelperTail:
     lsrs  r2, r1, #16                       @ r2 = offset+1
-    sxth  r1, r1                            @ r1 = callerIdx, sign-extended — SXTH not UXTH: the
-                                            @ sentinel procIdx (0xffff, "index -1") must resolve
-                                            @ to r8-16, not r8+1048560
+    sxth  r1, r1                            @ r1 = callerIdx, SXTH: sentinel procIdx -1
     lsls  r1, r1, #4                        @ slotAddr-relative = callerIdx * 16 (sizeof(ProcSlot))
     add   r1, r1, r8                        @ r1 = slotAddr
+
     mov   r3, r11                           @ the LRU stamp, same as callHelper's — r3 is free
     str   r3, [r1, #4]                      @ until the codePtr load below. Deliberately NOT
     adds  r3, #1                            @ guarded against the sentinel: the whole point of
-    mov   r11, r3                           @ slots[0] is that return-from-entry costs no extra
-                                            @ code, and the word it lands on is the sentinel's
-                                            @ own lastUsed, which nothing reads (the eviction
-                                            @ scan runs over slot(i) == slots[i+1]) and no
-                                            @ extension owns (RUNTIME_EXT_STATE_OFFSET starts
-                                            @ one field later, at bodyPtr).
+    mov   r11, r3                           @ slots[0] is that return-from-entry costs no extra code
+
     ldr   r3, [r1, #0]                      @ r3 = codePtr
     bx    r3
 
@@ -161,23 +156,13 @@ translatorTrampoline:
 .thumb_func
 .global enterDispatch
 enterDispatch:
-    push  {r2, r4, r5, r6, r7, lr}          @ one push covers both: r2 is pure padding (8-byte
-                                            @ alignment, AAPCS's own rule for every public
-                                            @ interface); r4-r7 are AAPCS callee-saved and
-                                            @ genuinely live here: compiled procedures use them as
-                                            @ their own window, with zero obligation to preserve
-                                            @ whatever the caller (enterProgram) had in them; lr is
-                                            @ saved so the epilogue can end in a plain
-                                            @ `pop {..., pc}`.
-    mov   r4, r8                            @ r8-r11 need the same treatment, mirrored through low
-    mov   r5, r9                            @ registers first (ARMv6-M's compact PUSH/POP can't
-    mov   r6, r10                           @ name r8-r11 directly). enterDispatch is an ordinary
-    mov   r7, r11                           @ AAPCS function called from enterProgram, itself
-    push  {r4, r5, r6, r7}                  @ called from plain, unconstrained C — nothing enforces
-                                            @ -ffixed-rN on that boundary, so the contract has to
-                                            @ hold for real.
-    mov   r9, r1                            @ NOW safe to set up the ABI's own dispatch context —
-                                            @ runtime pointer
+    push  {r2, r4, r5, r6, r7, lr}          
+    mov   r4, r8                            
+    mov   r5, r9                            
+    mov   r6, r10                           
+    mov   r7, r11                           
+    push  {r4, r5, r6, r7}                  
+    mov   r9, r1
     movs  r2, r1
     adds  r2, #RUNTIME_DISPATCH_TABLE_OFFSET
     mov   r8, r2                            @ dispatch table base = runtime + RUNTIME_DISPATCH_TABLE_OFFSET

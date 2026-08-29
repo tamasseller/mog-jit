@@ -40,13 +40,14 @@ SOURCES += ../../compiler/src/translate_control_flow.cpp
 # test_enter_program.cpp fakes so the descriptor it is handed can be
 # inspected without booting an emulator.
 SOURCES += ../../runtime/enter_program.cpp
+SOURCES += ../../runtime/runtime.cpp
 
 # 1test library
 SOURCES += ../../vendor/1test/TestRunner.cpp
 SOURCES += ../../vendor/1test/PrintfOutput.cpp
 
 INCLUDE_DIRS += ../../compiler/src   # jitc:: headers, armv6.h
-INCLUDE_DIRS += ../../runtime         # runtime_internal.h / runtime_host.h
+INCLUDE_DIRS += ../../runtime         # runtime.h / runtime_host.h
 INCLUDE_DIRS += ../../vendor/1test
 
 ASMFLAGS += -m32

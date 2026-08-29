@@ -3,7 +3,7 @@
 // in milliseconds with the values printed, rather than as a hung guest.
 #include "Test.h"
 
-#include "runtime_internal.h"
+#include "runtime.h"
 #include "dispatch_abi.h"
 #include "entry_args.h"
 #include "ext.h"

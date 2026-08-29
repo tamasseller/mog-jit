@@ -1,5 +1,5 @@
 #include <stdint.h>
-#include "runtime_internal.h"
+#include "runtime.h"
 #include "translate_proc.h"
 #include "assembler.h"
 

@@ -2,7 +2,7 @@
 #define JIT_ARMV6M_RUNTIME_DISPATCH_ABI_H_
 
 #include <stdint.h>
-#include "runtime_internal.h"
+#include "runtime.h"
 #include "entry_args.h"
 
 extern "C" {

@@ -36,19 +36,28 @@ Whole programs, not one procedure, because a lone procedure cannot legally
 contain a `CALL` at all (§8.2 rejects self-recursion), which used to leave
 the entire call path unreachable by the fuzzer.
 
-Each input is translated twice: once with a *detached* `Assembler` (fixed
-buffer), then again with *attached* ones against a small real arena at a
-fixed low address, which is what reaches `Runtime::allocate`/
-`findEvictionVictim`/`evict`'s compaction memmove and `finalize`'s dispatch
-registration. `probe_arena.cpp` is a diagnostic that reports, per arena
-size, whether a given program actually reaches eviction — worth running
-after changing the sizing, since an arena that is too generous silently
-exercises none of it.
+Each input is translated twice, both passes through the one entry point
+there is (`translateProc(procIdx, Runtime&, lruTick)` — every translation
+emits into a real `Runtime`'s arena; there is no buffer-only variant).
+Pass 1 gives each procedure the whole 64K arena and re-initialises the
+`Runtime` between procedures, so one procedure's bail can't hide the ones
+after it. Pass 2 re-runs them over an arena deliberately sized to the
+program, several rounds, compiling only cold slots — that is what reaches
+`findEvictionVictim`, `evict`'s compaction memmove and codePtr slides, and
+`finalize`'s dispatch registration.
 
-`repro.cpp` replays one saved input; `build_afl.sh` is the coverage-guided
-build for a machine that has AFL++ (this one doesn't, so `harness.cpp`'s own
-`main()` is a mutation loop whose only feedback signal is validator
-approval — enough to keep the corpus accumulating structure).
+The drivers build `-m32`, because `Runtime` addresses its arena and every
+`ProcSlot::bodyPtr` as a bare `uint32_t`; the arena is ordinary static
+storage, so ASan catches an emitted halfword landing past `arenaEnd`.
+
+`probe_arena.sh` reports, per arena size, whether a given program actually
+reaches eviction — worth running after changing the sizing, since an arena
+that is too generous silently exercises none of it. `repro.sh` builds and
+replays one saved input (`last_input.bin` after a crash) through the same
+harness. `build_afl.sh` is the coverage-guided build for a machine that has
+AFL++ (this one doesn't, so `harness.cpp`'s own `main()` is a mutation loop
+whose only feedback signal is validator approval — enough to keep the
+corpus accumulating structure).
 
 ## QEMU half — miscompilation
 

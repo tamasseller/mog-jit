@@ -8,7 +8,7 @@
 #include "shape.h"
 #include "armv6.h"
 
-#include "runtime_internal.h"
+#include "runtime.h"
 #include "host_runtime_support.h"
 
 #include <initializer_list>

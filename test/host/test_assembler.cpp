@@ -9,7 +9,7 @@
 #include "Test.h"
 #include "Mock.h"
 
-#include "runtime_internal.h"
+#include "runtime.h"
 #include "host_runtime_support.h"
 
 #include "assembler.h"

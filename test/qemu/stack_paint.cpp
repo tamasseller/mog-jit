@@ -16,7 +16,7 @@
 #include "instr.h"
 #include "encode_instr.h"
 #include "translate_proc.h"
-#include "runtime_internal.h"
+#include "runtime.h"
 #include "Test.h"
 #include "semihosting_output.h"
 

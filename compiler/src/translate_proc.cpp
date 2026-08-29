@@ -1,6 +1,6 @@
 #include "translate_proc.h"
 #include "translate_internal.h"
-#include "runtime_internal.h"
+#include "runtime.h"
 
 #include <cassert>
 using namespace jitc;

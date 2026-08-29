@@ -1,5 +1,5 @@
 #include "assembler.h"
-#include "runtime_internal.h"
+#include "runtime.h"
 
 #include <cassert>
 #include <cstring>

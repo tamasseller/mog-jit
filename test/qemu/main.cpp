@@ -18,7 +18,7 @@
 #include "instr.h"
 #include "encode_instr.h"
 #include "translate_proc.h"
-#include "runtime_internal.h" // pulls in runtime_host.h itself (ProgramResult/enterProgram*) — it has no include guard, so it can't also be included directly here
+#include "runtime.h" // pulls in runtime_host.h itself (ProgramResult/enterProgram*) — it has no include guard, so it can't also be included directly here
 #include "dispatch_abi.h" // CALL_RECORD_BYTES/ENTER_DISPATCH_FIXED_BYTES/TRANSLATOR_ENTRY_WORST_CASE_BYTES, for the stack-budget boundary TESTs below to compute the exact same requiredStackBytes enter_program.cpp does
 #include "Test.h"
 #include "semihosting_output.h"
@@ -246,7 +246,7 @@ TEST(AnExtensionRangeOpcodeIsRejectedOnHardware)
 // — the actual exercise then goes through the ordinary lazy
 // enterProgramSplit/compileProc path exactly like every fixture above, reading
 // each procedure's own body straight out of the real program bytes
-// (runtime_internal.h's ProcSlot), so compile_proc.cpp genuinely
+// (runtime.h's ProcSlot), so compile_proc.cpp genuinely
 // retranslates from the same wire bytes whenever a procedure is evicted and
 // needed again — the same blob must reproduce the same layout, or a saved
 // resume offset stops pointing at the right place.
@@ -614,7 +614,7 @@ TEST(OnStackRejectsJustAboveComputedBudget)
 
 TEST(OnStackSucceedsWithBothArenaAndStackBudgetTight)
 {
-    // Runtime::liveStackFloor() (runtime_internal.h): enterProgramOnStack
+    // Runtime::liveStackFloor() (runtime.h): enterProgramOnStack
     // anchors the code arena's own base at stackLimit itself, so
     // arenaCursor advances past stackLimit as soon as even one procedure
     // compiles — at that point the translator's own live-recursion floor

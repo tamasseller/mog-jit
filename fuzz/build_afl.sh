@@ -14,6 +14,8 @@
 # cycle just to get a report. Plain (non-trap) UBSan costs nothing extra
 # except when a crash actually happens, which is exactly when the extra
 # output is worth it.
+# -m32: Runtime addresses its arena and every ProcSlot::bodyPtr as a bare
+# uint32_t, so the host build has to be one where a real address fits.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -22,20 +24,22 @@ export AFL_USE_ASAN=1
 afl-clang-fast++ -std=c++17 -O1 -g \
     -fsanitize=undefined -fno-sanitize-recover=all \
     -fno-sanitize=shift-base \
+    -m32 \
     -I ../compiler/src -I ../runtime \
     harness.cpp \
     ../compiler/src/window.cpp \
     ../compiler/src/ext.cpp \
     ../compiler/src/accstate.cpp \
-    ../compiler/src/binops.cpp \
     ../compiler/src/assembler.cpp \
+    ../compiler/src/arithmetic.cpp \
     ../compiler/src/shape.cpp \
     ../compiler/src/abi_strategy.cpp \
     ../compiler/src/decode_instr.cpp \
-    ../compiler/src/blocks.cpp \
-    ../compiler/src/unaryops.cpp \
     ../compiler/src/proc_scan.cpp \
     ../compiler/src/translate_proc.cpp \
+    ../compiler/src/translate_data_flow.cpp \
+    ../compiler/src/translate_control_flow.cpp \
+    ../runtime/runtime.cpp \
     -o fuzz_driver_afl
 
 echo "built ./fuzz_driver_afl"

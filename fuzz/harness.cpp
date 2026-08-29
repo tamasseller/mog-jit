@@ -31,14 +31,11 @@
 
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <sys/mman.h>
 #include <unistd.h>
 
-#include "proc.h"
-#include "assembler.h"
 #include "translate_proc.h"
 #include "decode_instr.h"
-#include "runtime_internal.h"
+#include "runtime.h"
 
 using namespace jitc;
 
@@ -51,10 +48,6 @@ extern "C" [[noreturn]] void runtimeBail(Runtime *, uint32_t)
     longjmp(g_resourceEscape, 1);
 }
 
-// Runtime::init()/setCodePtr() reference this (real dispatch-trampoline
-// address in production); this harness never dispatches through it, only
-// reads/writes ProcSlot::codePtr, so any distinct sentinel value works —
-// same stand-in test_runtime_arena.cpp already uses for the same reason.
 extern const uint32_t trampolineAddr = 0xDEADBEEFu;
 
 // ── oracle client ───────────────────────────────────────────────────────
@@ -142,41 +135,27 @@ static bool queryOracle(const uint8_t *data, size_t size, OracleResponse &out)
     return true;
 }
 
-// ── a real, low-address code arena ──────────────────────────────────────
+// ── the code arena ───────────────────────────────────────────────────
 //
-// The attached Assembler and every Runtime arena method address the arena
-// as a bare uint32_t (docs/design.md §2: one contiguous region reached
-// through the fixed ABI pointers), and evict() genuinely memmoves through
-// that value -- so exercising any of it on a 64-bit host needs real memory
-// that actually lives below 2^32. test/host's own test_runtime_arena.cpp
-// uses a plausible-looking fake base for exactly this reason, and has to
-// leave evict() out of its coverage as a result; one fixed low mapping
-// here covers the whole thing instead.
+// Ordinary static storage, not a hand-placed low mapping: this driver is
+// built -m32 (build.sh), so every address already fits the bare uint32_t
+// the Assembler and every Runtime arena method address the arena through.
+// Being ASan-instrumented storage is what a fixed mmap wouldn't give --
+// an emitted halfword landing past arenaEnd is caught here rather than
+// scribbling on a neighbouring page.
 //
-// A modest ceiling on purpose: the point of this pass is *arena pressure*
-// (eviction, compaction, the literal pool running out of reach), which a
-// generous arena would never produce.
-static constexpr uint32_t ARENA_BASE = 0x30000000u;
-static constexpr uint32_t ARENA_CAPACITY = 8192u;
+// Sized for pass 1, where the point is translating a procedure under no
+// capacity pressure at all. Pass 2 asks for a far smaller slice of it,
+// because that pass's point is the opposite: eviction, compaction, and
+// the literal pool running out of reach.
+static constexpr uint32_t ARENA_CAPACITY = 65536u;
+static constexpr uint32_t PRESSURE_ARENA_CAP = 8192u;
 
-static uint8_t *g_arena = nullptr;
+alignas(8) static uint8_t g_arena[ARENA_CAPACITY];
 
-// Fatal rather than a quiet "skip pass 2": a harness that silently stops
-// exercising half of what it claims to cover is worse than one that
-// doesn't start. If ARENA_BASE is ever unavailable (a different ASan
-// shadow layout, ASLR landing something there), the fix is to move the
-// constant, and that has to be visible.
-static void arenaInit()
+static uint32_t arenaBase()
 {
-    if(g_arena != nullptr) return;
-    void *p = mmap((void *)(uintptr_t)ARENA_BASE, ARENA_CAPACITY, PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-    if(p == MAP_FAILED || (uintptr_t)p != ARENA_BASE)
-    {
-        fprintf(stderr, "fuzz: cannot map the code arena at 0x%08x -- move ARENA_BASE\n", ARENA_BASE);
-        _exit(3);
-    }
-    g_arena = (uint8_t *)p;
+    return (uint32_t)(uintptr_t)g_arena;
 }
 
 // The arena size this input gets. Scaled to the program rather than a
@@ -208,36 +187,10 @@ static uint32_t arenaSizeFor(const uint8_t *data, size_t size, uint32_t bodyOffs
     uint32_t chosen = estimate / 4u * quarters[h & 3u];
 
     if(chosen < 32u) chosen = 32u;
-    if(chosen > ARENA_CAPACITY) chosen = ARENA_CAPACITY;
+    if(chosen > PRESSURE_ARENA_CAP) chosen = PRESSURE_ARENA_CAP;
     return chosen & ~3u;
 }
 
-// ── fuzz target ─────────────────────────────────────────────────────────
-//
-// Input format: one whole jit-armv6m program envelope, byte for byte what
-// packages/machine/src/bytecode.ts's encodeJitProgram emits --
-// LEB128(max_call_depth), LEB128(total_depth), LEB128(proc_count), then
-// proc_count times (LEB128(arg_count), body bytes). Exactly the bytes
-// runtime/enter_program.cpp's parseProgramHeader and Runtime::init()
-// consume in production, and exactly the bytes oracle_server.ts just
-// validated, so one identical buffer reaches both sides.
-//
-// Whole programs, not a lone procedure: a single-procedure program cannot
-// legally contain a CALL at all (isa-core §8.2's call-graph acyclicity
-// rejects self-recursion), which would leave
-// translate_proc.cpp's CALL case, abi_strategy.cpp's argument shuffle and
-// Runtime::init()'s multi-procedure directory walk permanently unreachable
-// by the fuzzer.
-
-// oracle_server.ts's own REALISTIC_MAX_PROC_COUNT. Mirrored here (and in
-// docs/target-profile.md) because the Runtime storage buffer below is
-// sized off it; kept in sync by hand, same as the argCount cap.
-static constexpr uint32_t ORACLE_MAX_PROC_COUNT = 16;
-// Set by every LLVMFuzzerTestOneInput call: whether the oracle approved
-// that input. The dumb driver's own corpus feedback below reads it -- the
-// only signal available without coverage instrumentation, and a strong one
-// here, since the overwhelming majority of blind mutants are rejected by
-// the validator and never reach translateProc at all.
 static bool g_lastWasValid = false;
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
@@ -252,13 +205,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         fprintf(stderr, "fuzz: oracle unreachable -- start oracle_server.ts first\n");
         _exit(2);
     }
-    // stage 4 is the oracle's own "the reference VM itself threw on a
-    // program validateProgram had just approved" signal -- a genuine
-    // @ppl/machine inconsistency between the validator and the VM, not a
-    // fuzz-input problem, and the one finding class here that isn't about
-    // the C++ side at all. It arrives with valid == 0 (the oracle never
-    // reaches the point of setting it), so the early return below was
-    // quietly discarding every one of them.
+
     if(oracle.stage == 4)
     {
         fprintf(stderr, "fuzz: ORACLE STAGE 4 -- reference VM threw on a validator-approved program\n");
@@ -269,12 +216,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     g_lastWasValid = true;
 
-    // Same three LEB128 fields runtime/enter_program.cpp's own
-    // parseProgramHeader reads, in the same order, off the same bytes the
-    // oracle just approved -- re-decoded here rather than called into
-    // because that function is file-static (and its two enterProgram*
-    // callers go on to build a VLA and enter real compiled code, neither
-    // of which this host harness can do).
     uint32_t pos = 0;
     const uint32_t maxCallDepth = jitc::decodeLeb128(data, pos, pos);
     const uint32_t totalDepth = jitc::decodeLeb128(data, pos, pos);
@@ -283,31 +224,19 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     (void)maxCallDepth;
     (void)totalDepth;
 
-    // The oracle's own realistic-profile gate caps procCount, so this
-    // can't be reached with more -- checked anyway rather than trusted,
-    // since the buffer below is sized off it.
     if(procCount == 0 || procCount > ORACLE_MAX_PROC_COUNT) return 0;
-
-    // storageBytesFor(n) isn't a constant expression (it isn't constexpr),
-    // and g++ tolerates a VLA sized by it where clang doesn't. A fixed,
-    // generously-sized buffer sidesteps the question: it only ever needs
-    // to hold one Runtime header plus procCount+1 ProcSlots, never exactly
-    // that size.
     static_assert(sizeof(Runtime) + (ORACLE_MAX_PROC_COUNT + 1) * sizeof(ProcSlot) <= 512,
         "grow this buffer if Runtime/ProcSlot grow, or if the oracle's procCount cap rises");
     alignas(8) uint8_t storage[512] = {};
     Runtime &rt = *reinterpret_cast<Runtime *>(storage);
-    // codeArenaBase/codeArenaSize/stackLimit are dummy values -- this
-    // harness never touches arena allocation, only the static per-proc
-    // directory init() also builds (argCount/bodyBytes/needsLRSave, via
-    // the real scanProcBody, not a hand-rolled substitute).
-    // Compared against 0 explicitly: init() reports which rejection
-    // happened as a RESOURCE_* code, so 0 is success and any truthy value
-    // is a failure -- the opposite sense to a bool.
-    uint32_t initCode = rt.init(data, (uint32_t)size, bodyOffset, procCount,
-        /*codeArenaBase=*/0x10000, /*codeArenaSize=*/0x10000, /*stackLimit=*/0, /*arenaOverlapsStack=*/0);
-    if(initCode != 0) return 0; // JIT's own static ceiling (arg/body-size limits) rejected it -- graceful, not a bug
+    rt.init(procCount, arenaBase(), ARENA_CAPACITY, /*stackLimit=*/0, /*arenaOverlapsStack=*/0);
+    if(rt.loadProgram(data, (uint32_t)size, bodyOffset) != 0)
+    {
+        return 0; // the JIT's own static ceiling rejected it -- graceful, not a bug
+    }
 
+    // ── pass 1: one procedure at a time, under no arena pressure ───────
+    //
     // Every procedure, not just the entry one: a CALL site's own
     // translation reads the *callee's* slot (argCount, for the argument
     // shuffle and the dispatch-table offset), so the interesting
@@ -315,68 +244,54 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     // reached by translating it in its own right. This is also what the
     // real runtime does over an execution's lifetime, one dispatch at a
     // time.
-    uint32_t procPos = bodyOffset;
+    //
+    // Re-initialised per procedure because there is no detached Assembler
+    // any more -- every translation emits into a real Runtime's arena, and
+    // a bail leaves that arena's bookkeeping mid-update. Throwing the
+    // whole Runtime away between procedures is what keeps one procedure's
+    // bail from hiding every procedure after it.
+    memset(g_arena, 0, ARENA_CAPACITY);
+
     for(uint32_t i = 0; i < procCount; i++)
     {
-        uint32_t argCount = jitc::decodeLeb128(data, procPos, procPos);
-        const uint32_t bodyBytes = rt.slot(i).bodyBytes();
-
-        // rt.slot(i).bodyPtr is truncated to 32 bits (a real-hardware
-        // address assumption that doesn't hold on this host) -- use the
-        // real pointer we already have instead, same way
-        // test_translate_proc.cpp's FakeRuntime bypasses it.
-        Proc proc{argCount, data + procPos, bodyBytes};
-        procPos += bodyBytes;
-
-        static uint16_t buf[8192];
-        Assembler a(buf, sizeof(buf) / sizeof(buf[0]));
+        rt.init(procCount, arenaBase(), ARENA_CAPACITY, /*stackLimit=*/0, /*arenaOverlapsStack=*/0);
+        rt.loadProgram(data, (uint32_t)size, bodyOffset); // already known to succeed
 
         if(setjmp(g_resourceEscape) == 0)
         {
-            translateProc(proc, i, a, rt);
-            // TODO(execute): feed buf[]/halfwordCount through an ARM
-            // execution oracle (Unicorn Engine) with rt.slot(i)'s
-            // needsLRSave() ABI, and compare the result against
-            // oracle.refVmAcc/refVmOk/refVmTrapCode when oracle.refVmRan
-            // -- that closes the loop this harness is named for. Not
-            // wired up: Unicorn isn't installed here.
+            translateProc(i, rt, /*lruTick=*/1);
+            // TODO(execute): feed the emitted halfwords at
+            // rt.slot(i).codePtr through an ARM execution oracle (Unicorn
+            // Engine) with rt.slot(i)'s needsLRSave() ABI, and compare the
+            // result against oracle.refVmAcc/refVmOk/refVmTrapCode when
+            // oracle.refVmRan -- that closes the loop this harness is
+            // named for. Not wired up: Unicorn isn't installed here.
         }
-        else
-        {
-            // Assembler::fail() -> runtimeBail() -> here: the JIT bailed
-            // with RESOURCE_ERROR instead of crashing -- the other
-            // acceptable outcome for a validator-approved program, not a
-            // finding. The remaining procedures are still worth
-            // translating: each one's bail is independent, and this
-            // harness's Assembler is detached (a fixed buffer, no shared
-            // arena state a bail could have left half-updated).
-        }
+        // else: Assembler::fail() -> runtimeBail() -> here. The JIT bailed
+        // with RESOURCE_ERROR instead of crashing -- the other acceptable
+        // outcome for a validator-approved program, not a finding.
     }
 
-    // ── pass 2: attached Assemblers against a real, small arena ────────
+    // ── pass 2: the same procedures against a deliberately tight arena ──
     //
-    // Everything above runs a *detached* Assembler -- a fixed caller
-    // buffer, no Runtime coupling -- which leaves the whole runtime half
-    // untouched: Runtime::allocate/findEvictionVictim/evict (its
-    // compaction memmove and codePtr slides), Assembler::growForAttached,
-    // finalize()'s dispatch-table registration, and the literal pool
-    // under genuine capacity pressure rather than an 8K buffer's. This
-    // pass drives exactly that, as close to what the real dispatch path
-    // does as a host build can get: compile a slot only when it is cold,
-    // one procedure at a time, with the LRU tick advancing so
+    // Pass 1 hands every translation more room than it can use, which
+    // leaves the whole runtime half of the arena untouched:
+    // findEvictionVictim, evict's compaction memmove and codePtr slides,
+    // and the literal pool under genuine capacity pressure. This pass
+    // drives exactly that, as close to what the real dispatch path does as
+    // a host build can get: compile a slot only when it is cold, one
+    // procedure at a time, with the LRU tick advancing so
     // findEvictionVictim's age comparison means something.
     //
     // Several rounds, not one: eviction only ever happens once the arena
     // is already full, so round 1 populates and later rounds are where a
     // procedure evicted out from under an earlier round gets recompiled
     // on top of a compacted arena.
-    arenaInit();
-
     const uint32_t arenaSize = arenaSizeFor(data, size, bodyOffset);
     memset(g_arena, 0, arenaSize);
 
-    if(rt.init(data, (uint32_t)size, bodyOffset, procCount,
-        ARENA_BASE, arenaSize, /*stackLimit=*/0, /*arenaOverlapsStack=*/0) != 0)
+    rt.init(procCount, arenaBase(), arenaSize, /*stackLimit=*/0, /*arenaOverlapsStack=*/0);
+    if(rt.loadProgram(data, (uint32_t)size, bodyOffset) != 0)
     {
         return 0;
     }
@@ -390,19 +305,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         uint32_t lruTick = 1;
         for(uint32_t round = 0; round < 4; round++)
         {
-            uint32_t attachedPos = bodyOffset;
             for(uint32_t i = 0; i < procCount; i++)
             {
-                uint32_t argCount = jitc::decodeLeb128(data, attachedPos, attachedPos);
-                const uint8_t *body = data + attachedPos;
-                const uint32_t bodyBytes = rt.slot(i).bodyBytes();
-                attachedPos += bodyBytes;
-
                 if(rt.isResident(i)) continue; // a dispatch only ever lands on a cold slot
 
-                Proc proc{argCount, body, bodyBytes};
-                Assembler a(&rt, i, lruTick++);
-                translateProc(proc, i, a, rt);
+                translateProc(i, rt, lruTick++);
             }
         }
     }

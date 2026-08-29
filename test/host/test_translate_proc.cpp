@@ -11,7 +11,7 @@
 #include "armv6.h"
 #include "registers.h"
 
-#include "runtime_internal.h"
+#include "runtime.h"
 #include "dispatch_abi.h"
 #include "host_runtime_support.h"
 

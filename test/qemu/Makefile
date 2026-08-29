@@ -15,6 +15,7 @@ OUTPUT = run.elf
 SOURCES += vectors.S
 
 SOURCES += ../../runtime/runtime.S
+SOURCES += ../../runtime/runtime.cpp
 SOURCES += ../../runtime/enter_program.cpp
 SOURCES += ../../runtime/dispatch_abi.cpp
 SOURCES += ../../runtime/compile_proc.cpp
@@ -49,7 +50,7 @@ SOURCES += main.cpp
 SOURCES += ../../vendor/1test/TestRunner.cpp
 
 INCLUDE_DIRS += ../../compiler/src   # jitc:: headers, armv6.h
-INCLUDE_DIRS += ../../runtime         # runtime_host.h / runtime_internal.h
+INCLUDE_DIRS += ../../runtime         # runtime_host.h / runtime.h
 INCLUDE_DIRS += .                      # fixtures.h / semihosting_output.h
 INCLUDE_DIRS += ..                      # corpus_programs.h, shared with test/tools/dump_corpus.cpp
 INCLUDE_DIRS += ../../vendor/1test      # Test.h
@@ -150,7 +151,7 @@ include ../../vendor/ultimate-makefile/Makefile.ultimate
 # ENTRY_ARGS_*_OFFSET — are exactly the ones the C++ side also compiles
 # against. A stale runtime.S.o therefore produces a binary whose two halves
 # disagree about a struct offset, which does not fail to build and does not
-# assert: it dispatches to a wrong address and hangs. runtime_internal.h's
+# assert: it dispatches to a wrong address and hangs. runtime.h's
 # own static_assert cannot catch it, since it only checks the C++ side.
 $(OBJDIR)/$(abspath ../../runtime/runtime.S).o: $(abspath ../../runtime/runtime_host.h)
 

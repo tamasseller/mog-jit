@@ -1,6 +1,6 @@
 #include "translate_internal.h"
 #include "decode_instr.h"
-#include "runtime_internal.h"
+#include "runtime.h"
 #include "abi_strategy.h"
 #include "arithmetic.h"
 

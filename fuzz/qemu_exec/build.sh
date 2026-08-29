@@ -30,21 +30,22 @@ arm-none-eabi-g++ "${CXXFLAGS[@]}" \
     -static -nostartfiles -specs=nosys.specs -T linker.ld \
     vectors.S \
     ../../runtime/runtime.S \
+    ../../runtime/runtime.cpp \
     ../../runtime/enter_program.cpp \
     ../../runtime/dispatch_abi.cpp \
     ../../runtime/compile_proc.cpp \
     ../../compiler/src/window.cpp \
     ../../compiler/src/ext.cpp \
     ../../compiler/src/accstate.cpp \
-    ../../compiler/src/binops.cpp \
+    ../../compiler/src/arithmetic.cpp \
     ../../compiler/src/assembler.cpp \
     ../../compiler/src/shape.cpp \
     ../../compiler/src/abi_strategy.cpp \
     ../../compiler/src/decode_instr.cpp \
-    ../../compiler/src/blocks.cpp \
-    ../../compiler/src/unaryops.cpp \
     ../../compiler/src/proc_scan.cpp \
     ../../compiler/src/translate_proc.cpp \
+    ../../compiler/src/translate_data_flow.cpp \
+    ../../compiler/src/translate_control_flow.cpp \
     semihost.cpp \
     cxx_stubs.cpp \
     exec_runner.cpp \

@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <cassert>
-#include "runtime_internal.h"
+#include "runtime.h"
 #include "ext.h"
 #include "dispatch_abi.h"
 #include "entry_args.h"
@@ -17,12 +17,16 @@ struct ProgramHeader
 static ProgramHeader parseProgramHeader(const uint8_t *bytes, uint32_t size)
 {
     uint32_t pos = 0;
-    assert(pos < size); // GCOV_EXCL_LINE — malformed/truncated program, matching decode_instr.cpp's own convention
+
+    assert(pos < size); // GCOV_EXCL_LINE malformed/truncated program
     uint32_t maxCallDepth = jitc::decodeLeb128(bytes, pos, pos);
-    assert(pos < size); // GCOV_EXCL_LINE
+
+    assert(pos < size); // GCOV_EXCL_LINE malformed/truncated program
     uint32_t totalDepth = jitc::decodeLeb128(bytes, pos, pos);
-    assert(pos < size); // GCOV_EXCL_LINE
+
+    assert(pos < size); // GCOV_EXCL_LINE malformed/truncated program
     uint32_t procCount = jitc::decodeLeb128(bytes, pos, pos);
+    
     return ProgramHeader{maxCallDepth, totalDepth, procCount, pos};
 }
 
@@ -34,8 +38,9 @@ static ProgramResult enterProgramCore(
     uint32_t codeArenaBase, uint32_t codeArenaSize,
     uint32_t stackLimit, uint32_t arenaOverlapsStack)
 {
-    if(uint32_t code = runtime->init(programBytes, programSize, hdr.bodyOffset, hdr.procCount,
-        codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack, extension); code != 0)
+    runtime->init(hdr.procCount, codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack, extension);
+
+    if(uint32_t code = runtime->loadProgram(programBytes, programSize, hdr.bodyOffset))
     {
         return ProgramResult{ code, LANDING_RESOURCE_ERROR };
     }
