@@ -118,7 +118,7 @@ public:
     jitc::Assembler a;
 
     explicit TestAssembler(uint32_t capacityHalfwords)
-        : low(capacityHalfwords * 2), a(setup(capacityHalfwords), /*procIdx=*/0, /*lruTick=*/0)
+        : low(capacityHalfwords * 2), a(setup(capacityHalfwords), /*lruTick=*/0)
     {
     }
 

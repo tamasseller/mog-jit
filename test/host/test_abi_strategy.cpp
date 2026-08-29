@@ -83,7 +83,7 @@ TEST(abiEmitCallFitsImm8CalleeIndexIsAFixedFiveHalfwordSequence)
     // 10, so the pooled record packs procIdx=0 with offsetPlus1=11 --
     // confirmed by flushing and reading the word back, not by re-deriving
     // the formula under test.
-    e.finalize();
+    e.finalize(0);
     CHECK(loadedWord(buf, before + 0) == packRecord(0, 11));
 }
 
@@ -107,7 +107,7 @@ TEST(abiEmitCallForcePoolsACalleeIndexNotFittingImm8Too)
     CHECK(buf[before + 3] == ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(0))); // LDR r3, [r3, #0] (callHelper)
     CHECK(buf[before + 4] == ArmV6M::bx(ArmV6M::AnyReg(3))); // BX r3
 
-    e.finalize();
+    e.finalize(0);
     CHECK(loadedWord(buf, before + 0) == packRecord(2, 11));
     CHECK(loadedWord(buf, before + 1) == 300u);
 }

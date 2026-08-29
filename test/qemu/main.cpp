@@ -503,6 +503,14 @@ TEST(EvictionChurnUnderLoopedCallChain)
         sizes[j] = v;
     }
     uint32_t arenaSize = sizes[0] + sizes[1] + 4;
+    // Floor: the largest procedure must fit on its own, or this traps
+    // EXHAUSTED_ARENA with nothing to evict — a different scenario. The
+    // two-smallest sum cleared that by only 2 bytes, so any small codegen
+    // size change silently swapped the test out. Churn is unaffected.
+    if(arenaSize < sizes[4] + 4)
+    {
+        arenaSize = sizes[4] + 4;
+    }
 
     ProcSource procSources[] = {
         {1, proc0Body, n0}, {1, proc1Body, n1}, {1, proc2Body, n2}, {1, proc3Body, n3}, {1, proc4Body, n4},

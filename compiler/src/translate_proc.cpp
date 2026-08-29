@@ -5,7 +5,7 @@
 #include <cassert>
 using namespace jitc;
 
-Ctx::Ctx(Runtime& r, uint32_t procIdx, uint32_t lruTick): a(r, procIdx, lruTick)
+Ctx::Ctx(Runtime& r, uint32_t procIdx, uint32_t lruTick): a(r, lruTick)
 {
     const auto &procSlot = r.slot(procIdx);
 
@@ -21,12 +21,12 @@ uint32_t jitc::translateProc(uint32_t procIdx, Runtime& r, uint32_t lruTick)
 {
     if(Ctx ctx(r, procIdx, lruTick); ctx.translateBody(emitNarrowBranch))
     {
-        return ctx.a.finalize();
+        return ctx.a.finalize(procIdx);
     }
 
     if(Ctx ctx(r, procIdx, lruTick); ctx.translateBody(emitWideBranch))
     {
-        return ctx.a.finalize();
+        return ctx.a.finalize(procIdx);
     }
 
     runtimeBail(&r, RESOURCE_LIMIT_BRANCH_RANGE);

@@ -67,6 +67,19 @@ public:
     }
 };
 
+// commit() takes the in-progress region's absolute end, not a size, and
+// returns the new cursor — Assembler::finalize's own shape. These tests
+// think in "place a procedure of N bytes and tell me where it landed", so
+// wrap it once here rather than open-coding the base/end arithmetic at
+// every call site.
+template<typename Storage>
+static uint32_t place(Storage &runtime, uint32_t sizeBytes)
+{
+    uint32_t base = runtime->arenaCursor;
+    runtime->commit(base + sizeBytes);
+    return base;
+}
+
 TEST(ReserveForRoundsUpToAWholeWord)
 {
     CHECK(Runtime::reserveFor(0) == 0);
@@ -84,7 +97,8 @@ TEST(EveryAllocationStartsWordAligned)
     uint32_t sizes[] = {2, 6, 14, 4, 10, 6};
     for(uint32_t size : sizes)
     {
-        CHECK(runtime->allocate(size) % 4 == 0);
+        CHECK(place(runtime, size) % 4 == 0);
+        CHECK(runtime->arenaCursor % 4 == 0);
     }
 }
 
@@ -96,7 +110,7 @@ TEST(UnalignedArenaBaseIsRealignedRatherThanTrusted)
     for(uint32_t skew = 0; skew < 4; skew++)
     {
         RuntimeStorage<2> runtime(ARENA_BASE + skew);
-        uint32_t dest = runtime->allocate(6);
+        uint32_t dest = place(runtime, 6);
         CHECK(dest % 4 == 0);
         CHECK(dest >= ARENA_BASE + skew); // never below the arena it was given
     }
@@ -113,7 +127,7 @@ TEST(OccupiedSizeIsAlwaysAWholeNumberOfWords)
     uint32_t sizes[] = {6, 2, 14, 10};
     for(uint32_t i = 0; i < 4; i++)
     {
-        runtime->markCompiled(i, runtime->allocate(sizes[i]), /*lruTick=*/0);
+        runtime->markCompiled(i, place(runtime, sizes[i]), /*lruTick=*/0);
     }
     CHECK(!runtime->isResident(4));
     for(uint32_t i = 0; i < 4; i++)
@@ -127,15 +141,11 @@ TEST(OccupiedSizeIsAlwaysAWholeNumberOfWords)
 
 TEST(RoomCheckAccountsForThePaddingAllocateWillConsume)
 {
-    // A hasRoomFor(reserveFor(need)) that passes must be followed by an
-    // allocate() that stays inside the arena — the invariant
-    // compiler/src/assembler.cpp's own growForAttached eviction loop
-    // depends on.
     RuntimeStorage<64> runtime;
     uint32_t allocations = 0;
     while(runtime->hasRoomFor(Runtime::reserveFor(6)))
     {
-        uint32_t dest = runtime->allocate(6);
+        uint32_t dest = place(runtime, 6);
         CHECK(dest % 4 == 0);
         CHECK(dest + 6 <= ARENA_BASE + ARENA_SIZE);
         allocations++;
@@ -180,12 +190,12 @@ TEST(AFreshlyCompiledProcedureIsTheYoungestNotTheOldest)
     // victim, evicted before it ever ran once. Nothing else in the host
     // suite exercises findEvictionVictim's ordering at all.
     RuntimeStorage<3> runtime;
-    runtime->markCompiled(0, runtime->allocate(8), /*lruTick=*/10);
-    runtime->markCompiled(1, runtime->allocate(8), /*lruTick=*/20);
+    runtime->markCompiled(0, place(runtime, 8), /*lruTick=*/10);
+    runtime->markCompiled(1, place(runtime, 8), /*lruTick=*/20);
 
     CHECK(runtime->findEvictionVictim(/*now=*/21) == 0); // slot 1 is younger
 
-    runtime->markCompiled(2, runtime->allocate(8), /*lruTick=*/30);
+    runtime->markCompiled(2, place(runtime, 8), /*lruTick=*/30);
     CHECK(runtime->findEvictionVictim(/*now=*/31) == 0); // still the oldest, not the newest
 }
 
@@ -211,7 +221,7 @@ TEST(ArenaEndIsAlignedSoAFullAllocationNeverOvershootsIt)
         RuntimeStorage<1> runtime(ARENA_BASE, ARENA_SIZE + skew);
         uint32_t gap = runtime->arenaEnd - runtime->arenaCursor;
         CHECK(gap % 4 == 0);
-        runtime->allocate(gap); // a procedure that exactly fills the remaining capacity
+        place(runtime, gap); // a procedure that exactly fills the remaining capacity
         CHECK(runtime->arenaCursor == runtime->arenaEnd); // lands exactly on it, never past
     }
 }

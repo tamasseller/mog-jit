@@ -80,7 +80,7 @@ TEST(FinalizeFlushesWithNoBranchAroundAndPadsToAWordBoundary)
     const uint16_t *buf = a_ta.code();
     a.materializeImm32(0, 0x12345678u); // site at pc=0, pc now 2 (not word-aligned)
 
-    uint32_t total = a.finalize();
+    uint32_t total = a.finalize(0);
     CHECK(total == 4); // LDR(1) + pad NOP(1) + pool word(2)
     CHECK(buf[0] == ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(0))); // LDR r0,[pc,#0] -- Align(0+4,4)=4, +0
     CHECK(buf[1] == ArmV6M::nop()); // pad, to reach the word boundary
@@ -112,7 +112,7 @@ TEST(FlushPoolDedupsIdenticalValuesToOneSharedWord)
     const uint16_t *buf = a_ta.code();
     a.materializeImm32(0, 0x12345678u); // site A, pc 0 -> 2
     a.materializeImm32(1, 0x12345678u); // site B, same value, pc 2 -> 4
-    a.finalize();
+    a.finalize(0);
 
     // Both sites must resolve to the exact same pool word.
     uint16_t offA, offB;

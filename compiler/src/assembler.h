@@ -43,11 +43,8 @@ struct Label
 class Assembler
 {
     uint16_t *buf;
-    uint32_t capacity;
     uint32_t count = 0;
     bool suppressPoolCheck = false;
-
-    uint32_t procIdx = 0;
     uint32_t lruTick = 0;
 
     static constexpr uint32_t POOL_MAX_PENDING = 16;
@@ -58,7 +55,6 @@ class Assembler
     bool linkIntoChain(Label &label, uint32_t site);
     void parkPoolSite(uint32_t dstReg, uint32_t value);
     void patchPoolSite(uint32_t siteOffset, uint32_t word);
-    bool ensureSpace(const uint16_t *end, uint32_t lruTick);
 
     class AtomicScope
     {
@@ -75,7 +71,7 @@ class Assembler
 public:
     Runtime &runtime;
 
-    Assembler(Runtime &runtime, uint32_t procIdx, uint32_t lruTick);
+    Assembler(Runtime &runtime, uint32_t lruTick);
 
     Assembler(const Assembler &) = delete;
     Assembler &operator=(const Assembler &) = delete;
@@ -114,7 +110,7 @@ public:
     void materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoIsnSeq = true);
     uint32_t poolDebt() const;
 
-    uint32_t finalize();
+    uint32_t finalize(uint32_t procIdx);
 
     void ensurePoolRoom(uint32_t poolEntries, uint32_t extraBytes = 0);
 };

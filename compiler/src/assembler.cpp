@@ -18,51 +18,15 @@ static uint32_t roundUpToWord(uint32_t v)
     return (v + 3u) & ~3u;
 }
 
-Assembler::Assembler(Runtime &rt, uint32_t procIdx, uint32_t lruTick)
-    : buf((uint16_t *)(uintptr_t)rt.arenaCursor),
-      capacity((rt.arenaEnd - rt.arenaCursor) / 2),
-      runtime(rt), procIdx(procIdx), lruTick(lruTick) {}
-
-// end is one past the last halfword written so far — the in-progress
-// region's own high-water mark, which is exactly what evict() needs to
-// know how much to slide. Room for one more halfword means end is still
-// strictly below the arena's end.
-bool Assembler::ensureSpace(const uint16_t *end, uint32_t lruTick)
-{
-    assert(end <= buf + capacity);
-
-    if(end == buf + capacity)
-    {
-        int victim = runtime.findEvictionVictim(lruTick);
-        if(victim < 0)
-        {
-            runtimeBail(&runtime, RESOURCE_EXHAUSTED_ARENA);
-            return false;
-        }
-
-        // buf tracks arenaCursor, so buf + capacity is arenaEnd either
-        // side of this — what moves is the in-progress region itself,
-        // slid down by the victim's size along with everything above it.
-        // Carry end along by offset, or the assert below would be reading
-        // a pointer that no longer names this region.
-        uint32_t written = (uint32_t)(end - buf);
-
-        runtime.evict((uint32_t)victim, end);
-
-        buf = (uint16_t *)(uintptr_t)runtime.arenaCursor;
-        capacity = (runtime.arenaEnd - runtime.arenaCursor) / 2;
-        end = buf + written;
-    }
-
-    assert(end < buf + capacity);
-    return true;
-}
+Assembler::Assembler(Runtime &rt, uint32_t lruTick): buf((uint16_t *)(uintptr_t)rt.arenaCursor), runtime(rt), lruTick(lruTick) {}
 
 uint32_t Assembler::emit(uint16_t word)
 {
     uint32_t at = pc();
 
-    if(this->ensureSpace(buf + count, lruTick))
+    this->buf = this->runtime.ensureSpace(buf + count, lruTick);
+    
+    if(buf)
     {
         buf[count++] = word;
 
@@ -349,14 +313,12 @@ void Assembler::ensurePoolRoom(uint32_t poolEntries, uint32_t extraBytes)
     }
 }
 
-uint32_t Assembler::finalize()
+uint32_t Assembler::finalize(uint32_t procIdx)
 {
     flushPool();
 
-    uint32_t need = count * 2;
-    uint32_t dest = runtime.allocate(need);
-    assert(dest == (uint32_t)(uintptr_t)buf); // GCOV_EXCL_LINE — growForAttached's own base-tracking invariant
-    runtime.markCompiled(procIdx, dest, lruTick);
+    runtime.commit((uint32_t)(uintptr_t)(buf + count)); // buf is uint16_t*, count a halfword index — scale, don't add raw
+    runtime.markCompiled(procIdx, (uint32_t)buf, lruTick);
 
     return count;
 }
