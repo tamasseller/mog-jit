@@ -38,8 +38,7 @@ TEST(prologueStubExactEncoding)
     Assembler &e = e_ta.a;
     const uint16_t *buf = e_ta.code();
     emitPrologueStub(e);
-    // Just the pc-relative resume jump: the LRU stamp that used to head this
-    // is in runtime.S's callHelper/returnHelperTail now.
+    // Just the pc-relative resume jump; the LRU stamp is in runtime.S.
     CHECK(e.halfwordCount() == 2);
     CHECK(buf[0] == ArmV6M::add(ArmV6M::AnyReg(2), ArmV6M::AnyReg(15))); // ADD r2, r2, pc
     CHECK(buf[1] == ArmV6M::bx(ArmV6M::AnyReg(2))); // BX r2

@@ -1,11 +1,6 @@
-// enterProgram*'s own argument plumbing and its two entry-argument guards.
-//
-// This is the first host coverage of enter_program.cpp at all — the QEMU
-// build was previously the only thing that compiled it, which meant every
-// rejection path cost an emulator boot to observe and the descriptor handed
-// to enterDispatch could not be inspected at all. A fake enterDispatch
-// captures it here instead, so a plumbing mistake fails in milliseconds
-// with the actual values printed rather than as a hung guest.
+// enterProgram*'s argument plumbing and its two entry-argument guards.
+// A fake enterDispatch captures the descriptor so a plumbing mistake fails
+// in milliseconds with the values printed, rather than as a hung guest.
 #include "Test.h"
 
 #include "runtime_internal.h"

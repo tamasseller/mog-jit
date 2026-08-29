@@ -71,13 +71,11 @@ static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool
 
     while(pc < maxBytes)
     {
-        // Before decoding, not after: decodeInstr trusts that this walk
-        // already vetted the byte, and every shipping build is -DNDEBUG so
-        // its own assert is gone. This is the one place a byte in the
-        // extension range (isa-core.md §11) or a reserved code (§5.3) is
-        // stopped, or handed to the registered extension for its length.
-        // Every instruction of every procedure passes through here before
-        // anything is translated, which is what makes one gate sufficient.
+        // Before decoding, not after: decodeInstr trusts this walk to have
+        // vetted the byte, and shipping builds are -DNDEBUG. Every
+        // instruction of every procedure passes here before anything is
+        // translated, which is what makes this the one gate for extension
+        // bytes (isa-core.md §11) and reserved codes (§5.3).
         if(bytes[pc] > LAST_CORE_OPCODE)
         {
             // Three distinct cases, and the middle one is easy to get wrong:

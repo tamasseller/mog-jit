@@ -20,10 +20,8 @@ using namespace jitc;
 
 static constexpr uint32_t PC = 15;
 
-// The fixed 2-halfword procedure-entry stub every compiled procedure
-// begins with (emitPrologueStub, abi_strategy.cpp) — indirects into the
-// body via a pc-relative ADD, and nothing else: the LRU stamp that used to
-// precede it is in runtime.S's callHelper/returnHelperTail now.
+// The 2-halfword entry stub every compiled procedure begins with
+// (emitPrologueStub): a pc-relative ADD into the body, nothing else.
 // Never varies with procIdx, argCount, or body content.
 #define PROLOGUE_STUB \
     ArmV6M::add(ArmV6M::AnyReg(ENTRY_OFFSET_REG), ArmV6M::AnyReg(PC)), \
@@ -57,14 +55,10 @@ static const Instr kProc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
 // proc1 (argCount 1): LOAD(0), opImm(ADD, 5), RETURN
 static const Instr kProc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
 
-// translateProc now builds its own Proc straight out of a Runtime's own
-// ProcSlot — procIdx's own argCount/bodyPtr/bodyBytes/needsLRSave, the
-// same struct runtime/runtime_internal.h's Runtime::init() fills from
-// real wire bytes — rather than taking a Proc and an Assembler as
-// separate parameters. There is no longer a detached, buffer-only entry
-// point a host test can hand a throwaway pair to: every call now goes
-// through an *attached* Assembler (compiler/src/assembler.h) over the
-// Runtime's own arena.
+// translateProc reads argCount/bodyPtr/bodyBytes/needsLRSave straight out
+// of the Runtime's own ProcSlot, and always compiles through an Assembler
+// attached to that Runtime's arena — there is no buffer-only entry point a
+// test could hand a throwaway pair to.
 //
 // That arena, and every ProcSlot's own bodyPtr, are addressed as a bare
 // uint32_t — a real target's flat 32-bit address space. A 64-bit host
@@ -288,9 +282,8 @@ TEST(CallToAProcedureIndexTheProgramDoesntHaveIsReported)
 
 TEST(LoopBackEdgeBailsWhenTheBodyExceedsTheEncodableBranchRange)
 {
-    // A LOOP body long enough that the unconditional back-edge needs more
-    // than Ioff<1,11>'s +-2048-byte reach used to silently retarget the
-    // branch instead of failing.
+    // A back-edge past Ioff<1,11>'s +-2048-byte reach must fail, not wrap
+    // into a silently retargeted branch.
     Instr body[404];
     uint32_t n = 0;
     body[n++] = bare(Op::LOOP);
@@ -554,16 +547,11 @@ TEST(LastArgumentHomeSlotReadTwiceViaLoad)
 
 TEST(LastArgumentHomeSlotReadViaPopAcc)
 {
-    // At tos == argCount, window.topReg() *is* physReg(lastArgSlot). This
-    // used to be reached through a deferred-fold scan that could miss
-    // POP_ACC/PEEK_PEEK/a bare POP (none carry a target field) and leave
-    // physReg(lastArgSlot) unflushed, reading it uninitialised. The callee
-    // prologue now always flushes unconditionally instead, so POP_ACC's
-    // implicit window-top read is correct by construction, no scan
-    // involved. POP_ACC (not
-    // PEEK_PEEK) is used so the program stays accLive-valid into RETURN
-    // (isa-core.md §10.1: PEEK_PEEK's write-back-in-place clobbers acc,
-    // POP_ACC produces a fresh value).
+    // At tos == argCount, window.topReg() *is* physReg(lastArgSlot). The
+    // callee prologue flushes it unconditionally, so POP_ACC's implicit
+    // window-top read is correct by construction. POP_ACC rather than
+    // PEEK_PEEK keeps the program accLive-valid into RETURN (isa-core.md
+    // §10.1: PEEK_PEEK writes back in place and clobbers acc).
     const Instr body[] = {opStack(Op::ADD, Combo::POP_ACC), bare(Op::RETURN)};
     FakeRuntime<1> rt;
     rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
@@ -1176,13 +1164,10 @@ static uint32_t currentSp()
 
 TEST(DeeplyNestedButWellFormedBlocksSucceedWithNoStackFloor)
 {
-    // 50 levels of well-formed nesting (each BR_TABLE(1) case properly
-    // closed by its own BLOCK_END) — deliberately past the old
-    // MAX_BLOCK_NESTING(32) constant this replaced, to show concretely
-    // that legitimately deep (but not runaway) nesting is no longer
-    // rejected just for exceeding an arbitrary count: with the default
-    // stackFloor (0, no limit), only the live stack pointer's real
-    // headroom matters, and this host process has plenty of it.
+    // 50 levels of well-formed nesting, each BR_TABLE(1) case closed by its
+    // own BLOCK_END. Nesting is bounded by the live stack pointer's real
+    // headroom, not by an arbitrary count, and with stackFloor 0 this host
+    // process has plenty.
     constexpr int kDepth = 50;
     // isa-core.md §8.7: the outermost if-then's merge point starts acc
     // poisoned once all 50 levels unwind, so RETURN needs its own fresh
@@ -1208,21 +1193,16 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     // rt's stackLimit pinned at (essentially) the current sp (translateBody's
     // guard reads it via r.liveStackFloor()) — no margin left at all, so
     // translateBody's very first live check already fails,
-    // regardless of how shallow the body is (a bare RETURN, not even one
-    // level of nesting). Deliberately doesn't try to calibrate "how many
-    // levels of real nesting exhaust N bytes of stack": this host build
-    // is -O0, nothing like the real target's -Os, so any such number
-    // wouldn't transfer — this instead proves the mechanism itself (the
-    // comparison, and the fail() it reaches) fires correctly whenever the
-    // floor genuinely can't be satisfied, which is exactly the property a
-    // genuinely deep recursion needs to trigger for real, on real
-    // hardware. Pinning RESOURCE_EXHAUSTED_TRANSLATOR_STACK is what
-    // separates this from an arena overflow, which the same escape used to
-    // be indistinguishable from.
+    // regardless of how shallow the body is. Deliberately does not
+    // calibrate "how many nesting levels exhaust N bytes": this build is
+    // -O0, unlike the target's -Os, so the number would not transfer. It
+    // proves the mechanism fires whenever the floor cannot be satisfied.
+    // Pinning RESOURCE_EXHAUSTED_TRANSLATOR_STACK separates it from an
+    // arena overflow, which reaches the same escape.
     const Instr body[] = {bare(Op::RETURN)};
     FakeRuntime<1> rt(/*arenaBytes=*/32);
     rt.set(0, 0, /*savesLR=*/false, body, 1);
-    rt.runtime().stackLimit = currentSp(); // translateBody's guard now reads r.liveStackFloor() directly
+    rt.runtime().stackLimit = currentSp(); // translateBody's guard reads r.liveStackFloor()
 
     EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_TRANSLATOR_STACK, translateProc(0, rt.runtime(), LRU_TICK));
 }
@@ -1430,13 +1410,10 @@ TEST(LargeBrTableJumpTableFlushesAPendingLiteralBeforeItsOwnTable)
 
 TEST(OutputReachDistanceForcesAMidProcedureFlush)
 {
-    // 500 single-halfword NOT instructions between two pooled sites push
-    // the first one's own forward reach past its 1020-byte limit,
-    // forcing a flush and a fresh chunk (the reach guard is now the
-    // *only* mid-procedure flush trigger — the old bytecode-distance tag
-    // this test originally forced no longer exists, since a pooled site
-    // carries its own output position directly instead of a bytecode
-    // delta to re-decode). Both loads must still reach their own word.
+    // 500 single-halfword NOTs between two pooled sites push the first
+    // one's forward reach past its 1020-byte limit, forcing a flush and a
+    // fresh chunk — the reach guard is the only mid-procedure flush
+    // trigger. Both loads must still reach their own word.
     Instr body[504];
     uint32_t n = 0;
     body[n++] = CONST(0x12345678);

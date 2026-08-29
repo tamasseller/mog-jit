@@ -209,13 +209,11 @@ TEST(NoResidentProcedureLeavesNothingToEvict)
 
 TEST(ArenaEndIsAlignedSoAFullAllocationNeverOvershootsIt)
 {
-    // F7: arenaEnd used to be left as the raw codeArenaBase+codeArenaSize
-    // sum, so the gap to arenaCursor (always 4-aligned) wasn't guaranteed a
-    // multiple of 4. A procedure that exactly filled that gap could then
-    // have allocate()'s own rounding-up push arenaCursor past arenaEnd,
-    // corrupting the next Assembler's capacity computation
-    // (arenaEnd - arenaCursor underflows to ~2^32 halfwords instead of
-    // tripping emit()'s bounds check).
+    // arenaEnd must be 4-aligned, so the gap to the (always 4-aligned)
+    // cursor is a whole number of words. Otherwise a procedure that exactly
+    // fills it rounds the cursor past arenaEnd and the next capacity
+    // computation underflows to ~2^32 halfwords instead of tripping
+    // emit()'s bounds check.
     for(uint32_t skew = 0; skew < 4; skew++)
     {
         RuntimeStorage<1> runtime(ARENA_BASE, ARENA_SIZE + skew);

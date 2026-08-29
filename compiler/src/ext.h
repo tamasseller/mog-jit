@@ -1,31 +1,20 @@
-// jit-armv6m/compiler — the extension seam (isa-core.md §11). THE ONLY
+// jit-armv6m/compiler — the extension seam (isa-core.md §11). The only
 // header an extension includes.
 //
-// The core owns wire bytes 0..123; everything >= 128 belongs to one
-// registered extension, which the core never interprets. What it needs
-// instead is exactly two things per opcode, and nothing else:
+// The core owns wire bytes 0..123; >= 128 belongs to one registered
+// extension whose semantics the core never interprets. It needs exactly
+// two things per opcode: the instruction's byte length, so the
+// body-boundary and branch-span walks can step over it, and its declared
+// effect (§11.2), so validate-side bookkeeping and needsLRSave stay
+// correct. Both arrive from decode(), packed into one word riding in
+// Instr's union — keeping the span budget, the prologue's lr decision and
+// codegen structurally incapable of disagreeing.
 //
-//   1. the instruction's BYTE LENGTH, so proc_scan.cpp's body-boundary
-//      walk and blocks.cpp's branch-span walk can step over it;
-//   2. its DECLARED EFFECT (§11.2), so validate-side bookkeeping and the
-//      prologue's needsLRSave stay correct without knowing semantics.
+// Operands are never held by the core: they are literal constants (§11.3)
+// the extension re-reads from the wire at emit time.
 //
-// Both arrive from decode() below, packed into one 32-bit word that rides
-// in Instr's existing union — so instrMaxBytes(const Instr&) and
-// triggersLRSave(const Instr&) keep their signatures and become bitfield
-// reads. That is deliberate: maxSpanBytes re-walks each instruction once
-// per enclosing nesting level, so a per-instruction indirect call there
-// would cost calls proportional to nesting depth, and it makes it
-// structurally impossible for the span budget, the prologue's lr decision
-// and codegen to ever see different answers.
-//
-// OPERANDS ARE NEVER HELD BY THE CORE. They are literal constants
-// (§11.3), so the extension re-reads them from the wire at emit time. The
-// core carries a length and an effect; that is the whole coupling.
-//
-// Window and AccState are forward-declared and never defined here on
-// purpose: an extension TU that names one fails to compile, so the core's
-// register window and acc fusion state stay free to change shape.
+// Window and AccState are forward-declared and never defined: an extension
+// TU that names one fails to compile.
 #ifndef JIT_ARMV6M_COMPILER_EXT_H_
 #define JIT_ARMV6M_COMPILER_EXT_H_
 
@@ -41,13 +30,10 @@ class Assembler;
 class Window;   // incomplete by design — see this file's header
 class AccState; // incomplete by design
 
-/** Bumped whenever anything in this header changes shape. Compared once,
- *  at Runtime::init, against the registered ExtHooks::abiVersion — the
- *  only enforced point of the rule that a native declaration must be a
- *  subset of the TS-side one (packages/machine/src/extension.ts). The wire
- *  carries only the *consequences* of effects (max_call_depth,
- *  total_depth), never the effects themselves, so nothing else can catch
- *  an extension built against a stale header. */
+/** Bump whenever this header changes shape. Checked at Runtime::init
+ *  against ExtHooks::abiVersion — the only enforced point of the
+ *  native-declares-a-subset-of-TS rule, since the wire carries only the
+ *  consequences of effects, never the effects. */
 constexpr uint32_t EXT_ABI_VERSION = 1;
 
 // ── the packed declaration ───────────────────────────────────────────────
@@ -56,7 +42,7 @@ constexpr uint32_t EXT_ABI_VERSION = 1;
 // +-------+-------+-----+-------+--------+----------+
 // | unused|halfwds|maxTr|tosDlta| flags  |  opcode  |
 //
-// Built with extDecl() below rather than by hand; read with the accessors.
+// Build with extDecl(), read with the accessors.
 
 constexpr uint32_t EXT_FLAG_NEEDS_LR = 1u << 0;     // clobbers lr: helper dispatch, or call-shaped
 constexpr uint32_t EXT_FLAG_CALL_SHAPED = 1u << 1;  // §11.2 call-shaped — rejected in v1
@@ -67,20 +53,14 @@ constexpr uint32_t EXT_FLAG_ATOMIC = 1u << 5;       // emitted halfwords must st
 
 /** Pack one opcode's declaration.
  *
- *  opcode        the wire byte (>= 128) this describes.
+ *  opcode        the wire byte (>= 128).
  *  flags         EXT_FLAG_* above.
- *  tosDelta      net TOS depth change (§11.2). Must be <= 0: the TS side
- *                cannot represent a net push either (extension.ts), and
- *                v1 stages the popped values for the extension, so the
- *                count staged is -tosDelta.
- *  maxTransient  peak TOS above entry depth while executing. Must be 0 in
- *                v1 — window.tos has to agree with the real sp exactly
- *                (there is no per-procedure reservation), so allowing a
- *                transient push reopens a whole desync failure class for
- *                no shipped client.
+ *  tosDelta      net TOS depth change (§11.2). Must be <= 0; -tosDelta
+ *                values are staged for the extension.
+ *  maxTransient  peak TOS above entry depth. Must be 0 in v1: window.tos
+ *                has to agree with the real sp exactly.
  *  halfwords     worst-case emitted halfword count, <= 63. The span walk
- *                budgets this, and M2's emit path will require the real
- *                emission to match it exactly, not merely stay under. */
+ *                budgets this; emission must not exceed it. */
 constexpr uint32_t extDecl(uint32_t opcode, uint32_t flags, int32_t tosDelta,
     uint32_t maxTransient, uint32_t halfwords)
 {
@@ -113,18 +93,13 @@ constexpr uint32_t EXT_MAX_HALFWORDS = 63;
 
 } // namespace jitc
 
-/** The ABI-boundary half of this header lives at global scope, alongside
- *  ProgramResult and for the same reason: ExtHooks crosses runtime_host.h,
- *  which is deliberately usable from a plain-C host (which needs only the
- *  incomplete type, to pass NULL). ExtSite and EXT_MAX_INPUTS come with it
- *  because they are part of that struct's own contract. The packing
- *  helpers above are compiler-side and stay in namespace jitc. */
-/** At most three inputs, and the reason is mechanical rather than a policy
- *  choice: a helper reach is `MOV r3,r10 / LDR r3,[r3,#off] / BLX r3` — the
- *  only idiom Thumb-1 admits, since LDR cannot use a hi register as base —
- *  so r3 is permanently spoken for and cannot hold an operand. That leaves
- *  r0 (acc), r1 and r2. Stack inputs use r1 and r2 only; r0 carries acc,
- *  and only when the declaration says the op reads it. */
+/* ExtHooks and its contract types sit at global scope because they cross
+ * runtime_host.h, which stays usable from plain C. The packing helpers
+ * above are compiler-side and stay in namespace jitc. */
+
+/** Three, mechanically: a helper reach is `MOV r3,r10 / LDR r3,[r3,#off] /
+ *  BLX r3` — the only idiom Thumb-1 admits — so r3 is permanently spoken
+ *  for. That leaves r0 (acc, only when the declaration reads it), r1, r2. */
 constexpr uint32_t EXT_MAX_INPUTS = 3;
 constexpr uint32_t EXT_MAX_STACK_INPUTS = 2;
 
@@ -153,12 +128,9 @@ struct ExtSite
     /** Where a WRITES_ACC op must leave its result. */
     uint8_t out;
 
-    /** Free to clobber for the duration, beyond `in`: r3 (also the only
-     *  possible helper-reach target, so it is gone the moment you make
-     *  one) and r12/ip. r12 is unclaimed anywhere in this JIT and is
-     *  hardware-pushed on exception entry, but it is caller-saved, so a
-     *  BLX destroys it — intra-sequence only, never across a helper call
-     *  or an instruction boundary. */
+    /** Free to clobber beyond `in`: r3 (also the only helper-reach target,
+     *  so it is gone the moment you make one) and r12/ip. Both are
+     *  intra-sequence only — a BLX destroys r12. */
     uint32_t scratch;
 };
 
@@ -175,69 +147,47 @@ struct ExtHooks
      *  extension doesn't own, a malformed operand, a length that would run
      *  past bytesLen). Fills decl via extDecl() on success only.
      *
-     *  Called from Runtime::init's directory walk, before anything has
-     *  validated these bytes, and again per nesting level from the span
-     *  walk. So it must be total and side-effect free: bound every read
-     *  against bytesLen (decodeLeb128Checked in decode_instr.h is the
-     *  bounded LEB128 to use — the unchecked one has no length limit), and
-     *  return the same answer every time for the same bytes. */
+     *  Called on unvalidated bytes, and repeatedly. Must be total and
+     *  side-effect free: bound every read against bytesLen
+     *  (decodeLeb128Checked, not the unchecked one) and be deterministic. */
     uint32_t (*decode)(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t *decl);
 
     /** Emit this opcode's native code through `a`, reading its operands
      *  back off `site.bytes`.
      *
-     *  The core has already: materialized acc into r0 if the declaration
-     *  reads it, moved every stack input into `site.in`, and it will pop
-     *  those values and update acc's own state afterwards. So emit() does
-     *  nothing about the operand stack itself — it cannot, and must not
-     *  try: `Window` and `AccState` are incomplete types here.
+     *  The core stages every input and updates acc/TOS itself, so emit()
+     *  must not touch the operand stack — Window and AccState are
+     *  incomplete here.
      *
-     *  Must emit at most the declared `halfwords`. Exceeding it is caught
-     *  and reported (the span walk already budgeted that number, and a
-     *  conditional branch's reach was computed from it), but a declaration
-     *  that is merely generous costs real arena bytes at every site. */
+     *  Must emit at most the declared `halfwords`; exceeding it is caught,
+     *  but an over-generous declaration costs arena bytes at every site. */
     void (*emit)(jitc::Assembler &a, const ExtSite &site);
 
-    /** Worst-case stack this extension's helpers consume, in bytes,
-     *  including EXT_THUNK_STACK_BYTES for anything reached through
-     *  extEmitCHelperCall. Folded into enterProgram*'s own up-front budget
-     *  check, once — helpers do not recurse into bytecode in v1 (call-shaped
-     *  is rejected), so the worst case is the deepest bytecode stack plus
-     *  one helper frame, exactly like interruptReserve.
+    /** Worst-case bytes this extension's helpers consume, including
+     *  EXT_THUNK_STACK_BYTES for anything reached through
+     *  extEmitCHelperCall. Folded into enterProgram*'s up-front budget.
      *
-     *  Getting this wrong is not caught anywhere: too small and the static
-     *  reservation stops being a bound. Prove it the way the core proves
-     *  its own (docs/design.md §3): -Wstack-usage=0 promoted to an error,
-     *  or hand-written naked Thumb. */
+     *  Getting it wrong is caught nowhere: too small and the static
+     *  reservation stops being a bound. Prove it with -Wstack-usage=0 as
+     *  an error, or hand-written naked Thumb (docs/design.md §3). */
     uint32_t helperStackBytes;
 };
 
 namespace jitc
 {
 
-/** Emit a call to one of this extension's own helpers, address in flash.
+/** Call a hand-written-Thumb helper with a known clobber set, reached by a
+ *  plain BLX with operands in r0-r2; it must return via `bx lr` and gets no
+ *  AAPCS guarantees (sp is legitimately 4-mod-8 inside an excursion). Use
+ *  extEmitCHelperCall for anything the C compiler produced.
  *
- *  This form is for a helper written in hand-written Thumb with a known
- *  clobber set, like the core's own clzHelper: it is reached by a plain
- *  BLX, with the staged operands sitting in r0-r2 exactly as emit() got
- *  them, and it must return via `bx lr`. It gets no AAPCS guarantees — in
- *  particular sp is legitimately 4-mod-8 inside an excursion.
- *
- *  Use extEmitCHelperCall below for anything the C compiler produced.
- *
- *  Costs one pooled literal word plus a BLX. The declaration must set
- *  EXT_FLAG_NEEDS_LR: a BLX clobbers lr, which carries the live call/return
- *  record, and the prologue's decision to save it was made from that flag
- *  back in the pre-pass. */
+ *  The declaration must set EXT_FLAG_NEEDS_LR: a BLX clobbers lr, which
+ *  carries the live call/return record. */
 void extEmitHelperCall(Assembler &a, const ExtSite &site, uint32_t helperAddr);
 
-/** The same, for an independently-compiled C helper: routes through
- *  runtime.S's extThunkHelper, which realigns sp to 8 for AAPCS and
- *  preserves lr across the call.
- *
- *  The thunk's realignment clobbers r2/r3, so a C helper reached this way
- *  takes at most TWO arguments, in r0 and r1. Declare tosDelta and
- *  READS_ACC so the core stages no more than that. */
+/** The same for an independently-compiled C helper, via extThunkHelper,
+ *  which realigns sp to 8 and preserves lr. Its realignment clobbers
+ *  r2/r3, so such a helper takes at most two arguments, in r0 and r1. */
 void extEmitCHelperCall(Assembler &a, const ExtSite &site, uint32_t helperAddr);
 
 void extEmitStateBase(Assembler &a, uint32_t dstLowReg);

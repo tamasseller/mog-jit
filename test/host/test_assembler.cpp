@@ -220,9 +220,8 @@ TEST(EmitPastCapacityBailsOnADetachedAssembler)
 
 TEST(PatchBranchBailsOnAnUnencodableUnconditionalDelta)
 {
-    // F5: patchBranch used to mask an out-of-range delta into whatever the
-    // low bits happened to be, silently retargeting the branch, instead of
-    // rejecting it.
+    // Must reject, not mask into the low bits — masking silently retargets
+    // the branch.
     TestAssembler a_ta(1);
     Assembler &a = a_ta.a;
     const uint16_t *buf = a_ta.code();

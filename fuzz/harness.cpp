@@ -222,9 +222,9 @@ static uint32_t arenaSizeFor(const uint8_t *data, size_t size, uint32_t bodyOffs
 // consume in production, and exactly the bytes oracle_server.ts just
 // validated, so one identical buffer reaches both sides.
 //
-// Whole programs rather than the lone procedure this used to take: a
-// single-procedure program cannot legally contain a CALL at all (isa-core
-// §8.2's call-graph acyclicity rejects self-recursion), which left
+// Whole programs, not a lone procedure: a single-procedure program cannot
+// legally contain a CALL at all (isa-core §8.2's call-graph acyclicity
+// rejects self-recursion), which would leave
 // translate_proc.cpp's CALL case, abi_strategy.cpp's argument shuffle and
 // Runtime::init()'s multi-procedure directory walk permanently unreachable
 // by the fuzzer.
@@ -454,12 +454,11 @@ int main(void)
 static constexpr size_t CORPUS_MAX = 4096;
 
 // Largest input the mutation loop will build. Matched to
-// LLVMFuzzerTestOneInput's own 4096-byte ceiling rather than left at the
-// 512 it used to be: the seed corpus now includes programs deliberately
-// sized past the translator's compiled-size guards (a 2.4KB LOOP body
-// whose back-edge can't encode, a 1.2KB run of literal-pool constants),
-// and a 512-byte cap meant every insert and splice touching one of those
-// was silently dropped -- so they could only ever shrink, never be
+// LLVMFuzzerTestOneInput's 4096-byte ceiling: the seed corpus includes
+// programs deliberately sized past the translator's compiled-size guards (a
+// 2.4KB LOOP body whose back-edge can't encode, a 1.2KB run of literal-pool
+// constants), and a smaller cap silently drops every insert and splice
+// touching one of those -- so they could only ever shrink, never be
 // explored around.
 static constexpr size_t INPUT_MAX = 4096;
 

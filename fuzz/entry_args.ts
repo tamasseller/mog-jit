@@ -12,11 +12,9 @@
 // manufacture mismatches indistinguishable from real miscompilations.
 export function entryArgsFor(argCount: number): number[]
 {
-    // Distinct and non-zero per index. An all-zero vector is what the
-    // harness used to pass, and it hides exactly the bug this exists to
-    // catch: while enterDispatch left the entry procedure's window
-    // registers uninitialized, a probe reading them still "matched" the
-    // reference, because the words it happened to read were also zero.
+    // Distinct and non-zero per index. An all-zero vector hides exactly the
+    // bug this exists to catch: an uninitialized window register still
+    // "matches" the reference when the word it happens to read is also zero.
     // Anything that swaps two arguments, reads the wrong window register,
     // or reverses the spill order now changes the result.
     //

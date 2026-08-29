@@ -19,11 +19,11 @@
 //             harness parses exactly the bytes this validated.
 //   response: fixed RESP_SIZE bytes, see the layout below.
 //
-// Whole programs rather than the lone procedure this used to gate: a
-// single-procedure program cannot legally contain a CALL at all (§8.2's
-// call-graph acyclicity rejects self-recursion), so the old format left
-// the entire call path — translate_proc.cpp's CALL case, abi_strategy's
-// argument shuffle, Runtime::init()'s multi-procedure directory walk,
+// Whole programs, not a lone procedure: a single-procedure program cannot
+// legally contain a CALL at all (§8.2's call-graph acyclicity rejects
+// self-recursion), which would leave the entire call path —
+// translate_proc.cpp's CALL case, abi_strategy's argument shuffle,
+// Runtime::init()'s multi-procedure directory walk,
 // parseProgramHeader itself — permanently unreachable by the fuzzer.
 //
 // Run standalone: `npx ts-node --transpile-only jit-armv6m/fuzz/oracle_server.ts [socketPath]`
@@ -193,10 +193,8 @@ function handleRequest(payload: Buffer): Buffer
 
     resp[0] = 1
 
-    // Every entry procedure has a reference result now that enterProgram*
-    // takes a whole argument vector; this used to bail for any entry
-    // procedure taking arguments at all, which was stricter than even
-    // qemu_exec.ts's own (already too strict) gate.
+    // Every entry procedure has a reference result: enterProgram* takes the
+    // whole argument vector.
 
     try
     {

@@ -144,9 +144,8 @@ TEST(discardWindowAcceptsTheMaxEncodableSpAdjustment)
 
 TEST(discardWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
 {
-    // F6: incrSp(Uoff<2,7>(...)) used to silently flip ADD into SUB
-    // (fmtImm7's unmasked OR bleeds into the opcode's own ADD/SUB bit)
-    // instead of failing once more than 127 words are spilled.
+    // Must fail past 127 spilled words: fmtImm7's unmasked OR would bleed
+    // into the opcode's ADD/SUB bit and flip the direction.
     TestAssembler e_ta(4);
     Assembler &e = e_ta.a;
     const uint16_t *buf = e_ta.code();

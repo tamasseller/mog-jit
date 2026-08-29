@@ -228,11 +228,10 @@ TEST(AProgramWithNoProceduresIsRejected)
 
 TEST(AnExtensionRangeOpcodeIsRejectedOnHardware)
 {
-    // The point of running this HERE: this image is built -DNDEBUG, so
-    // decode_instr.cpp's assert is gone. Before Runtime::init's walk gained
-    // its own check, byte 0x80 decoded as CONST 20 and the rest of the
-    // instruction stream was silently reinterpreted — on real hardware, with
-    // no diagnostic at all. Hand-encoded because no ProcSource can express it.
+    // Runs HERE because this image is -DNDEBUG, so decode_instr.cpp's
+    // assert is compiled out and only Runtime::init's walk can catch byte
+    // 0x80 — otherwise it decodes as CONST 20 and silently reinterprets the
+    // rest of the stream. Hand-encoded: no ProcSource can express it.
     // max_call_depth=1 total_depth=1 proc_count=1 arg_count=0 body=[0x80]
     const uint8_t bytes[] = {0x01, 0x01, 0x01, 0x00, 0x80};
     ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, sizeof(bytes), /*extension=*/nullptr, GENEROUS_ARENA, 0, /*interruptReserve=*/0);
@@ -248,25 +247,18 @@ TEST(AnExtensionRangeOpcodeIsRejectedOnHardware)
 // enterProgramSplit/compileProc path exactly like every fixture above, reading
 // each procedure's own body straight out of the real program bytes
 // (runtime_internal.h's ProcSlot), so compile_proc.cpp genuinely
-// retranslates from the same wire bytes whenever a procedure gets evicted
-// and later needed again (the same flash blob must reproduce the same
-// layout, or a saved resume offset would no longer point at the right
-// place).
+// retranslates from the same wire bytes whenever a procedure is evicted and
+// needed again — the same blob must reproduce the same layout, or a saved
+// resume offset stops pointing at the right place.
 static uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint32_t *calleeArgCounts, uint32_t calleeCount, bool savesLR)
 {
     static uint16_t scratch[128];
 
-    // translateProc now reads a procedure's own argCount/bodyPtr/bodyBytes/
-    // needsLRSave straight out of its own slot in a Runtime (and every
-    // callee's argCount the same way, for CALL sites), and always compiles
-    // through an Assembler attached to that Runtime's own arena — there is
-    // no longer a detached, buffer-only entry point. This measurement never
-    // runs a real dispatch, so a throwaway Runtime stands in for the real
-    // one: scratch above becomes its whole arena, and proc's own wire bytes
-    // (already real — this target is genuinely 32-bit, so a pointer cast to
-    // uint32_t loses nothing the way it would on the host) are registered
-    // as procIdx's own slot exactly the way Runtime::init() would from the
-    // real program bytes.
+    // translateProc always compiles through an Assembler attached to a
+    // Runtime's arena, so a throwaway Runtime stands in here: scratch is its
+    // whole arena, and proc's wire bytes are registered as procIdx's slot
+    // the way Runtime::init() would. This target is genuinely 32-bit, so the
+    // pointer casts lose nothing the way they would on the host.
     alignas(8) uint8_t runtimeBytes[sizeof(Runtime) + (calleeCount + 1) * sizeof(ProcSlot)] = {};
     Runtime &r = *reinterpret_cast<Runtime *>(runtimeBytes);
     r.procCount = calleeCount;

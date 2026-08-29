@@ -3,9 +3,8 @@
 // encodeJitProgram).
 //
 // Every seed goes through validateProgram here, so one that doesn't
-// actually validate fails this script instead of silently becoming a seed
-// the harness discards on every single execution — which is exactly what
-// the old hand-encoded `loop` seed had been doing.
+// validate fails this script instead of silently becoming a seed the
+// harness discards on every execution.
 //
 // Three groups: the small single-procedure shapes (also what
 // test/qemu/fixtures.cpp exercises on real hardware), the
@@ -314,12 +313,9 @@ const longLoopBackEdge: RtlProgram = {
                         { op: "STORE", target: 0 },
                     ]),
                     // Clear the condition slot so the loop runs exactly one
-                    // iteration whatever the entry argument is. Without this
-                    // the body leaves slot 0 non-zero and the loop never
-                    // exits — which the execution oracle used to hide rather
-                    // than hit, because it passed 0 as the argument and the
-                    // body therefore never ran at all. The 400-instruction
-                    // body this seed exists for is untouched.
+                    // iteration whatever the entry argument is; otherwise the
+                    // body leaves slot 0 non-zero and it never exits. The
+                    // 400-instruction body this seed exists for is untouched.
                     { op: "CONST", imm: 0 },
                     { op: "STORE", target: 0 },
                     { op: "BLOCK_END" },
@@ -358,10 +354,10 @@ const literalPoolPressure: RtlProgram = {
  *  around 500 bytes, and every LDR/STR against it goes through
  *  translate_proc.cpp's spillImm.
  *
- *  This used to push 300, aiming at spillImm's own Uoff<2,8> (1020-byte)
- *  guard — which turns out to be *unreachable*: discardWindow's much
- *  tighter ceiling bails first on any program deep enough to reach it. So
- *  that guard is defence in depth with nothing behind it, and a 300-deep
+ *  spillImm's own Uoff<2,8> (1020-byte) guard is unreachable:
+ *  discardWindow's much tighter ceiling bails first on any program deep
+ *  enough to reach it. That guard is defence in depth with nothing behind
+ *  it, and a 300-deep
  *  seed only ever exercised the bail. */
 const deepSpill: RtlProgram = {
     procedures: [
@@ -519,9 +515,8 @@ const arith: RtlProgram = {
 // three, and so the mutator starts from their shapes.
 
 /** `BR_TABLE 2` reached with a dispatch value of neither 0 nor 1, and no
- *  comparison to fuse: isa-core.md §4.5's implicit default, which the
- *  unfused if-else path used to fold into case[1] — the else-arm ran where
- *  the ISA runs neither arm.
+ *  comparison to fuse: isa-core.md §4.5's implicit default. Folding it into
+ *  case[1] runs the else-arm where the ISA runs neither arm.
  *
  *  The witness has to be a STORE to a slot rather than acc: §8.7 drops acc
  *  at the merge, so "which arm ran" is only observable through state a case
@@ -564,10 +559,10 @@ const brTable1Default: RtlProgram = {
 
 /** A guarded branch forced onto its long form (a case body past the
  *  conditional-branch span) *while the literal pool has something
- *  pending*. The long form's "not taken" edge used to be patched to
- *  branch + 4 bytes, which is exactly where the unconditional branch's own
- *  pool flush lands — so that edge jumped into literal data and executed
- *  it. The wide immediate before the dispatch is what parks a pool entry;
+ *  pending*. Patching the long form's "not taken" edge to branch + 4 bytes
+ *  lands exactly where the unconditional branch's pool flush goes, so that
+ *  edge jumps into literal data and executes it. The wide immediate before
+ *  the dispatch is what parks a pool entry;
  *  the long case body is what forces the long form. */
 const longBranchOverPool: RtlProgram = {
     procedures: [
@@ -598,12 +593,9 @@ const longBranchOverPool: RtlProgram = {
  *  operands the wrong way round shows up as a wrong answer rather than a
  *  coincidence: 0x3C0 ASR 5 == 30.
  *
- *  Its amount used to be 2784 (87*32) — low five bits zero, low eight
- *  well past 32 — back when isa-core.md masked to five bits and this
- *  program was the fuzzing-campaign.md finding-5 repro. §4.1 no longer
- *  defines that case, so the reference VM will not produce a result for
- *  it and there would be nothing to compare; an in-range amount keeps the
- *  path covered and the seed comparable. */
+ *  The amount stays in range deliberately: §4.1 does not define a shift
+ *  past 31, so the reference VM produces no result for one and there would
+ *  be nothing to compare. */
 const registerShiftDynamicAmount: RtlProgram = {
     procedures: [
         {
@@ -619,9 +611,9 @@ const registerShiftDynamicAmount: RtlProgram = {
 }
 
 /** A one-argument callee whose body reads acc before writing it: §4.6 says
- *  the last argument arrives there. The reference VM used to seed a
- *  callee's acc to 0 and so disagreed with the real emitted code — the one
- *  finding so far where the JIT was right and @ppl/machine was wrong. */
+ *  the last argument arrives there. Seeding a callee's acc to 0 instead
+ *  disagrees with the emitted code — the one finding so far where the JIT
+ *  was right and @ppl/machine was wrong. */
 const calleeReadsIncomingAcc: RtlProgram = {
     procedures: [
         { argCount: 0, body: ret([{ op: "CONST", imm: 3 }, { op: "CALL", calleeIndex: 1 }]) },
@@ -671,10 +663,10 @@ const pushInLoopCondition: RtlProgram = {
  *  through a whole campaign (docs/fuzzing-campaign.md). Three counts, chosen
  *  for what each one reaches:
  *
- *   2  in-window only, so purely the window registers enterDispatch never
- *      used to initialize
+ *   2  in-window only, so purely the window registers enterDispatch
+ *      initializes
  *   5  one out-of-window word — the smallest count whose frame the epilogue
- *      reclaims but nobody used to push
+ *      reclaims and someone must push
  *   6  two of them, the smallest count in which their *order* is observable
  *      at all
  *

@@ -100,12 +100,10 @@ function classify(file: string): Candidate | null
     catch { skip("does not re-encode"); return null }
     if(bytes.length === 0 || bytes.length > PROGRAM_MAX) { skip(`size (>${PROGRAM_MAX}B or empty)`); return null }
 
-    // Every entry procedure is runnable now: enterProgram* takes the whole
-    // argument vector, and the batch record carries it per program. This
-    // used to skip anything declaring more than one argument, on the
-    // grounds that the emulated side had no counterpart — which was true,
-    // and hid a deterministic hang for every entry procedure declaring five
-    // or more (docs/fuzzing-campaign.md).
+    // Every entry procedure is runnable: enterProgram* takes the whole
+    // argument vector and the batch record carries it per program. Skipping
+    // multi-argument entries hides a deterministic hang at five or more
+    // (docs/fuzzing-campaign.md).
     const entryArgs = entryArgsFor(program.procedures[0]!.argCount)
 
     let expected: Expected
