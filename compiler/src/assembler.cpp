@@ -10,12 +10,7 @@ namespace jitc
 
 using R = ArmV6M::LoReg;
 
-// Uoff<2,8>'s own exact ceiling: a multiple of 4, below 1024.
 static constexpr uint32_t LITERAL_POOL_MAX_REACH = 1020;
-// Headroom the reach check keeps in hand, since it runs *before* an
-// instruction whose own emission then extends the distance to the pool.
-// Must exceed the most any single instruction or block close can emit —
-// blocks.h's own CALL_MAX_BYTES prices a call sequence at 64.
 static constexpr uint32_t LITERAL_POOL_REACH_MARGIN = 128;
 
 static uint32_t roundUpToWord(uint32_t v)
@@ -28,19 +23,38 @@ Assembler::Assembler(Runtime &rt, uint32_t procIdx, uint32_t lruTick)
       capacity((rt.arenaEnd - rt.arenaCursor) / 2),
       runtime(rt), procIdx(procIdx), lruTick(lruTick) {}
 
-bool Assembler::growForAttached()
+// end is one past the last halfword written so far — the in-progress
+// region's own high-water mark, which is exactly what evict() needs to
+// know how much to slide. Room for one more halfword means end is still
+// strictly below the arena's end.
+bool Assembler::ensureSpace(const uint16_t *end, uint32_t lruTick)
 {
-    int victim = runtime.findEvictionVictim(lruTick);
-    if(victim < 0)
+    assert(end <= buf + capacity);
+
+    if(end == buf + capacity)
     {
-        return false;
+        int victim = runtime.findEvictionVictim(lruTick);
+        if(victim < 0)
+        {
+            runtimeBail(&runtime, RESOURCE_EXHAUSTED_ARENA);
+            return false;
+        }
+
+        // buf tracks arenaCursor, so buf + capacity is arenaEnd either
+        // side of this — what moves is the in-progress region itself,
+        // slid down by the victim's size along with everything above it.
+        // Carry end along by offset, or the assert below would be reading
+        // a pointer that no longer names this region.
+        uint32_t written = (uint32_t)(end - buf);
+
+        runtime.evict((uint32_t)victim, end);
+
+        buf = (uint16_t *)(uintptr_t)runtime.arenaCursor;
+        capacity = (runtime.arenaEnd - runtime.arenaCursor) / 2;
+        end = buf + written;
     }
 
-    runtime.evict((uint32_t)victim, count * 2);
-
-    buf = (uint16_t *)(uintptr_t)runtime.arenaCursor;
-    capacity = (runtime.arenaEnd - runtime.arenaCursor) / 2;
-
+    assert(end < buf + capacity);
     return true;
 }
 
@@ -48,30 +62,18 @@ uint32_t Assembler::emit(uint16_t word)
 {
     uint32_t at = pc();
 
-    assert(count <= capacity);
-
-    if(count == capacity)
+    if(this->ensureSpace(buf + count, lruTick))
     {
-        if(!this->growForAttached())
+        buf[count++] = word;
+
+        if(!suppressPoolCheck)
         {
-            runtimeBail(&runtime, RESOURCE_EXHAUSTED_ARENA);
-            return at; // host's mocked runtimeBail() returns normally; every call site, including this one, must return right after per fail()'s own contract
+            ensurePoolRoom(0);
         }
-    }
-
-    assert(count < capacity);
-
-    buf[count++] = word;
-
-    if(!suppressPoolCheck)
-    {
-        ensurePoolRoom(0);
     }
 
     return at;
 }
-
-// ── branches ────────────────────────────────────────────────────────────
 
 uint32_t Assembler::placeholderCondBranch(ArmV6M::Condition c)
 {
@@ -156,8 +158,6 @@ bool Assembler::branchTo(Label &label)
         return false;
     }
 
-    // Nothing ever falls through an unconditional branch, so a guarded
-    // flush's own branch-around would be wasted bytes right here.
     flushPool();
     return true;
 }
@@ -356,7 +356,7 @@ uint32_t Assembler::finalize()
     uint32_t need = count * 2;
     uint32_t dest = runtime.allocate(need);
     assert(dest == (uint32_t)(uintptr_t)buf); // GCOV_EXCL_LINE — growForAttached's own base-tracking invariant
-    runtime.markCompiled(procIdx, dest);
+    runtime.markCompiled(procIdx, dest, lruTick);
 
     return count;
 }

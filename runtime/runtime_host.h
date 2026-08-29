@@ -163,20 +163,26 @@ ProgramResult enterProgramSplit(
 #define RUNTIME_DISPATCH_TABLE_OFFSET 44 /* &runtime + this = dispatchBase (== &slots[1]) */
 #define DISPATCH_SENTINEL_OFFSET 16      /* dispatchBase - this = &slots[0] (the sentinel) */
 
-/* Three words of per-excursion scratch an extension may use for whatever it
+/* Two words of per-excursion scratch an extension may use for whatever it
  * needs (a stream cursor, a buffer base, an object handle), at a
  * compile-time-constant offset from the runtime pointer.
  *
- * They are the sentinel ProcSlot's own lastUsed/bodyPtr/staticInfo. slots[0]
- * exists purely so a real procedure index can be offset by one, and only its
- * codePtr is ever touched — runtime.S writes it, sentinelLandingAddress()
- * reads it, and every loop over procedures runs over slot(i) == slots[i+1].
- * So these three words are already allocated, already reachable through the
- * pointer emitted code has, and cost nothing to hand out. Zeroed by
- * Runtime::init; the offset is checked against the real layout by
- * runtime_internal.h's own static_assert. */
-#define RUNTIME_EXT_STATE_OFFSET 32
-#define RUNTIME_EXT_STATE_WORDS 3
+ * They are the sentinel ProcSlot's own bodyPtr/staticInfo. slots[0] exists
+ * purely so a real procedure index can be offset by one, and nothing reads
+ * its static half — sentinelLandingAddress() reads its codePtr, and every
+ * loop over procedures runs over slot(i) == slots[i+1]. So these words are
+ * already allocated, already reachable through the pointer emitted code has,
+ * and cost nothing to hand out. Zeroed by Runtime::init; the offset is
+ * checked against the real layout by runtime_internal.h's own static_assert.
+ *
+ * Two rather than three, and starting at bodyPtr rather than lastUsed:
+ * returnHelperTail stamps the LRU tick into [slotAddr, #4] unconditionally,
+ * the sentinel included, because guarding it would put a branch on the one
+ * path slots[0] exists to keep free (return from the entry procedure). The
+ * sentinel's lastUsed is therefore genuinely written, and cannot be lent out
+ * to an extension. */
+#define RUNTIME_EXT_STATE_OFFSET 36
+#define RUNTIME_EXT_STATE_WORDS 2
 
 /* Field offsets into `struct EntryArgs` (entry_args.h), for the same
  * reason and by the same split as the two above: enterDispatch's own

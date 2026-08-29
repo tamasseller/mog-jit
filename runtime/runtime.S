@@ -3,8 +3,11 @@
 // link-time-fixed address for the whole program's lifetime, reached via the
 // r10 helper vector (the first two), a dispatch slot's initial codePtr (the
 // trampoline), or an ordinary bl from runtime_host.cpp (enterDispatch) —
-// never copied anywhere, unlike the per-procedure prologue stub, which is
-// copied into the arena as the first bytes of every compiled procedure.
+// never copied anywhere, unlike the per-procedure prologue stub — now just
+// the two-instruction pc-relative resume jump, copied into the arena as the
+// first bytes of every compiled procedure. Everything that used to sit in
+// front of that (the LRU stamp) is in callHelper/returnHelperTail below,
+// one flash copy instead of one per procedure.
 // Hand-written and built by the normal toolchain, same as
 // ../src/vectors.S's own reset handler.
 
@@ -23,6 +26,12 @@
 // to its own stack in its own prologue instead, once per activation — this
 // routine (and returnHelper, below) carries the record's handoff exactly
 // once, in flash, never duplicated per call/return site.
+//
+// The LRU stamp lives here (and in returnHelperTail) rather than in the
+// per-procedure prologue stub for the same reason: it is identical in every
+// copy, and both routines already hold slotAddr with a dead low register in
+// hand. One flash copy each, instead of 8 bytes of arena per resident
+// procedure.
 .thumb_func
 .global callHelper
 callHelper:
@@ -30,6 +39,10 @@ callHelper:
     lsls  r1, r2, #4          @ slotAddr-relative = Q_idx * 16 (sizeof(ProcSlot))
     add   r1, r1, r8           @ r1 = slotAddr
     ldr   r3, [r1, #0]          @ r3 = codePtr
+    mov   r2, r11               @ low-mirror the LRU tick (STR has no hi form) — r2 is dead
+    str   r2, [r1, #4]           @ from the lsls above until the movs below, so it costs no save
+    adds  r2, #1
+    mov   r11, r2                 @ publish the bumped tick
     movs  r2, #1                 @ offset+1 = 1, hardwired — a fresh call never resumes mid-procedure
     bx    r3
 
@@ -65,6 +78,15 @@ returnHelperTail:
                                     @ to r8-16, not r8+1048560
     lsls  r1, r1, #4                 @ slotAddr-relative = callerIdx * 16 (sizeof(ProcSlot))
     add   r1, r1, r8                  @ r1 = slotAddr
+    mov   r3, r11                      @ the LRU stamp, same as callHelper's — r3 is free
+    str   r3, [r1, #4]                  @ until the codePtr load below. Deliberately NOT
+    adds  r3, #1                         @ guarded against the sentinel: the whole point of
+    mov   r11, r3                         @ slots[0] is that return-from-entry costs no extra
+                                            @ code, and the word it lands on is the sentinel's
+                                            @ own lastUsed, which nothing reads (the eviction
+                                            @ scan runs over slot(i) == slots[i+1]) and no
+                                            @ extension owns (RUNTIME_EXT_STATE_OFFSET starts
+                                            @ one field later, at bodyPtr).
     ldr   r3, [r1, #0]                 @ r3 = codePtr
     bx    r3
 
@@ -353,7 +375,7 @@ enterDispatch:
     @
     @  * Before the boot branch, obviously — but note nothing between here
     @    and the entry procedure's own body touches r0 or r4-r7:
-    @    callHelper uses lr/r1/r2/r3, and the prologue stub r1/r2/r3/r11.
+    @    callHelper uses lr/r1/r2/r3/r11, and the prologue stub r2 alone.
     @
     @ An odd spilledCount leaves sp 4-mod-8 for the excursion, where it
     @ used to be 8-aligned throughout. That is fine and not worth

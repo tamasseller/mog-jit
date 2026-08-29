@@ -49,6 +49,9 @@ INCLUDE_DIRS += ../../compiler/src   # jitc:: headers, armv6.h
 INCLUDE_DIRS += ../../runtime         # runtime_internal.h / runtime_host.h
 INCLUDE_DIRS += ../../vendor/1test
 
+ASMFLAGS += -m32
+LDFLAGS += -m32
+CXXFLAGS += -m32
 CXXFLAGS += -std=c++17
 CXXFLAGS += -O0                        # avoid the optimizer scrambling coverage data
 CXXFLAGS += -g3

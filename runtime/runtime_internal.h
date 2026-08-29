@@ -49,7 +49,7 @@ extern "C" [[noreturn]] void runtimeBail(Runtime *runtime, uint32_t code);
 struct ProcSlot
 {
     uint32_t codePtr;    /* mutable — dispatch address (Thumb bit set) or trampolineAddr */
-    uint32_t lastUsed;   /* mutable — LRU tick, bumped by the prologue stub */
+    uint32_t lastUsed;   /* mutable — LRU tick, stamped by runtime.S's callHelper/returnHelperTail */
     uint32_t bodyPtr;    /* static — absolute flash address of body_bytes (past this proc's own arg_count LEB128) */
     uint32_t staticInfo; /* static, packed: bit31 needsLRSave; bits[30:20] argCount; bits[19:0] bodyBytes */
 
@@ -211,9 +211,11 @@ public:
         assert(arenaCursor <= arenaEnd); // GCOV_EXCL_LINE
         this->procCount = procCount;
         this->stackLimit = stackLimit;
-        /* The sentinel's own tail is the extension's scratch
-         * (RUNTIME_EXT_STATE_OFFSET). Nothing else writes it and the storage
-         * is a caller's VLA, so without this it starts as whatever was on
+        /* The sentinel's own static half is the extension's scratch
+         * (RUNTIME_EXT_STATE_OFFSET); its lastUsed is a real LRU field that
+         * returnHelperTail stamps on the way out of the entry procedure,
+         * read by nobody. Neither is written anywhere else and the storage
+         * is a caller's VLA, so without this they start as whatever was on
          * the stack. */
         slots[0].lastUsed = 0;
         slots[0].bodyPtr = 0;
@@ -296,36 +298,16 @@ public:
         return arenaEnd - arenaCursor >= need;
     }
 
-    /* The lowest address the translator's own recursion may reach right
-     * now. Read fresh at the start of every compileProc call, never cached,
-     * since arenaCursor moves between different procedures' compilations.
-     * Only enterProgramOnStack's arena genuinely shares address space with
-     * the stack; for the other two variants arenaCursor is meaningless
-     * here, so it's excluded. */
     uint32_t liveStackFloor() const
     {
         return (arenaOverlapsStack && arenaCursor > stackLimit) ? arenaCursor : stackLimit;
     }
 
-    /* What allocate(need) actually consumes — the value to check
-     * hasRoomFor against, so eviction can't satisfy it on the unpadded
-     * size and then have allocate() run past arenaEnd. */
     static uint32_t reserveFor(uint32_t need)
     {
         return (need + 3u) & ~3u;
     }
 
-    /* Every procedure starts 4-aligned, and occupies a whole number of
-     * words. Both halves matter for PC-relative literal loads: the
-     * translator resolves LDR [pc,#imm] offsets in procedure-relative
-     * terms, and those stay correct at runtime only because
-     * Align(instrAddr + 4, 4) depends on instrAddr % 4 alone — which
-     * equals the relative offset's own low bits exactly when the
-     * procedure base is 4-aligned. Padding the reservation is what keeps
-     * that true after eviction too: occupiedSizeOf is derived from
-     * codePtr/arenaCursor gaps, so every compaction slide delta becomes a
-     * multiple of 4 and no surviving procedure is ever knocked off
-     * alignment by the memmove. */
     uint32_t allocate(uint32_t need)
     {
         uint32_t dest = arenaCursor;
@@ -333,18 +315,13 @@ public:
         return dest;
     }
 
-    void markCompiled(uint32_t idx, uint32_t dest)
+    void markCompiled(uint32_t idx, uint32_t dest, uint32_t lruTick)
     {
         ProcSlot &entry = slot(idx);
         setCodePtr(entry, dest);
-        entry.lastUsed = 0; /* the freshly-copied prologue stub bumps this on entry */
+        entry.lastUsed = lruTick;
     }
 
-    /* The globally-least-recently-used resident procedure, or -1 if none are
-     * resident. now is the live LRU tick (r11). Age relative to now,
-     * unsigned not signed: lastUsed is always stamped at or before now, so
-     * plain modular subtraction recovers the true elapsed tick count for any
-     * true gap up to just under 2^32. */
     int findEvictionVictim(uint32_t now) const
     {
         int victim = -1;
@@ -365,10 +342,6 @@ public:
         return victim;
     }
 
-    /* How many bytes procedure idx currently occupies in the arena — not a
-     * stored field: scan for whichever other resident entry's codePtr is
-     * the next-closest one above this one's, or the arena's current
-     * high-water mark if nothing sits above it. */
     uint32_t occupiedSizeOf(uint32_t idx) const
     {
         uint32_t addr = slot(idx).codePtr & ~1u;
@@ -388,29 +361,12 @@ public:
         return gapEnd - addr;
     }
 
-    /* Evicts procedure idx: slides every resident procedure above it, and
-     * (docs/design.md §11's own "one compaction extension") whatever an
-     * in-progress, not-yet-registered compilation has written above
-     * arenaCursor too, down by the victim's own occupied size (memmove +
-     * fix up just the moved slots' codePtr — position-independent code
-     * needs no other patching), frees its arena space, and marks it
-     * not-resident.
-     *
-     * inProgressLenBytes is the caller's own in-progress Assembler's
-     * current halfwordCount()*2 — always 0 for a plain post-hoc eviction
-     * (no in-progress translation in play), which is exactly compaction
-     * as §8 first described it. The in-progress region's own base is
-     * always exactly arenaCursor (nothing has bumped it — allocate() only
-     * ever runs once, on success), so this single memmove, extended to
-     * also cover it, keeps that invariant true on the other side: the
-     * caller (compiler/src/assembler.cpp's growForAttached) rereads
-     * arenaCursor afterward and rebases itself there. */
-    void evict(uint32_t idx, uint32_t inProgressLenBytes = 0)
+    void evict(uint32_t idx, const uint16_t *end)
     {
         uint32_t victimAddr = slot(idx).codePtr & ~1u;
         uint32_t victimSize = occupiedSizeOf(idx);
         uint32_t gapEnd = victimAddr + victimSize;
-        uint32_t tailLen = (arenaCursor + inProgressLenBytes) - gapEnd;
+        uint32_t tailLen = (uint32_t)end - gapEnd;
 
         memmove((void *)(uintptr_t)victimAddr, (void *)(uintptr_t)gapEnd, tailLen);
         arenaCursor -= victimSize;
@@ -450,12 +406,14 @@ public:
 #if UINTPTR_MAX == 0xFFFFFFFFu
 static_assert(offsetof(Runtime, slots) + sizeof(ProcSlot) == RUNTIME_DISPATCH_TABLE_OFFSET,
     "runtime.S's own RUNTIME_DISPATCH_TABLE_OFFSET must match Runtime's real layout");
-/* The extension scratch words are the sentinel slot's three untouched
- * fields. Emitted code addresses them by this constant, so it has to track
- * the struct rather than be believed. */
-static_assert(offsetof(Runtime, slots) + offsetof(ProcSlot, lastUsed) == RUNTIME_EXT_STATE_OFFSET,
+/* The extension scratch words are the sentinel slot's static half — its
+ * lastUsed is not among them, since returnHelperTail stamps that
+ * unconditionally (runtime_host.h explains why). Emitted code addresses
+ * them by this constant, so it has to track the struct rather than be
+ * believed. */
+static_assert(offsetof(Runtime, slots) + offsetof(ProcSlot, bodyPtr) == RUNTIME_EXT_STATE_OFFSET,
     "RUNTIME_EXT_STATE_OFFSET must be the sentinel slot's first unused word");
-static_assert(RUNTIME_EXT_STATE_WORDS * 4 + offsetof(ProcSlot, lastUsed) == sizeof(ProcSlot),
+static_assert(RUNTIME_EXT_STATE_WORDS * 4 + offsetof(ProcSlot, bodyPtr) == sizeof(ProcSlot),
     "the extension scratch must be exactly the sentinel slot's unused tail");
 #endif
 static_assert(sizeof(ProcSlot) == DISPATCH_SENTINEL_OFFSET,

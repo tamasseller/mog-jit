@@ -13,13 +13,15 @@ static constexpr uint32_t PC = 15;
 
 void emitPrologueStub(Assembler &a)
 {
+    // Only the resume jump is left here. The LRU stamp that used to precede
+    // it was byte-for-byte identical in every copy, so it moved into
+    // runtime.S's callHelper/returnHelperTail — which already hold slotAddr
+    // — leaving the arena 8 bytes per resident procedure better off. These
+    // two are the part that genuinely cannot move: ADD reads *this*
+    // procedure's own pc, which is the whole datum.
     Assembler::AtomicBlock atomic(a, /*poolEntries=*/0);
-    a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(LRU_TICK_REG))); // MOV r3, r11 — low-mirror the LRU tick
-    a.emit(ArmV6M::str(R(ENTRY_JUMP_REG), R(ENTRY_IDX_REG), ArmV6M::Uoff<2, 5>(4)));   // STR r3, [r1, #4] — entry.last_used = old tick
-    a.emit(ArmV6M::adds(R(ENTRY_JUMP_REG), ArmV6M::Imm<8>(1)));                        // ADDS r3, r3, #1
-    a.emit(ArmV6M::mov(ArmV6M::AnyReg(LRU_TICK_REG), ArmV6M::AnyReg(ENTRY_JUMP_REG))); // MOV r11, r3 — publish the bumped tick
-    a.emit(ArmV6M::add(ArmV6M::AnyReg(ENTRY_OFFSET_REG), ArmV6M::AnyReg(PC)));         // ADD r2, r2, pc
-    a.emit(ArmV6M::bx(ArmV6M::AnyReg(ENTRY_OFFSET_REG)));                              // BX r2
+    a.emit(ArmV6M::add(ArmV6M::AnyReg(ENTRY_OFFSET_REG), ArmV6M::AnyReg(PC))); // ADD r2, r2, pc
+    a.emit(ArmV6M::bx(ArmV6M::AnyReg(ENTRY_OFFSET_REG)));                     // BX r2
 }
 
 void abiEmitPrologue(Assembler &a, bool savesLR)

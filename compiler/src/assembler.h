@@ -58,7 +58,7 @@ class Assembler
     bool linkIntoChain(Label &label, uint32_t site);
     void parkPoolSite(uint32_t dstReg, uint32_t value);
     void patchPoolSite(uint32_t siteOffset, uint32_t word);
-    bool growForAttached();
+    bool ensureSpace(const uint16_t *end, uint32_t lruTick);
 
     class AtomicScope
     {

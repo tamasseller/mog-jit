@@ -11,12 +11,14 @@ namespace jitc
 
 class Assembler;
 
-constexpr uint32_t STUB_SIZE = 12; // bytes — 6 halfwords; test_abi_strategy.cpp asserts this against emitPrologueStub()'s own emitted length
+constexpr uint32_t STUB_SIZE = 4; // bytes — 2 halfwords; test_abi_strategy.cpp asserts this against emitPrologueStub()'s own emitted length
 
-/** The fixed 6-instruction sequence every compiled procedure starts with,
+/** The fixed 2-instruction sequence every compiled procedure starts with,
  *  that runtime.S's translatorTrampoline and callHelper/returnHelper* all
  *  resume into byte-for-byte as-is. A live ABI boundary, not open for
- *  revision here. */
+ *  revision here. The LRU stamp that used to head it lives in
+ *  callHelper/returnHelperTail now — identical in every copy, so it had no
+ *  business being copied. */
 void emitPrologueStub(Assembler &a);
 
 /** The fixed stub above, followed by push{lr} if this procedure needs it

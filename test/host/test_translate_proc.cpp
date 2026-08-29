@@ -20,15 +20,12 @@ using namespace jitc;
 
 static constexpr uint32_t PC = 15;
 
-// The fixed 6-halfword procedure-entry stub every compiled procedure
-// begins with (emitPrologueStub, abi_strategy.cpp) — bumps the LRU tick
-// and low-mirrors it, then indirects into the body via a pc-relative ADD.
+// The fixed 2-halfword procedure-entry stub every compiled procedure
+// begins with (emitPrologueStub, abi_strategy.cpp) — indirects into the
+// body via a pc-relative ADD, and nothing else: the LRU stamp that used to
+// precede it is in runtime.S's callHelper/returnHelperTail now.
 // Never varies with procIdx, argCount, or body content.
 #define PROLOGUE_STUB \
-    ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(LRU_TICK_REG)), \
-    ArmV6M::str(ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::LoReg(ENTRY_IDX_REG), ArmV6M::Uoff<2, 5>(4)), \
-    ArmV6M::adds(ArmV6M::LoReg(ENTRY_JUMP_REG), ArmV6M::Imm<8>(1)), \
-    ArmV6M::mov(ArmV6M::AnyReg(LRU_TICK_REG), ArmV6M::AnyReg(ENTRY_JUMP_REG)), \
     ArmV6M::add(ArmV6M::AnyReg(ENTRY_OFFSET_REG), ArmV6M::AnyReg(PC)), \
     ArmV6M::bx(ArmV6M::AnyReg(ENTRY_OFFSET_REG)) /* prologue stub */
 
@@ -80,8 +77,9 @@ static const Instr kProc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)}
 // uint32_t round-trip loses nothing.
 
 // Arbitrary but fixed — none of this file's tests exercise eviction
-// ordering (that's test/qemu's job), so the exact LRU tick a compiled
-// prologue stub bumps from never matters here, only that one is supplied.
+// ordering (test/qemu's job, plus test_runtime_arena.cpp's own
+// findEvictionVictim cases), so the exact tick finalize() stamps into the
+// slot never matters here, only that one is supplied.
 static constexpr uint32_t LRU_TICK = 1000;
 
 // Every real caller reads a procedure's own argCount/bodyPtr/bodyBytes/
@@ -222,7 +220,7 @@ TEST(TranslateProc0EntryProcedure)
     rt.set(1, 1, /*savesLR=*/false);
     uint32_t halfwordCount = translateProc(/*procIdx=*/0, rt.runtime(), LRU_TICK);
 
-    CHECK(halfwordCount == 18);
+    CHECK(halfwordCount == 14);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -253,7 +251,7 @@ TEST(TranslateProc1Callee)
     rt.set(1, 1, /*savesLR=*/false, kProc1Body, 3);
     uint32_t halfwordCount = translateProc(/*procIdx=*/1, rt.runtime(), LRU_TICK);
 
-    CHECK(halfwordCount == 11);
+    CHECK(halfwordCount == 7);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -269,7 +267,7 @@ TEST(TranslateProc1Callee)
 
 TEST(OverflowIsReportedRatherThanOverrunningTheBuffer)
 {
-    FakeRuntime<2> rt(/*arenaBytes=*/8); // too small for even the 6-halfword prologue alone
+    FakeRuntime<2> rt(/*arenaBytes=*/8); // too small for the prologue and a single body instruction
     rt.set(0, 0, /*savesLR=*/true, kProc0Body, 3);
     rt.set(1, 1, /*savesLR=*/false);
     EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_ARENA, translateProc(0, rt.runtime(), LRU_TICK));
@@ -356,7 +354,7 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 17);
+    CHECK(halfwordCount == 13);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -396,7 +394,7 @@ TEST(BrTableJumpTableHelperViaFullPipeline)
     FakeRuntime<1> rt(/*arenaBytes=*/128);
     rt.set(0, 0, /*savesLR=*/true, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 25);
+    CHECK(halfwordCount == 21);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -439,7 +437,7 @@ TEST(ComparisonFusesIntoBrTableGuard)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 16);
+    CHECK(halfwordCount == 12);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -466,7 +464,7 @@ TEST(ComparisonMaterializesAsOrdinaryValue)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 15);
+    CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -490,7 +488,7 @@ TEST(NegViaFullPipeline)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 11);
+    CHECK(halfwordCount == 7);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -514,7 +512,7 @@ TEST(ClzHelperViaFullPipeline)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/true, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 14);
+    CHECK(halfwordCount == 10);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -540,7 +538,7 @@ TEST(LastArgumentHomeSlotReadTwiceViaLoad)
     FakeRuntime<1> rt;
     rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 11);
+    CHECK(halfwordCount == 7);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -570,7 +568,7 @@ TEST(LastArgumentHomeSlotReadViaPopAcc)
     FakeRuntime<1> rt;
     rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 11);
+    CHECK(halfwordCount == 7);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -603,7 +601,7 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 18);
+    CHECK(halfwordCount == 14);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -638,7 +636,7 @@ TEST(PopThroughFullPipeline)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 11);
+    CHECK(halfwordCount == 7);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -661,7 +659,7 @@ TEST(TrapAtTopLevel)
     // The code goes into ACC_REG plainly — no high-bit sentinel to widen
     // it past MOVS's own imm8, so nothing pools and no window teardown
     // precedes the dispatch either (trapHelper restores savedSp instead).
-    CHECK(halfwordCount == 10);
+    CHECK(halfwordCount == 6);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -696,7 +694,7 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 18);
+    CHECK(halfwordCount == 14);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -726,7 +724,7 @@ TEST(LoadFromOutOfWindowSlot)
     FakeRuntime<1> rt;
     rt.set(0, 5, /*savesLR=*/false, body, 2);
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 12);
+    CHECK(halfwordCount == 8);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -751,7 +749,7 @@ TEST(StoreStandaloneInWindowWhenNotPrecededByAFoldableProducer)
     FakeRuntime<1> rt;
     rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 14);
+    CHECK(halfwordCount == 10);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -784,7 +782,7 @@ TEST(StoreStandaloneOutOfWindowSlot)
     FakeRuntime<1> rt;
     rt.set(0, 5, /*savesLR=*/false, body, 3);
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 13);
+    CHECK(halfwordCount == 9);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -809,7 +807,7 @@ TEST(ConstTooLargeForImm8SynthesizesInsteadOfStayingPending)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, 2);
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 11);
+    CHECK(halfwordCount == 7);
     CHECK(literalSiteCount(rt.code(), halfwordCount) == 0);
 
     const uint16_t expected[] = {
@@ -830,7 +828,7 @@ TEST(ConstFoldsDirectlyIntoAFollowingStore)
     FakeRuntime<1> rt;
     rt.set(0, 1, /*savesLR=*/false, body, 3);
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 12);
+    CHECK(halfwordCount == 8);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -859,7 +857,7 @@ TEST(RegRegOutOfWindowWritesBackToStackAfterComputing)
     FakeRuntime<1> rt;
     rt.set(0, 5, /*savesLR=*/false, body, 3);
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 15);
+    CHECK(halfwordCount == 11);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -883,7 +881,7 @@ TEST(RegRegInWindowWritesBackToItsOwnRegister)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 12);
+    CHECK(halfwordCount == 8);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -904,7 +902,7 @@ TEST(PopAccStackComboThroughFullPipeline)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 11);
+    CHECK(halfwordCount == 7);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -932,7 +930,7 @@ TEST(PeekPeekStackComboThroughFullPipeline)
     rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
 
-    CHECK(halfwordCount == 13);
+    CHECK(halfwordCount == 9);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -977,7 +975,7 @@ TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
     // actual last argument to flush.
     rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 20);
+    CHECK(halfwordCount == 16);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -1005,7 +1003,7 @@ TEST(RevbitsHelperViaFullPipeline)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/true, body, 3);
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 14);
+    CHECK(halfwordCount == 10);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -1041,7 +1039,7 @@ TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
     FakeRuntime<1> rt(/*arenaBytes=*/128);
     rt.set(0, 1, /*savesLR=*/true, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 30);
+    CHECK(halfwordCount == 26);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -1096,7 +1094,7 @@ TEST(LoopConditionClosesViaAnExplicitFusedComparison)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 17);
+    CHECK(halfwordCount == 13);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -1126,7 +1124,7 @@ TEST(ComparisonMaterializedResultFoldsDirectlyIntoAFollowingStore)
     FakeRuntime<1> rt;
     rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 17);
+    CHECK(halfwordCount == 13);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -1156,7 +1154,7 @@ TEST(LastArgumentHomeSlotReadViaRegAcc)
     FakeRuntime<1> rt;
     rt.set(0, 2, /*savesLR=*/false, body, 2);
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 11);
+    CHECK(halfwordCount == 7);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
@@ -1288,20 +1286,20 @@ TEST(LargeConstAndLargeOperandBothPoolIntoOneChunk)
 {
     // Both immediates need 7 synthesis halfwords each, so both pool. The
     // whole emitted output is checked literally: the two sites sit at byte
-    // 12 and 14 — one word-aligned, one not — so between them they cover
+    // 4 and 6 — one word-aligned, one not — so between them they cover
     // both halves of Align(pc+4,4)'s rounding, resolving to the same base
-    // (16) but different pool words.
+    // (8) but different pool words.
     const Instr body[] = {CONST(0x12345678), opImm(Op::ADD, 0x0ABCDEF0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, 3);
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
 
-    CHECK(halfwordCount == 16); // 24 unpooled: 7 + 7 synthesis halfwords
+    CHECK(halfwordCount == 12); // 20 unpooled: 7 + 7 synthesis halfwords
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
-        ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(8)),  // LDR r0,[pc,#8]   -> byte 24
-        ArmV6M::ldrPc(ArmV6M::LoReg(2), ArmV6M::Uoff<2, 8>(12)), // LDR r2,[pc,#12]  -> byte 28
+        ArmV6M::ldrPc(ArmV6M::LoReg(0), ArmV6M::Uoff<2, 8>(8)),  // LDR r0,[pc,#8]   -> byte 16
+        ArmV6M::ldrPc(ArmV6M::LoReg(2), ArmV6M::Uoff<2, 8>(12)), // LDR r2,[pc,#12]  -> byte 20
         ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(0), ArmV6M::LoReg(2)), // ADDS r0,r0,r2 — operand came from the pool
         RETURN_VIA_LR,
         0x5678, 0x1234,                                  // pool: 0x12345678

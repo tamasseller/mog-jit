@@ -113,7 +113,7 @@ TEST(OccupiedSizeIsAlwaysAWholeNumberOfWords)
     uint32_t sizes[] = {6, 2, 14, 10};
     for(uint32_t i = 0; i < 4; i++)
     {
-        runtime->markCompiled(i, runtime->allocate(sizes[i]));
+        runtime->markCompiled(i, runtime->allocate(sizes[i]), /*lruTick=*/0);
     }
     CHECK(!runtime->isResident(4));
     for(uint32_t i = 0; i < 4; i++)
@@ -142,6 +142,59 @@ TEST(RoomCheckAccountsForThePaddingAllocateWillConsume)
         CHECK(allocations <= ARENA_SIZE / 8); // GCOV_EXCL_LINE — a non-advancing cursor would spin here
     }
     CHECK(allocations > 0);
+}
+
+TEST(TheExtensionScratchIsClearOfTheWordReturnHelperTailStamps)
+{
+    // runtime.S's returnHelperTail stamps [slotAddr, #4] unconditionally,
+    // the sentinel included — that is the point, since guarding it would
+    // put a branch on return-from-entry, which slots[0] exists to keep
+    // free. So the extension scratch must start past that word. The
+    // static_asserts in runtime_internal.h pin it to the struct; this
+    // pins the consequence emitted code actually depends on, in the form
+    // ext.h hands out.
+    //
+    // Built from the asm-visible constants rather than offsetof(Runtime,
+    // slots), which is legitimately wider on this 64-bit host than on the
+    // 32-bit target runtime.S is assembled for — the same reason
+    // runtime_internal.h guards its own layout static_asserts.
+    const uint32_t sentinel = RUNTIME_DISPATCH_TABLE_OFFSET - DISPATCH_SENTINEL_OFFSET;
+    const uint32_t stamped = sentinel + offsetof(ProcSlot, lastUsed);
+    for(uint32_t w = 0; w < RUNTIME_EXT_STATE_WORDS; w++)
+    {
+        CHECK(extStateOffset(w) > stamped);
+    }
+    // ...and still covers the sentinel slot's whole remaining tail, so no
+    // storage was quietly lost on the way.
+    CHECK(extStateOffset(0) == stamped + 4);
+    CHECK(extStateOffset(RUNTIME_EXT_STATE_WORDS - 1) + 4 == sentinel + sizeof(ProcSlot));
+}
+
+TEST(AFreshlyCompiledProcedureIsTheYoungestNotTheOldest)
+{
+    // markCompiled stamps the live tick rather than zeroing, and that is
+    // load-bearing: the dispatch that reached the translator already
+    // stamped this slot in runtime.S's callHelper before tail-jumping to
+    // the trampoline, so zeroing here would present a procedure that was
+    // just paid for as the oldest thing in the arena — the very next
+    // victim, evicted before it ever ran once. Nothing else in the host
+    // suite exercises findEvictionVictim's ordering at all.
+    RuntimeStorage<3> runtime;
+    runtime->markCompiled(0, runtime->allocate(8), /*lruTick=*/10);
+    runtime->markCompiled(1, runtime->allocate(8), /*lruTick=*/20);
+
+    CHECK(runtime->findEvictionVictim(/*now=*/21) == 0); // slot 1 is younger
+
+    runtime->markCompiled(2, runtime->allocate(8), /*lruTick=*/30);
+    CHECK(runtime->findEvictionVictim(/*now=*/31) == 0); // still the oldest, not the newest
+}
+
+TEST(NoResidentProcedureLeavesNothingToEvict)
+{
+    // What Assembler::growForAttached reads as "the arena cannot be made
+    // to fit this" — the -1 that turns into RESOURCE_EXHAUSTED_ARENA.
+    RuntimeStorage<2> runtime;
+    CHECK(runtime->findEvictionVictim(/*now=*/5) < 0);
 }
 
 TEST(ArenaEndIsAlignedSoAFullAllocationNeverOvershootsIt)

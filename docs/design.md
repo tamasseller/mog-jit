@@ -205,7 +205,7 @@ to pin down deliberately.
 | `r0` | `acc` | Never touched by call/return bookkeeping; carries the live last argument straight into the callee. |
 | `r1` | Entry ABI: index, then slot address | Starts as the packed record (at a `CALL` site) or a dispatch index, becomes `slotAddr` for the tail jump (§9). Doubles as translator scratch, disjoint lifetimes. |
 | `r2` | Entry ABI: offset+1 | The Thumb-mode bit is pre-folded into the value, consumed by the prologue stub's `ADD r2,r2,pc` / `BX r2` (§9). |
-| `r3` | Entry ABI: jump target | Dead the instant control lands, so it is free scratch inside the prologue stub. |
+| `r3` | Entry ABI: jump target | Dead the instant control lands, which is what lets `returnHelperTail` borrow it for the LRU stamp (§9). |
 | `r4-r7` | TOS window, circularly renamed | §5. |
 | `r8` | Dispatch table base | Hi register: needs a low mirror for any load/store through it. |
 | `r9` | Runtime pointer | Hi register, but only ever moved whole via `MOV` into a C function's argument register, never a load/store base, so it never pays the mirror tax. |
@@ -568,7 +568,7 @@ dispatch slot currently holds.
 ```c
 struct ProcSlot {
     uint32_t code_ptr;    // mutable — dispatch address (Thumb bit set) or translator_trampoline
-    uint32_t last_used;   // mutable — LRU tick, bumped by the prologue stub
+    uint32_t last_used;   // mutable — LRU tick, stamped by callHelper/returnHelperTail (§9)
     uint32_t body_ptr;    // static — absolute flash address of this procedure's own body_bytes
     uint32_t static_info; // static, packed: bit31 needs_lr_save; bits[30:20] arg_count; bits[19:0] body_bytes
 };
@@ -577,8 +577,9 @@ struct ProcSlot {
 No `state` field: "not resident" is `code_ptr == translator_trampoline`. No
 doubly-linked LRU list: a linked list needs 4-6 pointer writes to unlink and
 relink on *every touch*, the hot path of every call and return, where a
-timestamp needs one store, and eviction, the rare heavy path, absorbs a
-linear minimum scan instead. No `size` field (§8 derives it); the bytes it
+timestamp needs one store — and one place to put it, since both routines
+that reach a slot at all already hold its address — and eviction, the rare
+heavy path, absorbs a linear minimum scan instead. No `size` field (§8 derives it); the bytes it
 would have cost fold into widening `last_used` to a full word, which at 32
 bits doesn't realistically wrap in an embedded system's lifetime, so the
 scan is a plain comparison.
@@ -643,24 +644,42 @@ MOV   lr, r1                ; persist the record; r1 free again immediately
 LSLS  r1, r2, #4            ; Q_idx · sizeof(ProcSlot)
 ADD   r1, r1, r8            ; r1 = slotAddr
 LDR   r3, [r1, #0]          ; r3 = code_ptr
+MOV   r2, r11               ; low-mirror the LRU tick (STR has no hi form)
+STR   r2, [r1, #4]          ; entry.last_used = old tick
+ADDS  r2, #1
+MOV   r11, r2               ; publish
 MOVS  r2, #1                ; offset+1 = 1, hardwired
 BX    r3
 ```
 
-**The per-procedure prologue stub** is the first six instructions of every
+The LRU stamp lives here, and in `returnHelperTail`, rather than in the
+per-procedure stub it used to head. It is byte-for-byte identical in every
+copy, and both routines already hold `slotAddr` with a low register dead in
+hand — `r2` between the `LSLS` and the `MOVS` here, `r3` before the
+`code_ptr` load there. One flash copy each instead of 8 bytes of arena per
+resident procedure.
+
+`returnHelperTail` stamps *unconditionally*, the sentinel included. Guarding
+it would put a branch on the one path `slots[-1]` exists to keep free —
+return from the entry procedure — to protect a word nothing reads: the
+eviction scan runs over `slot(i) == slots[i+1]`, so the sentinel is never a
+candidate. The cost is paid instead in §18.1, where the extension scratch
+gives up its first word to stay clear of `last_used`.
+
+**The per-procedure prologue stub** is the first two instructions of every
 compiled procedure (`emitPrologueStub`), copied into the arena ahead of the
 body, which is why it is emitted as data the translator can copy rather than
 reached by name:
 
 ```
-MOV  r3, r11                ; low-mirror the LRU tick (STR has no hi form)
-STR  r3, [r1, #4]           ; entry.last_used = old tick
-ADDS r3, r3, #1             ; bump on the low copy: low-reg ADDS takes an immediate
-MOV  r11, r3                ; publish
 ADD  r2, r2, pc             ; r2 = (offset+1) + (this instruction's address + 4)
 BX   r2                     ; a real branch, never a write to pc
 ; ... procedure body starts here
 ```
+
+Two instructions is all that is left, and all that can be: `ADD` reads *this
+procedure's own* pc, so its position is the datum. Everything that used to
+precede it was position-independent and moved to the helpers above.
 
 The stub's fixed size is load-bearing: `ADD r2,r2,pc` reads "address of this
 instruction + 4", which lands exactly on the first byte past the stub, so
@@ -1122,6 +1141,10 @@ keeps that invariant true on the other side: `Assembler` rereads
 constructs its `Assembler` directly over `arenaCursor` and lets `reserve`
 grow it in place, then finalizes it (flush the pool, `Runtime::allocate`,
 `Runtime::markCompiled`) as `translateProc`'s own last step.
+`markCompiled` stamps the live tick rather than zeroing `last_used`:
+`callHelper` already stamped this slot on the way to the trampoline, and
+zeroing would present a procedure that was just paid for as the oldest thing
+in the arena — the next victim, evicted before running once.
 
 ---
 ## 12. Report and error model
@@ -1637,16 +1660,23 @@ it costs shifts `RUNTIME_DISPATCH_TABLE_OFFSET` from 40 to 44, which
 
 ### 18.1 Extension state
 
-Three words of per-excursion scratch at `RUNTIME_EXT_STATE_OFFSET`, for
+Two words of per-excursion scratch at `RUNTIME_EXT_STATE_OFFSET`, for
 whatever an extension needs to carry (a stream cursor, a buffer base, an
 object handle). They are the sentinel `ProcSlot`'s own
-`lastUsed`/`bodyPtr`/`staticInfo`: `slots[0]` exists only so a real
-procedure index can be offset by one, and nothing but its `codePtr` is ever
-touched — runtime.S writes that, `sentinelLandingAddress()` reads it, and
-every loop over procedures runs over `slot(i) == slots[i+1]`. So the words
-are already allocated, already reachable through the pointer emitted code
-has, and cost no layout change at all. `Runtime::init` zeroes them; a
-`static_assert` ties the offset to the real struct.
+`bodyPtr`/`staticInfo`: `slots[0]` exists only so a real procedure index can
+be offset by one, and nothing reads its static half — `sentinelLandingAddress()`
+reads its `codePtr`, and every loop over procedures runs over
+`slot(i) == slots[i+1]`. So the words are already allocated, already
+reachable through the pointer emitted code has, and cost no layout change at
+all. `Runtime::init` zeroes them; a `static_assert` ties the offset to the
+real struct.
+
+Two rather than three, starting at `bodyPtr` rather than `lastUsed`, because
+`returnHelperTail` (§9) stamps the sentinel's `lastUsed` on every return out
+of the entry procedure. That word is therefore genuinely written and cannot
+be lent out. Trading one scratch word for a branchless return-from-entry is
+the right way round: the branch would sit on a hot path taken once per
+excursion, the word costs an extension nothing it can't work around.
 
 `extEmitStateBase(a, dst)` is one instruction — a whole-register `MOV` out
 of r9, one of the three things Thumb-1 lets a hi register do, so it pays no

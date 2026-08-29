@@ -70,9 +70,9 @@ struct Machine
     /* Compares the state a compiled procedure can actually observe at
      * entry: sp, the operand stack, acc (r0) and the window (r4-r7).
      * r1-r3 are deliberately excluded — they are scratch on both sides
-     * (callHelper and the prologue stub clobber all three before the body
-     * runs), and this simulation's own push temp lands in r1, which no
-     * call site has any reason to touch. */
+     * (callHelper clobbers all three, and the prologue stub r2 again,
+     * before the body runs), and this simulation's own push temp lands in
+     * r1, which no call site has any reason to touch. */
     bool sameAs(const Machine &o) const
     {
         if(sp != o.sp) return false;

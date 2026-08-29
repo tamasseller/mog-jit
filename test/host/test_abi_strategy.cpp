@@ -38,13 +38,11 @@ TEST(prologueStubExactEncoding)
     Assembler &e = e_ta.a;
     const uint16_t *buf = e_ta.code();
     emitPrologueStub(e);
-    CHECK(e.halfwordCount() == 6);
-    CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(11))); // MOV r3, r11
-    CHECK(buf[1] == ArmV6M::str(ArmV6M::LoReg(3), ArmV6M::LoReg(1), ArmV6M::Uoff<2, 5>(4))); // STR r3, [r1, #4]
-    CHECK(buf[2] == ArmV6M::adds(ArmV6M::LoReg(3), ArmV6M::Imm<8>(1))); // ADDS r3, #1
-    CHECK(buf[3] == ArmV6M::mov(ArmV6M::AnyReg(11), ArmV6M::AnyReg(3))); // MOV r11, r3
-    CHECK(buf[4] == ArmV6M::add(ArmV6M::AnyReg(2), ArmV6M::AnyReg(15))); // ADD r2, r2, pc
-    CHECK(buf[5] == ArmV6M::bx(ArmV6M::AnyReg(2))); // BX r2
+    // Just the pc-relative resume jump: the LRU stamp that used to head this
+    // is in runtime.S's callHelper/returnHelperTail now.
+    CHECK(e.halfwordCount() == 2);
+    CHECK(buf[0] == ArmV6M::add(ArmV6M::AnyReg(2), ArmV6M::AnyReg(15))); // ADD r2, r2, pc
+    CHECK(buf[1] == ArmV6M::bx(ArmV6M::AnyReg(2))); // BX r2
 }
 
 TEST(packRecord)
@@ -58,7 +56,7 @@ TEST(packRecord)
 
 TEST(abiEmitCallFitsImm8CalleeIndexIsAFixedFiveHalfwordSequence)
 {
-    // procIdx=0, calleeIndex=1, called right after the 6-halfword prologue
+    // procIdx=0, calleeIndex=1, called right after the 2-halfword prologue
     // (preCallPc = STUB_SIZE) — i.e. the CALL site of a procedure whose own
     // entry instruction is itself a CALL. The call record always costs
     // exactly one halfword (materializeImm32's two-instruction-sequence
@@ -186,12 +184,12 @@ TEST(abiEmitPrologueAddsPushLrOnlyWhenSavesLR)
     Assembler &e1 = e1_ta.a;
     const uint16_t *buf1 = e1_ta.code();
     abiEmitPrologue(e1, /*savesLR=*/false);
-    CHECK(e1.halfwordCount() == 6); // just the stub
+    CHECK(e1.halfwordCount() == 2); // just the stub
 
     TestAssembler e2_ta(8);
     Assembler &e2 = e2_ta.a;
     const uint16_t *buf2 = e2_ta.code();
     abiEmitPrologue(e2, /*savesLR=*/true);
-    CHECK(e2.halfwordCount() == 7);
-    CHECK(buf2[6] == ArmV6M::pushWithLr(ArmV6M::LoRegs{0})); // PUSH {lr}
+    CHECK(e2.halfwordCount() == 3);
+    CHECK(buf2[2] == ArmV6M::pushWithLr(ArmV6M::LoRegs{0})); // PUSH {lr}
 }
