@@ -6,9 +6,6 @@
 namespace jitc
 {
 
-// How an instruction's single auxiliary value is obtained. isa-core.md
-// §5.2 gives every core form at most one, and only these four shapes
-// occur across all 124 assigned codes.
 enum AuxKind : uint8_t
 {
     AUX_NONE = 0, // no auxiliary value; stays 0
@@ -17,19 +14,7 @@ enum AuxKind : uint8_t
     AUX_EXT = 3,  // trailing unsigned LEB128 (isa-core.md §5.4)
 };
 
-/** One row per assigned opcode below SMALL_CONST_BASE. Two bytes because
- *  Op needs 6 bits and Combo/AuxKind another 5 between them; splitting
- *  them across a byte each keeps the decode to a pair of loads with no
- *  masking of Op at all.
- *
- *  This table *is* the decode, not a cache of it: isa-core.md §5.2 states
- *  the arithmetic and comparison ranges as `code / 5` and `(code-50) / 4`,
- *  but §5.1 explicitly admits a static table as the equivalent, and on a
- *  Cortex-M0 that difference is a call into libgcc's __udivsi3 per decode
- *  (this file was the whole image's only reason to link division at all).
- *  encode_instr.cpp still derives the same numbering arithmetically; the
- *  two are held together by test_decode_encode.cpp's round trip over
- *  every opcode. */
+
 struct Entry
 {
     uint8_t op;
@@ -45,10 +30,6 @@ static constexpr Entry row(Op op, Combo combo, AuxKind aux)
 {
     return Entry{(uint8_t)op, shapeOf(combo, aux)};
 }
-
-// isa-core.md §5.2's mode ordering, per class: arithmetic is REG_ACC,
-// REG_REG, PEEK_PEEK, POP_ACC, IMM_EXT; comparison is REG_ACC, POP_ACC,
-// IMM_SMALL, IMM_EXT (no write-back-in-place form for a comparison).
 #define JITC_ARITH_ROWS(op)                                            \
     row(op, Combo::REG_ACC, AUX_EXT), row(op, Combo::REG_REG, AUX_EXT), \
     row(op, Combo::PEEK_PEEK, AUX_NONE), row(op, Combo::POP_ACC, AUX_NONE), \
@@ -69,9 +50,6 @@ constexpr Entry TABLE[] = {
     JITC_CMP_ROWS(Op::LE_S), JITC_CMP_ROWS(Op::GT_S), JITC_CMP_ROWS(Op::GE_S),
     JITC_CMP_ROWS(Op::LT_U), JITC_CMP_ROWS(Op::LE_U), JITC_CMP_ROWS(Op::GT_U),
     JITC_CMP_ROWS(Op::GE_U),
-    // 90-107: unary (§4.3), local/global flow control, and the move/const
-    // forms that aren't a small literal — already one contiguous run in
-    // §5.2, so one table rather than a range check per class.
     row(Op::NEG, Combo::NONE, AUX_NONE),       // 90
     row(Op::NOT, Combo::NONE, AUX_NONE),       // 91
     row(Op::CLZ, Combo::NONE, AUX_NONE),       // 92
@@ -95,8 +73,6 @@ constexpr Entry TABLE[] = {
 #undef JITC_ARITH_ROWS
 #undef JITC_CMP_ROWS
 
-// 108-123 are CONST#0..15, whose value is the opcode's own offset from
-// this base — a range check rather than 16 more table rows.
 constexpr uint32_t SMALL_CONST_BASE = 108;
 
 static_assert(sizeof(TABLE) / sizeof(TABLE[0]) == SMALL_CONST_BASE,
@@ -146,17 +122,15 @@ bool decodeLeb128Checked(const uint8_t *bytes, uint32_t bytesLen, uint32_t offse
     return true;
 }
 
-uint32_t extDecodeLength(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t &decl,
-    const ExtHooks *ext)
+uint32_t extDecodeLength(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t &decl, const ExtHooks *ext)
 {
     if(ext == nullptr || ext->decode == nullptr)
     {
         return 0;
     }
+    
     uint32_t len = ext->decode(bytes, bytesLen, offset, &decl);
-    // Two things the core will not take on trust, because both would turn a
-    // bad extension into a hang or an overrun rather than a diagnostic: no
-    // forward progress, and a length running past the buffer.
+    
     if(len == 0 || len > bytesLen - offset)
     {
         return 0;
@@ -176,11 +150,6 @@ DecodedInstr decodeInstr(const uint8_t *bytes, uint32_t bytesLen, uint32_t offse
 
     if(code >= EXT_OPCODE_BASE)
     {
-        // The extension range (§11) ONLY. The four codes the core reserves
-        // but hasn't assigned (124-127, §5.3) are not extension space and
-        // are never offered to an extension — Runtime::init's walk rejects
-        // them, which is also what lets this return a well-formed Instr
-        // unconditionally here.
         instr.op = Op::EXT;
         uint32_t len = extDecodeLength(bytes, bytesLen, offset, instr.extDecl, ext);
         assert(len >= 1); // GCOV_EXCL_LINE — unreachable: the walk already accepted this byte
@@ -204,9 +173,6 @@ DecodedInstr decodeInstr(const uint8_t *bytes, uint32_t bytesLen, uint32_t offse
     if(aux == AUX_EXT)
     {
         uint32_t next;
-        // One destination for every trailing operand: which union member
-        // it means is already fixed by op/combo (see Instr's own comment),
-        // and they share storage.
         instr.imm = (int32_t)decodeLeb128(bytes, pos, next);
         return {instr, next};
     }

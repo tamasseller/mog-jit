@@ -1,5 +1,3 @@
-/* Shared between enter_program.cpp, dispatch_abi.cpp, and compile_proc.cpp;
- * not part of runtime_host.h's public API. */
 #ifndef RUNTIME_INTERNAL_H
 #define RUNTIME_INTERNAL_H
 

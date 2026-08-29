@@ -1,5 +1,3 @@
-// ARMv6-M Thumb-1 instruction encoders/decoders used by the JIT.
-
 #ifndef JIT_ARMV6M_ARMV6_H_
 #define JIT_ARMV6M_ARMV6_H_
 
@@ -52,6 +50,16 @@ struct ArmV6M
             assert(v < (1 << n)); // GCOV_EXCL_LINE
         }
     };
+
+    static inline constexpr bool fitsImm8(int32_t v)
+    {
+        return v >= 0 && v <= 0xff;
+    }
+
+    static inline constexpr bool fitsImm3(int32_t v)
+    {
+        return v >= 0 && v <= 0x7;
+    }
 
     template<size_t a, size_t n>
     struct Uoff

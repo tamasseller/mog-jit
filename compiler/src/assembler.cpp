@@ -1,6 +1,5 @@
 #include "assembler.h"
 #include "runtime_internal.h"
-#include "imm_synth.h"
 
 #include <cassert>
 #include <cstring>
@@ -190,7 +189,7 @@ static inline ShiftDecomposition unshift(uint32_t value)
 
 void Assembler::materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoIsnSeq)
 {
-    if(fitsImm8(value))
+    if(ArmV6M::fitsImm8(value))
     {
         emit(ArmV6M::movs(R((uint16_t)dstReg), ArmV6M::Imm<8>(value)));
         return;
@@ -198,7 +197,7 @@ void Assembler::materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoI
 
     if(allowTwoIsnSeq)
     {
-        if(fitsImm8(~value))
+        if(ArmV6M::fitsImm8(~value))
         {
             emit(ArmV6M::movs(R((uint16_t)dstReg), ArmV6M::Imm<8>(~value)));
             emit(ArmV6M::mvns(R((uint16_t)dstReg), R((uint16_t)dstReg)));
@@ -208,7 +207,7 @@ void Assembler::materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoI
         const auto decomposed = unshift(value);
         assert((decomposed.pattern << decomposed.shift) == value);
 
-        if(fitsImm8(decomposed.pattern))
+        if(ArmV6M::fitsImm8(decomposed.pattern))
         {
             emit(ArmV6M::movs(R((uint16_t)dstReg), ArmV6M::Imm<8>(decomposed.pattern)));
             emit(ArmV6M::lsls(R((uint16_t)dstReg), R((uint16_t)dstReg), ArmV6M::Imm<5>(decomposed.shift)));

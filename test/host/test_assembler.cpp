@@ -13,14 +13,13 @@
 #include "host_runtime_support.h"
 
 #include "assembler.h"
-#include "imm_synth.h"
 
 using namespace jitc;
 
 TEST(fitsImm)
 {
-    CHECK(fitsImm8(0) && fitsImm8(255) && !fitsImm8(256) && !fitsImm8(-1));
-    CHECK(fitsImm3(0) && fitsImm3(7) && !fitsImm3(8) && !fitsImm3(-1));
+    CHECK(ArmV6M::fitsImm8(0) && ArmV6M::fitsImm8(255) && !ArmV6M::fitsImm8(256) && !ArmV6M::fitsImm8(-1));
+    CHECK(ArmV6M::fitsImm3(0) && ArmV6M::fitsImm3(7) && !ArmV6M::fitsImm3(8) && !ArmV6M::fitsImm3(-1));
 }
 
 // ── materializeImm32 ─────────────────────────────────────────────────────

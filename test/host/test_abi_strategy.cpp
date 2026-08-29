@@ -3,7 +3,6 @@
 #include "Test.h"
 #include "assembler.h"
 #include "abi_strategy.h"
-#include "imm_synth.h"
 
 #include "host_runtime_support.h"
 

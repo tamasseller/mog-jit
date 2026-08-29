@@ -1,6 +1,5 @@
 #include "translate_internal.h"
 #include "decode_instr.h"
-#include "imm_synth.h"
 #include "runtime_internal.h"
 #include "abi_strategy.h"
 #include "arithmetic.h"
@@ -278,7 +277,7 @@ bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThis
 
             case Op::CONST:
             {
-                if(fitsImm8(instr.imm))
+                if(ArmV6M::fitsImm8(instr.imm))
                 {
                     this->accState.producer(Shape::ofImm(instr.imm)); // stay pending — a later consumer may fold it
 

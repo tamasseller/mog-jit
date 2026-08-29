@@ -1,7 +1,6 @@
 #include "arithmetic.h"
 #include "assembler.h"
 #include "registers.h"
-#include "imm_synth.h"
 #include "armv6.h"
 
 #include <cassert>
@@ -42,7 +41,7 @@ static void addOrSubWithImm(AddSubRsubOp which, Assembler &e, uint32_t dest, uin
             e.emit(ArmV6M::negs(R((uint16_t)dest), R((uint16_t)n)));
         }
     }
-    else if(which != AddSubRsubOp::Rsub && fitsImm3(k))
+    else if(which != AddSubRsubOp::Rsub && ArmV6M::fitsImm3(k))
     {
         /*
          * Small literal rhs version, no real rsub in Thumb-1.
@@ -52,7 +51,7 @@ static void addOrSubWithImm(AddSubRsubOp which, Assembler &e, uint32_t dest, uin
             : ArmV6M::adds(R((uint16_t)dest), R((uint16_t)n), ArmV6M::Imm<3>((uint16_t)k)));
         
     }
-    else if(which != AddSubRsubOp::Rsub && fitsImm8(k) && dest == n)
+    else if(which != AddSubRsubOp::Rsub && ArmV6M::fitsImm8(k) && dest == n)
     {
         /*
          * Increment/decrement by literal version.
@@ -64,26 +63,7 @@ static void addOrSubWithImm(AddSubRsubOp which, Assembler &e, uint32_t dest, uin
     }
     else
     {
-        /*
-         * Can't fold constant, materialize into a temporary instead: temp = k, then dest = n op temp.
-         */
-        auto t = SCRATCH_REG;
-
-        if(n == SCRATCH_REG)
-        {
-            /*
-             * n already occupies SCRATCH_REG, so it can't also hold the
-             * materialized constant -- and dest can't stand in for it
-             * either, since dest can itself alias SCRATCH_REG here (e.g. a
-             * spilled REG_REG operand loaded into SCRATCH_REG, combined
-             * with an immediate accumulator, and stored back out through
-             * SCRATCH_REG too). ENTRY_JUMP_REG is never live across
-             * bytecode instructions -- only used transiently by
-             * CALL/RETURN/BR_TABLE dispatch sequences -- so it's always
-             * free to borrow as the temporary here.
-             */
-            t = ENTRY_JUMP_REG;
-        }
+        const auto t = (n == SCRATCH_REG) ? ENTRY_JUMP_REG : SCRATCH_REG;
 
         e.materializeImm32(t, k);
 
@@ -104,17 +84,6 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
         * Degenerate case - foldable constants, lowerer should have caught it but easier 
         * to deal with it like this and is required for correctness.
         */
-        // ADD/SUB/RSUB/MUL/SHL/SHR are all done in uint32_t: isa-core.md's
-        // arithmetic wraps modulo 2^32 (matching vm.ts's `| 0`/`>>> 0`
-        // reference semantics and real ARM instructions), but accShape.imm
-        // /rhs.imm are int32_t, and signed overflow (ADD/SUB/RSUB/MUL) or
-        // shifting a negative value (SHL) is undefined behavior in C++,
-        // not just a different result -- unlike the equivalent register
-        // forms below, which land on real wrapping ARM instructions
-        // regardless of signedness. SHR is a logical shift, so it also
-        // needs the unsigned cast to avoid sign-extending a negative
-        // accShape.imm; ASR already casts (the other way) to get the
-        // sign-extension it actually wants.
         switch (op)
         {
             case Op::ADD:  e.materializeImm32(dest, (uint32_t)accShape.imm + (uint32_t)rhs.imm); break;
@@ -124,13 +93,6 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
             case Op::AND:  e.materializeImm32(dest, accShape.imm & rhs.imm); break;
             case Op::OR:   e.materializeImm32(dest, accShape.imm | rhs.imm); break;
             case Op::XOR:  e.materializeImm32(dest, accShape.imm ^ rhs.imm); break;
-            // validate.ts rejects an immediate shift amount outside
-            // 0..31 (isa-core.md §4.1), so the mask is only ever a no-op
-            // on a validated program -- kept because it is free at compile
-            // time and because an unmasked count of 32+ would be undefined
-            // behavior for C++'s own `<<`/`>>` right here in the
-            // translator, which is a far worse failure than a wrong
-            // constant.
             case Op::SHL:  e.materializeImm32(dest, (uint32_t)accShape.imm << (rhs.imm & 31)); break;
             case Op::SHR:  e.materializeImm32(dest, (uint32_t)accShape.imm >> (rhs.imm & 31)); break;
             case Op::ASR:  e.materializeImm32(dest, (uint32_t)((int32_t)accShape.imm >> (rhs.imm & 31))); break;
@@ -195,17 +157,6 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
 
             const auto m = accShape.peek(e, SCRATCH_REG);
 
-            // The amount is known here, and validate.ts already rejects
-            // one outside 0..31 (isa-core.md §4.1) -- but bytecode carries
-            // a full u32 immediate, and this must not hand something wider
-            // to Imm<5>'s own 5-bit field however it got here. Free at
-            // compile time either way.
-            //
-            // LSR/ASR's *immediate* encoding is the one real wrinkle, and
-            // is unrelated to any of that: imm5==0 means "shift by 32"
-            // there (unlike LSL, where imm5==0 already means a genuine
-            // no-op), so a shift of 0 has to become a plain register move
-            // instead of lsrs/asrs #0.
             uint32_t shift = (uint32_t)rhs.imm & 31u;
             switch(op)
             {
@@ -234,19 +185,6 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
 
             accShape.materialize(e, t);
 
-            // A bare register-form shift, amount unmasked. ARMv6-M reads
-            // Rm[7:0] here, not Rm[4:0], so an amount of 32 or more does
-            // not agree with the five-bit masking a host `<<` would do --
-            // and isa-core.md §4.1 leaves exactly that case unspecified,
-            // so there is nothing to agree with. Masking it would cost
-            // LSLS #27 / LSRS #27 into a scratch on every dynamic shift
-            // (ARMv6-M has no AND-with-immediate, so an AND against 31
-            // would cost a register to hold the constant and be worse
-            // still) -- three instructions where one does the job, to pin
-            // down a case no codec depends on. The immediate combo above
-            // is a separate matter: the amount is known there, validate.ts
-            // rejects one outside 0..31 outright, and masking it costs
-            // nothing at compile time.
             switch(op)
             {
                 case Op::SHL: e.emit(ArmV6M::lsls(R((uint16_t)t), R((uint16_t)m))); break;
@@ -298,13 +236,32 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
     }
 }
 
+static constexpr ArmV6M::Condition DIRECT_CONDITION[10] = 
+{
+    ArmV6M::Condition::EQ, 
+    ArmV6M::Condition::NE, 
+    ArmV6M::Condition::LT, 
+    ArmV6M::Condition::LE, 
+    ArmV6M::Condition::GT, 
+    ArmV6M::Condition::GE, 
+    ArmV6M::Condition::LO, 
+    ArmV6M::Condition::LS, 
+    ArmV6M::Condition::HI, 
+    ArmV6M::Condition::HS,
+};
 
-static constexpr ArmV6M::Condition DIRECT_CONDITION[10] = {
-    ArmV6M::Condition::EQ, ArmV6M::Condition::NE, ArmV6M::Condition::LT, ArmV6M::Condition::LE, ArmV6M::Condition::GT, ArmV6M::Condition::GE, ArmV6M::Condition::LO, ArmV6M::Condition::LS, ArmV6M::Condition::HI, ArmV6M::Condition::HS,
-}; // EQ, NE, LT_S, LE_S, GT_S, GE_S, LT_U, LE_U, GT_U, GE_U
-
-static constexpr ArmV6M::Condition MIRRORED_CONDITION[10] = {
-    ArmV6M::Condition::EQ, ArmV6M::Condition::NE, ArmV6M::Condition::GT, ArmV6M::Condition::GE, ArmV6M::Condition::LT, ArmV6M::Condition::LE, ArmV6M::Condition::HI, ArmV6M::Condition::HS, ArmV6M::Condition::LO, ArmV6M::Condition::LS,
+static constexpr ArmV6M::Condition MIRRORED_CONDITION[10] = 
+{
+    ArmV6M::Condition::EQ, 
+    ArmV6M::Condition::NE, 
+    ArmV6M::Condition::GT, 
+    ArmV6M::Condition::GE, 
+    ArmV6M::Condition::LT, 
+    ArmV6M::Condition::LE, 
+    ArmV6M::Condition::HI, 
+    ArmV6M::Condition::HS, 
+    ArmV6M::Condition::LO, 
+    ArmV6M::Condition::LS,
 };
 
 ArmV6M::Condition emitComparison(Assembler &a, Shape left, Op op, const Shape &operand)
@@ -313,7 +270,7 @@ ArmV6M::Condition emitComparison(Assembler &a, Shape left, Op op, const Shape &o
     uint32_t idx = (uint32_t)op - (uint32_t)Op::EQ;
     ArmV6M::Condition condition = DIRECT_CONDITION[idx];
 
-    if(left.isImm && !operand.isImm && fitsImm8(left.imm))
+    if(left.isImm && !operand.isImm && ArmV6M::fitsImm8(left.imm))
     {
         a.emit(ArmV6M::cmp(R((uint16_t)operand.reg), ArmV6M::Imm<8>((uint16_t)left.imm)));
         return MIRRORED_CONDITION[idx];
@@ -329,7 +286,7 @@ ArmV6M::Condition emitComparison(Assembler &a, Shape left, Op op, const Shape &o
     {
         a.emit(ArmV6M::cmp(R((uint16_t)left.reg), R((uint16_t)operand.reg)));
     }
-    else if(fitsImm8(operand.imm))
+    else if(ArmV6M::fitsImm8(operand.imm))
     {
         a.emit(ArmV6M::cmp(R((uint16_t)left.reg), ArmV6M::Imm<8>((uint16_t)operand.imm)));
     }

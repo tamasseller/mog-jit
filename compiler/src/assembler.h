@@ -1,40 +1,15 @@
-// jit-armv6m/compiler — the assembler layer: code buffer, branch fixups,
-// the literal pool, and immediate-materialization scheme selection; for a
-// procedure attached to a real Runtime, also arena eviction/compaction and
-// final dispatch-table registration. Runtime-coupling here is scoped to
-// owning the output buffer's storage (arena growth, bailout, final
-// registration) — translate_proc.cpp reads Runtime data (ProcSlot lookups,
-// liveStackFloor()) directly through its own const Runtime& parameter.
 #ifndef JIT_ARMV6M_COMPILER_ASSEMBLER_H_
 #define JIT_ARMV6M_COMPILER_ASSEMBLER_H_
 
 #include <cstdint>
 #include "armv6.h"
-// The RESOURCE_* codes fail() below reports, and nothing else — this
-// header needs no Runtime type (see the forward declaration under it) and
-// runtime_host.h needs nothing but stdint.h, so pulling it in here costs
-// the Runtime-agnosticism above nothing.
 #include "runtime_host.h"
 
-// Declared at global scope in runtime/runtime_internal.h, a plain
-// aggregate every caller builds by reinterpreting a raw byte buffer —
-// forward-declared here rather than pulled in by #include so a client
-// that only needs the Assembler/Label surface (translate_proc.cpp's own
-// non-Runtime-reading helpers, if any) doesn't have to see Runtime's
-// real definition too; only assembler.cpp itself needs it.
 class Runtime;
 
 namespace jitc
 {
 
-// A pending forward-branch target: a chain of not-yet-resolved branch
-// sites threaded through the branches' own encoded offsets (each new site
-// points at the previous chain head, or self-links as the chain's first
-// entry) — no side array needed, generalizing blocks.cpp's own
-// endFixupChain trick so every caller gets it. bind() is the only way to
-// resolve one, and it flushes the pool first — the ordering guarantee
-// that makes a label's target always land after any pool words a flush
-// might insert, never colliding with them.
 struct Label
 {
     int32_t chain = -1;

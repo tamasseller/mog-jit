@@ -1,5 +1,3 @@
-// jit-armv6m/compiler — register assignment (docs/design.md §3). Only the
-// roles the real-ABI translator actually touches.
 #ifndef JIT_ARMV6M_COMPILER_REGISTERS_H_
 #define JIT_ARMV6M_COMPILER_REGISTERS_H_
 
@@ -22,12 +20,6 @@ constexpr uint32_t RUNTIME_PTR_REG = 9;            // r9 — docs/design.md §3
 constexpr uint32_t HELPER_VEC_REG = 10;            // r10
 constexpr uint32_t LRU_TICK_REG = 11;              // r11
 
-// Byte offsets into the flash-resident helper vector HELPER_VEC_REG points
-// at (docs/design.md §11's table; runtime/runtime.S lays them out in this
-// same order) — each entry is 4 bytes, so offset == index * 4. Index 3
-// (returnHelperTail) is never loaded directly by compiled code, only
-// reached by fallthrough/branch from index 2/7 or 1, so it has no constant
-// here.
 constexpr uint32_t HELPER_CALL_OFFSET = 0;                       // callHelper (index 0)
 constexpr uint32_t HELPER_RETURN_FROM_LR_OFFSET = 4;             // returnHelperFromLr (index 1)
 constexpr uint32_t HELPER_RETURN_FROM_STACK_OFFSET = 8;          // returnHelperFromStack (index 2)

@@ -119,42 +119,26 @@ constexpr Instr brTable(uint32_t n)
     return Instr{Op::BR_TABLE, Combo::NONE, (int32_t)n};
 }
 
-/** Whether op is one of the ten comparison opcodes. blocks.h uses this to
- *  decide fusion-vs-materialize; decode_instr.h/encode_instr.h's own
- *  op-index tables depend on the EQ..GE_U range staying contiguous. */
 constexpr bool isComparisonOp(Op op)
 {
     return op >= Op::EQ && op <= Op::GE_U;
 }
 
-/** Whether op takes its IMM_ACC operand as a shift *amount* rather than a
- *  value — binops.h consumes it directly as an Imm<5>, so unlike every
- *  other immediate operand it must stay an immediate. */
 constexpr bool isShiftOp(Op op)
 {
     return op == Op::SHL || op == Op::SHR || op == Op::ASR;
 }
 
-// Ends the enclosing *block*: the three ops after which no instruction may
-// follow within the same block (isa-core.md §8.4).
 constexpr bool isTerminator(Op op)
 {
     return op == Op::BLOCK_END || op == Op::RETURN || op == Op::TRAP;
 }
 
-// Ends the *procedure* (isa-core.md §4.5) — deliberately NOT BLOCK_END,
-// which closes one construct and may have the enclosing scope's own bytes
-// after it. Separate from isTerminator because proc_scan.cpp's body walk
-// needs exactly this narrower question, and because an extension opcode
-// declaring §11.2's `terminates` would join this one, not that one.
 constexpr bool isProcTerminator(Op op)
 {
     return op == Op::RETURN || op == Op::TRAP;
 }
 
-// Instr-taking overloads: the seam an extension opcode's own declared
-// effect plugs into later, so admitting one touches these two functions
-// rather than every test site.
 constexpr bool isTerminator(const Instr &instr)
 {
     return isTerminator(instr.op);

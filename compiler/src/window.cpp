@@ -33,8 +33,6 @@ static ArmV6M::LoRegs oneReg(uint32_t r)
     return regs;
 }
 
-// The (unordered) register set holding k = bottom .. bottom+count-1 — a
-// valid PUSH/POP mask regardless of wrap.
 static ArmV6M::LoRegs regsFor(uint32_t bottom, uint32_t count)
 {
     ArmV6M::LoRegs regs{0};
@@ -67,9 +65,6 @@ static ArmV6M::LoRegs toLoRegs(const RegRun &run)
     return regs;
 }
 
-// k = bottom .. bottom+count-1 (count <= WINDOW_SIZE), split at the point
-// (if any) where physReg wraps from r4 back to r7 — at most two
-// contiguous, k-ascending-but-register-descending runs.
 static RegRuns windowRuns(uint32_t bottom, uint32_t count)
 {
     RegRuns result{};
@@ -100,9 +95,6 @@ static RegRuns windowRuns(uint32_t bottom, uint32_t count)
     return result;
 }
 
-// Push k = bottom .. bottom+count-1 such that the largest k ends up closest
-// to the resulting sp: push the pre-wrap run first, the post-wrap run
-// second.
 static void pushLargestKClosest(Assembler &e, uint32_t bottom, uint32_t count)
 {
     RegRuns rr = windowRuns(bottom, count);
@@ -112,9 +104,6 @@ static void pushLargestKClosest(Assembler &e, uint32_t bottom, uint32_t count)
     }
 }
 
-// Pop k = bottom .. bottom+count-1 — genuinely historical spilled data — via
-// at most two batched POPs, runs consumed in reverse (larger-k,
-// closer-to-sp run first).
 static void popRuns(Assembler &e, uint32_t bottom, uint32_t count)
 {
     RegRuns rr = windowRuns(bottom, count);
@@ -124,9 +113,6 @@ static void popRuns(Assembler &e, uint32_t bottom, uint32_t count)
     }
 }
 
-// Pure spillOffset math, no adjustment — Window::spillOffset (below) is
-// what every real caller uses; this stays a free function only because the
-// adjustment itself needs it as a building block.
 static uint32_t rawSpillOffset(uint32_t tos, uint32_t k)
 {
     return 4 * (spilledCount(tos) - 1 - k);

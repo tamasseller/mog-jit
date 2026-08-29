@@ -1,11 +1,3 @@
-/* jit-armv6m/runtime — layer 2: the extern "C" symbols runtime.S provides,
- * and the fixed byte costs their instruction sequences imply.
- *
- * Nothing statically ties the constants below to runtime.S the way
- * RUNTIME_DISPATCH_TABLE_OFFSET's static_assert does. Re-measure whenever
- * enterDispatch's prologue, translatorTrampoline or REALIGN_ENTER change
- * shape; test/qemu/check_stack_usage.py enforces the measured ones.
- */
 #ifndef JIT_ARMV6M_RUNTIME_DISPATCH_ABI_H_
 #define JIT_ARMV6M_RUNTIME_DISPATCH_ABI_H_
 
@@ -28,8 +20,6 @@ extern const uint16_t extThunkHelper[];          /* runtime.S */
 extern uint64_t enterDispatch(const EntryArgs *entryArgs, Runtime *runtime); /* runtime.S */
 }
 
-/* Upper bound per call depth: only a non-leaf callee's prologue pushes the
- * record, so this over-counts leaf frames. */
 #define CALL_RECORD_BYTES 4
 
 /* extThunkHelper: 4 pushed lr + 8 REALIGN_ENTER slack. An extension's own C

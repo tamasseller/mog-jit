@@ -1,7 +1,6 @@
 #include "abi_strategy.h"
 #include "assembler.h"
 #include "registers.h"
-#include "imm_synth.h"
 #include "armv6.h"
 
 namespace jitc
