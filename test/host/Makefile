@@ -6,11 +6,10 @@ SOURCES += test_window.cpp
 SOURCES += test_assembler.cpp
 SOURCES += test_runtime_arena.cpp
 SOURCES += test_accstate.cpp
-SOURCES += test_binops.cpp
 SOURCES += test_abi_strategy.cpp
 SOURCES += test_translate_proc.cpp
 SOURCES += test_decode_encode.cpp
-SOURCES += test_unaryops.cpp
+SOURCES += test_arithmetic.cpp
 SOURCES += test_proc_scan.cpp
 SOURCES += test_ext.cpp
 SOURCES += test_entry_args.cpp
@@ -26,14 +25,15 @@ SOURCES += ../../compiler/src/encode_instr.cpp
 SOURCES += ../../compiler/src/window.cpp
 SOURCES += ../../compiler/src/ext.cpp
 SOURCES += ../../compiler/src/accstate.cpp
-SOURCES += ../../compiler/src/binops.cpp
 SOURCES += ../../compiler/src/assembler.cpp
+SOURCES += ../../compiler/src/arithmetic.cpp
 SOURCES += ../../compiler/src/shape.cpp
 SOURCES += ../../compiler/src/abi_strategy.cpp
 SOURCES += ../../compiler/src/decode_instr.cpp
-SOURCES += ../../compiler/src/unaryops.cpp
 SOURCES += ../../compiler/src/proc_scan.cpp
 SOURCES += ../../compiler/src/translate_proc.cpp
+SOURCES += ../../compiler/src/translate_data_flow.cpp
+SOURCES += ../../compiler/src/translate_control_flow.cpp
 
 # The runtime's own entry layer. Compiles and links cleanly on the host —
 # its only target-specific dependency is enterDispatch, which

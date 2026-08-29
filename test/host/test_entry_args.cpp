@@ -118,8 +118,9 @@ bool viaCallSite(Machine &m, const uint32_t *args, uint32_t n)
         else                       m.mem[m.sp + (int)(caller.spillOffset(k) / 4)] = args[k];
     }
 
-    uint16_t buf[32];
-    Assembler e(buf, 32);
+    TestAssembler e_ta(32);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     caller.spillForCall(e, stackArgs);
     Window::fillCalleeArgs(e, stackArgs);
 

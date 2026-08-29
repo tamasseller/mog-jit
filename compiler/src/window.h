@@ -114,7 +114,7 @@ public:
     // no such adjustment.
     uint32_t spillOffset(uint32_t k) const;
 
-    void discard(Assembler &e) const;
+    bool discard(Assembler &e) const;
 
     void spillForCall(Assembler &e, uint32_t stackArgs);
 
@@ -122,7 +122,7 @@ public:
 
     void reloadAfterCall(Assembler &e, uint32_t targetTos);
 
-    void restore(Assembler &e, uint32_t targetTos);
+    bool restore(Assembler &e, uint32_t targetTos);
 };
 
 

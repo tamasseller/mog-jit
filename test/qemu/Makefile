@@ -23,14 +23,15 @@ SOURCES += ../../runtime/compile_proc.cpp
 SOURCES += ../../compiler/src/window.cpp
 SOURCES += ../../compiler/src/ext.cpp
 SOURCES += ../../compiler/src/accstate.cpp
-SOURCES += ../../compiler/src/binops.cpp
+SOURCES += ../../compiler/src/arithmetic.cpp
 SOURCES += ../../compiler/src/assembler.cpp
 SOURCES += ../../compiler/src/shape.cpp
 SOURCES += ../../compiler/src/abi_strategy.cpp
 SOURCES += ../../compiler/src/decode_instr.cpp
-SOURCES += ../../compiler/src/unaryops.cpp
 SOURCES += ../../compiler/src/proc_scan.cpp
 SOURCES += ../../compiler/src/translate_proc.cpp
+SOURCES += ../../compiler/src/translate_data_flow.cpp
+SOURCES += ../../compiler/src/translate_control_flow.cpp
 
 # Test code (encode_instr.cpp is test-only here — the real compiler only
 # ever decodes, fixtures.cpp is what needs to produce wire bytes)

@@ -1,0 +1,47 @@
+#include "assembler.h"
+#include "window.h"
+#include "accstate.h"
+
+#include "decode_instr.h"
+
+namespace jitc
+{
+
+using EmitBranch = bool (*)(Assembler &a, Label &label, ArmV6M::Condition condition);
+
+bool emitNarrowBranch(Assembler &a, Label &label, ArmV6M::Condition condition);
+bool emitWideBranch(Assembler &a, Label &label, ArmV6M::Condition condition);
+
+struct Ctx
+{
+    Assembler a;
+    Window window;
+    const uint8_t *bytes;
+    uint32_t bytesLen;
+    uint32_t procIdx;
+    bool savesLR;
+    uint32_t initialSpilledCount;
+
+    bool hasPendingComparisonCondition = false;
+    ArmV6M::Condition pendingComparisonCondition = ArmV6M::Condition::EQ;
+
+    AccState accState;
+
+    Ctx(Runtime& r, uint32_t procIdx, uint32_t lruTick);
+
+    bool checkStackFloor();
+
+    void localJumpCleanup(uint32_t tos);
+    void handleGlobalJump(Instr term, uint32_t tos);
+
+    ArmV6M::Condition handleComparisonEmission(const Instr &instr);
+
+    bool processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThisLoopCondBlock, DecodedInstr &out);
+    uint32_t translateLoop(uint32_t pc, EmitBranch emitBranch);
+    uint32_t translateIfThen(uint32_t pc, EmitBranch emitBranch);
+    uint32_t translateIfThenElse(uint32_t pc, EmitBranch emitBranch);
+    uint32_t translateSwitch(uint32_t pc, EmitBranch emitBranch, uint32_t n);
+    bool translateBody(EmitBranch emitBranch);
+};
+
+}

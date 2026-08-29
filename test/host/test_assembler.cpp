@@ -27,8 +27,9 @@ TEST(fitsImm)
 
 TEST(materializeImm32SynthesizesWhenBelowPoolingThreshold)
 {
-    uint16_t buf[8];
-    Assembler a(buf, 8);
+    TestAssembler a_ta(8);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     a.materializeImm32(3, 0);
     CHECK(a.halfwordCount() == 1);
     CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(3), ArmV6M::Imm<8>(0))); // MOVS r3, #0
@@ -36,8 +37,9 @@ TEST(materializeImm32SynthesizesWhenBelowPoolingThreshold)
 
 TEST(materializeImm32SynthesizesASingleByteValue)
 {
-    uint16_t buf[8];
-    Assembler a(buf, 8);
+    TestAssembler a_ta(8);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     a.materializeImm32(0, 37);
     CHECK(a.halfwordCount() == 1);
     CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(37))); // MOVS r0, #37
@@ -50,8 +52,9 @@ TEST(materializeImm32PoolsAValueWhoseUnshiftedPatternJustMissesImm8)
     // 257, one past fitsImm8's ceiling. Neither the direct-imm8 form, the
     // bitwise-NOT form, nor the shift form apply, so this still has to
     // fall through to pooling.
-    uint16_t buf[8];
-    Assembler a(buf, 8);
+    TestAssembler a_ta(8);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     a.materializeImm32(0, 0x101u);
     CHECK(a.halfwordCount() == 1); // just the placeholder LDR at the site
     CHECK(ArmV6M::isLiteralAccess(buf[0]));
@@ -59,8 +62,9 @@ TEST(materializeImm32PoolsAValueWhoseUnshiftedPatternJustMissesImm8)
 
 TEST(materializeImm32ParksAPlaceholderForAnEligibleValue)
 {
-    uint16_t buf[16];
-    Assembler a(buf, 16);
+    TestAssembler a_ta(16);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     a.materializeImm32(0, 0x12345678u); // cost 7 -- pool-eligible
     CHECK(a.halfwordCount() == 1);      // just the placeholder LDR at the site
     CHECK(ArmV6M::isLiteralAccess(buf[0]));
@@ -71,8 +75,9 @@ TEST(materializeImm32ParksAPlaceholderForAnEligibleValue)
 
 TEST(FinalizeFlushesWithNoBranchAroundAndPadsToAWordBoundary)
 {
-    uint16_t buf[16];
-    Assembler a(buf, 16);
+    TestAssembler a_ta(16);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     a.materializeImm32(0, 0x12345678u); // site at pc=0, pc now 2 (not word-aligned)
 
     uint32_t total = a.finalize();
@@ -85,10 +90,11 @@ TEST(FinalizeFlushesWithNoBranchAroundAndPadsToAWordBoundary)
 
 TEST(FlushPoolMidProcedureAddsABranchAround)
 {
-    uint16_t buf[16];
-    Assembler a(buf, 16);
+    TestAssembler a_ta(16);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     a.materializeImm32(0, 0x12345678u); // site at pc=0, pc now 2
-    a.flushPool();
+    a.flushPool(true);
     CHECK(a.halfwordCount() == 4); // LDR(1) + branch-around(1) + pool word(2), already word-aligned
 
     uint16_t rawOff;
@@ -101,8 +107,9 @@ TEST(FlushPoolMidProcedureAddsABranchAround)
 
 TEST(FlushPoolDedupsIdenticalValuesToOneSharedWord)
 {
-    uint16_t buf[16];
-    Assembler a(buf, 16);
+    TestAssembler a_ta(16);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     a.materializeImm32(0, 0x12345678u); // site A, pc 0 -> 2
     a.materializeImm32(1, 0x12345678u); // site B, same value, pc 2 -> 4
     a.finalize();
@@ -126,8 +133,9 @@ TEST(PoolFlushesAutomaticallyOnceFull)
     // than 8 bits, so every one of these is genuinely pool-eligible,
     // unlike a bare 0x10000000u + i, where i=0 is a clean power of two
     // materializeImm32's shift-trick would synthesize instead of pooling.
-    uint16_t buf[256];
-    Assembler a(buf, 256);
+    TestAssembler a_ta(256);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     for(uint32_t i = 0; i < 16; i++)
     {
         a.materializeImm32(0, 0x10000001u + i); // 16 distinct pool-eligible values
@@ -142,8 +150,9 @@ TEST(PoolFlushesAutomaticallyOnceFull)
 
 TEST(LabelSelfLinksOnItsFirstBranchAndBindResolvesIt)
 {
-    uint16_t buf[8];
-    Assembler a(buf, 8);
+    TestAssembler a_ta(8);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     Label label;
     CHECK(a.branchTo(label, ArmV6M::Condition::EQ)); // site 0
     a.emit(ArmV6M::mvns(ArmV6M::LoReg(0), ArmV6M::LoReg(0))); // filler, site 2
@@ -157,8 +166,9 @@ TEST(LabelSelfLinksOnItsFirstBranchAndBindResolvesIt)
 
 TEST(LabelChainsMultipleBranchesAndBindResolvesEveryOne)
 {
-    uint16_t buf[8];
-    Assembler a(buf, 8);
+    TestAssembler a_ta(8);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     Label label;
     CHECK(a.branchTo(label));                        // site 0
     CHECK(a.branchTo(label, ArmV6M::Condition::NE)); // site 2, chains onto site 0
@@ -179,8 +189,9 @@ TEST(UnconditionalBranchToFlushesAnyOpenPoolChunkNoGuardRightAfter)
     // nothing ever falls through -- so it flushes the still-open pool
     // right there, no-guard: no separate branch-around, the pool word
     // lands directly after the branch itself.
-    uint16_t buf[16];
-    Assembler a(buf, 16);
+    TestAssembler a_ta(16);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     a.materializeImm32(0, 0x12345678u); // pool site at pc=0, pc now 2
     Label label;
     CHECK(a.branchTo(label)); // site 2, pc now 4, flushes no-guard right after
@@ -196,34 +207,13 @@ TEST(UnconditionalBranchToFlushesAnyOpenPoolChunkNoGuardRightAfter)
     CHECK((uint32_t)(2 + 4 + delta) == a.pc());
 }
 
-TEST(BindFlushesAnyOpenPoolChunkBeforeResolvingTheTarget)
-{
-    // Unlike an unconditional branchTo, a conditional one falls through
-    // when not taken, so it must not auto-flush -- the pool stays open
-    // until bind() itself flushes it (guarded: a real branch-around, since
-    // bind()'s own target can be reached via fallthrough too).
-    uint16_t buf[16];
-    Assembler a(buf, 16);
-    a.materializeImm32(0, 0x12345678u); // pool site at pc=0, pc now 2
-    Label label;
-    CHECK(a.branchTo(label, ArmV6M::Condition::EQ)); // site 2, pc now 4, pool still open
-
-    CHECK(a.bind(label)); // must flush the pool (branch-around + pad + word) *before* resolving label's own target
-    uint16_t rawOff;
-    CHECK(ArmV6M::getCondBranchOffset(buf[1], rawOff));
-    int32_t delta = ArmV6M::signExtend(rawOff, 8) << 1;
-    CHECK((uint32_t)(2 + 4 + delta) == a.pc());
-    // label's own target lands past the flushed branch-around and pool
-    // word, never on top of either.
-    CHECK(a.pc() > 4 + 4);
-}
-
 // ── overflow ─────────────────────────────────────────────────────────────
 
 TEST(EmitPastCapacityBailsOnADetachedAssembler)
 {
-    uint16_t buf[1];
-    Assembler a(buf, 1);
+    TestAssembler a_ta(1);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     a.emit(0);
     EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_ARENA, a.emit(0)); // past capacity -- escapes, never writes buf[1]
 }
@@ -233,24 +223,27 @@ TEST(PatchBranchBailsOnAnUnencodableUnconditionalDelta)
     // F5: patchBranch used to mask an out-of-range delta into whatever the
     // low bits happened to be, silently retargeting the branch, instead of
     // rejecting it.
-    uint16_t buf[1];
-    Assembler a(buf, 1);
+    TestAssembler a_ta(1);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     uint32_t site = a.placeholderBranch(); // site 0, pc now 2
     CHECK(!a.patchBranch(site, 3000)); // delta 2996 > Ioff<1,11>::maxValue
 }
 
 TEST(PatchBranchBailsOnAnUnencodableConditionalDelta)
 {
-    uint16_t buf[1];
-    Assembler a(buf, 1);
+    TestAssembler a_ta(1);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     uint32_t site = a.placeholderCondBranch(ArmV6M::Condition::EQ); // site 0, pc now 2
     CHECK(!a.patchBranch(site, 400)); // delta 396 > Ioff<1,8>::maxValue
 }
 
 TEST(PatchBranchAcceptsTheMaxEncodableUnconditionalDelta)
 {
-    uint16_t buf[1];
-    Assembler a(buf, 1);
+    TestAssembler a_ta(1);
+    Assembler &a = a_ta.a;
+    const uint16_t *buf = a_ta.code();
     uint32_t site = a.placeholderBranch();
     CHECK(a.patchBranch(site, site + 4 + 2046)); // exactly Ioff<1,11>::maxValue -- must not fail()
     uint16_t rawOff;

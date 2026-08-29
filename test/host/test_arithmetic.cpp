@@ -2,16 +2,21 @@
 // tool independent of the encoding logic under test.
 #include "Test.h"
 #include "assembler.h"
-#include "binops.h"
+#include "arithmetic.h"
 #include "registers.h"
 #include "armv6.h"
 
+#include "host_runtime_support.h"
+
 using namespace jitc;
+
+using R = ArmV6M::LoReg;
 
 TEST(AddRegPlusReg)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofReg(2);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, operand, 0);
@@ -24,8 +29,9 @@ TEST(SubRegMinusReg)
     // Both operands are plain registers — SUB's simplest case, never
     // exercised by the other SUB tests here (they all have at least one
     // side be a compile-time immediate).
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofReg(3);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, operand, 0);
@@ -35,8 +41,9 @@ TEST(SubRegMinusReg)
 
 TEST(RsubRegMinusReg)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofReg(3);
     emitBinaryOp(e, Op::RSUB, Combo::REG_ACC, acc, operand, 0); // dest = operand - acc = r3 - r1
@@ -46,8 +53,9 @@ TEST(RsubRegMinusReg)
 
 TEST(RsubZeroImmDegeneratesToNeg)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(1); // acc currently in r1
     Shape operand = Shape::ofImm(0); // RSUB #0 -> negation
     emitBinaryOp(e, Op::RSUB, Combo::IMM_ACC, acc, operand, 0);
@@ -57,8 +65,9 @@ TEST(RsubZeroImmDegeneratesToNeg)
 
 TEST(AddImmFitsImm3)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofImm(5);
     emitBinaryOp(e, Op::ADD, Combo::IMM_ACC, acc, operand, 0);
@@ -68,8 +77,9 @@ TEST(AddImmFitsImm3)
 
 TEST(SubImmFitsImm8OnlyWhenDestEqualsN)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(0); // dest == n == ACC_REG
     Shape operand = Shape::ofImm(200); // doesn't fit imm3, fits imm8
     emitBinaryOp(e, Op::SUB, Combo::IMM_ACC, acc, operand, 0);
@@ -79,27 +89,30 @@ TEST(SubImmFitsImm8OnlyWhenDestEqualsN)
 
 TEST(ShiftImm)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofImm(3);
     emitBinaryOp(e, Op::SHL, Combo::IMM_ACC, acc, operand, 0);
     CHECK(e.halfwordCount() == 1);
-    CHECK(buf[0] == ArmV6M::lsls(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::Imm<5>(3))); // LSLS r0, r1, #3
+    CHECK(e_ta.code()[0] == ArmV6M::lsls(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::Imm<5>(3))); // LSLS r0, r1, #3
 
-    Assembler e2(buf, 4);
+    TestAssembler e2_ta(4);
+    Assembler &e2 = e2_ta.a;
     emitBinaryOp(e2, Op::SHR, Combo::IMM_ACC, acc, operand, 0);
-    CHECK(buf[0] == ArmV6M::lsrs(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::Imm<5>(3))); // LSRS r0, r1, #3
+    CHECK(e2_ta.code()[0] == ArmV6M::lsrs(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::Imm<5>(3))); // LSRS r0, r1, #3
 
-    Assembler e3(buf, 4);
+    TestAssembler e3_ta(4);
+    Assembler &e3 = e3_ta.a;
     emitBinaryOp(e3, Op::ASR, Combo::IMM_ACC, acc, operand, 0);
-    CHECK(buf[0] == ArmV6M::asrs(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::Imm<5>(3))); // ASRS r0, r1, #3
+    CHECK(e3_ta.code()[0] == ArmV6M::asrs(ArmV6M::LoReg(0), ArmV6M::LoReg(1), ArmV6M::Imm<5>(3))); // ASRS r0, r1, #3
 }
 
 TEST(ShiftImmMaterializesAPendingImmediateAccumulatorFirst)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofImm(5);
     Shape operand = Shape::ofImm(3);
     emitBinaryOp(e, Op::SHL, Combo::IMM_ACC, acc, operand, 0);
@@ -109,8 +122,9 @@ TEST(ShiftImmMaterializesAPendingImmediateAccumulatorFirst)
 
 TEST(TwoOpInPlaceMaterializesAccFirstAndMovesOutIfDestDiffers)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(1); // not ACC_REG — must be materialized into ACC_REG first
     Shape operand = Shape::ofReg(5);
     emitBinaryOp(e, Op::AND, Combo::REG_ACC, acc, operand, 4); // dest=4, != ACC_REG
@@ -121,8 +135,9 @@ TEST(TwoOpInPlaceMaterializesAccFirstAndMovesOutIfDestDiffers)
 
 TEST(TwoOpInPlaceSkipsMoveOutWhenDestIsAccReg)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(0); // already ACC_REG — no materialize move either
     Shape operand = Shape::ofReg(5);
     emitBinaryOp(e, Op::AND, Combo::REG_ACC, acc, operand, 0);
@@ -132,8 +147,9 @@ TEST(TwoOpInPlaceSkipsMoveOutWhenDestIsAccReg)
 
 TEST(AddImmFitsImm8OnlyWhenDestEqualsN)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(0); // dest == n == ACC_REG
     Shape operand = Shape::ofImm(200); // doesn't fit imm3, fits imm8
     emitBinaryOp(e, Op::ADD, Combo::IMM_ACC, acc, operand, 0);
@@ -147,8 +163,9 @@ TEST(AddImmFallsBackToMaterializeWhenDestDiffersAndImmTooLarge)
     // fast path doesn't apply either since dest != n, so this must fall
     // all the way through to addOrSubWithImm's materialize-into-
     // SCRATCH_REG tail.
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofImm(10);
     emitBinaryOp(e, Op::ADD, Combo::IMM_ACC, acc, operand, 0);
@@ -166,8 +183,9 @@ TEST(AddRegAccWithOversizedImmediateOperandSkipsTheDestEqualsNCheck)
     // above, where fitsImm8 was true and dest!=n was what failed). 1000 =
     // 125 << 3, so materializeImm32's shift-trick synthesizes it in 2
     // halfwords.
-    uint16_t buf[8];
-    Assembler e(buf, 8);
+    TestAssembler e_ta(8);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofImm(1000);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, operand, 0);
@@ -183,8 +201,9 @@ TEST(AddPeekPeekUsesDestAsRhsForOrdinaryArithmeticToo)
     // TwoOpInPlace ops (AND/OR/etc) the other PEEK_PEEK tests here
     // exercise — rhs==Shape::ofReg(dest) reaches emitAddSubRsub itself,
     // not just emitBinaryOp's TwoOpInPlace branch.
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(1);
     emitBinaryOp(e, Op::ADD, Combo::PEEK_PEEK, acc, Shape::ofReg(5), 5);
     CHECK(e.halfwordCount() == 1);
@@ -195,8 +214,9 @@ TEST(AddAccImmRhsRegFoldsIntoOrdinaryRegPlusImm)
 {
     // acc pending-imm(5), rhs reg(2): dest = rhs.reg + acc.imm — the
     // ADD/SUB row's register-plus-immediate fold, operands swapped.
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofImm(5);
     Shape operand = Shape::ofReg(2);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, operand, 0);
@@ -214,8 +234,9 @@ TEST(AddBothImmMaterializesAccIntoDestNotScratchToAvoidAliasingWithK)
     // accShape and compute `k op k` instead of `accShape op k` — accShape
     // must materialize into `dest` itself instead, which is never
     // SCRATCH_REG for this call shape.
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofImm(3);
     Shape operand = Shape::ofImm(4);
     emitBinaryOp(e, Op::ADD, Combo::IMM_ACC, acc, operand, 0);
@@ -230,8 +251,9 @@ TEST(SubRegAccWithOversizedImmediateOperandSkipsTheDestEqualsNCheck)
     // imm3/imm8, so addOrSubWithImm's fitsImm8(k) check short-circuits
     // false on its own. 1000 = 125 << 3, so materializeImm32's
     // shift-trick synthesizes it in 2 halfwords.
-    uint16_t buf[8];
-    Assembler e(buf, 8);
+    TestAssembler e_ta(8);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(1);
     Shape operand = Shape::ofImm(1000);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, operand, 0);
@@ -246,8 +268,9 @@ TEST(SubAccImmRhsRegUsesRsubImmAsLeftWithNonzeroK)
     // acc pending-imm(20), rhs reg(3): dest = acc.imm - rhs.reg, k != 0,
     // so emitRsubImmAsLeft's own materialize path (not the k==0/NEG
     // shortcut the other RSUB-zero test already covers).
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofImm(20);
     Shape operand = Shape::ofReg(3);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, operand, 0);
@@ -258,8 +281,9 @@ TEST(SubAccImmRhsRegUsesRsubImmAsLeftWithNonzeroK)
 
 TEST(SubBothImmMaterializesAccIntoDest)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofImm(10);
     Shape operand = Shape::ofImm(3);
     emitBinaryOp(e, Op::SUB, Combo::IMM_ACC, acc, operand, 0);
@@ -272,8 +296,9 @@ TEST(RsubAccImmRhsRegFoldsIntoOrdinaryRegMinusImm)
     // RSUB is rhs - acc; acc pending-imm(4), rhs reg(3): dest = rhs.reg -
     // acc.imm, an ordinary register-minus-immediate, not the
     // immediate-as-left-operand case.
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofImm(4);
     Shape operand = Shape::ofReg(3);
     emitBinaryOp(e, Op::RSUB, Combo::REG_ACC, acc, operand, 0);
@@ -288,8 +313,9 @@ TEST(RsubRhsImmAccRegUsesRsubImmAsLeftWithNonzeroK)
     // whenever "clean", is always ACC_REG or a window register —
     // physReg() never returns SCRATCH_REG=2): dest = rhs.imm - acc.reg,
     // k != 0.
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(5);
     Shape operand = Shape::ofImm(7);
     emitBinaryOp(e, Op::RSUB, Combo::IMM_ACC, acc, operand, 0);
@@ -302,8 +328,9 @@ TEST(RsubBothImmMaterializesAccIntoDestNotScratchToAvoidAliasingWithK)
 {
     // Same aliasing hazard as AddBothImm..., mirrored for RSUB (rhs - acc
     // instead of acc + k): dest = 2 - 9 = -7, not 0.
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofImm(9);
     Shape operand = Shape::ofImm(2);
     emitBinaryOp(e, Op::RSUB, Combo::IMM_ACC, acc, operand, 0);
@@ -324,8 +351,9 @@ TEST(AddAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
     // — a register never live across bytecode instructions, so always
     // free to borrow, unlike dest (which can itself alias SCRATCH_REG via
     // the same reload path).
-    uint16_t buf[8];
-    Assembler e(buf, 8);
+    TestAssembler e_ta(8);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofImm(100);
     Shape operand = Shape::ofReg(SCRATCH_REG);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, operand, 0);
@@ -336,8 +364,9 @@ TEST(AddAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
 
 TEST(SubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
 {
-    uint16_t buf[8];
-    Assembler e(buf, 8);
+    TestAssembler e_ta(8);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofImm(100);
     Shape operand = Shape::ofReg(SCRATCH_REG);
     emitBinaryOp(e, Op::SUB, Combo::REG_ACC, acc, operand, 0);
@@ -348,8 +377,9 @@ TEST(SubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
 
 TEST(RsubAccImmRhsScratchRegAvoidsClobberingReloadedOperand)
 {
-    uint16_t buf[8];
-    Assembler e(buf, 8);
+    TestAssembler e_ta(8);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofImm(50);
     Shape operand = Shape::ofReg(SCRATCH_REG);
     emitBinaryOp(e, Op::RSUB, Combo::REG_ACC, acc, operand, 0);
@@ -368,8 +398,9 @@ TEST(AddAccImmRhsScratchRegDestAlsoScratchRegDoesNotAssert)
     // this since it's never aliased by dest or n. k = 1000 doesn't fit the
     // imm8 increment-in-place shortcut (dest == n alone isn't enough to
     // take that path), so this reaches the materialize-a-temporary branch.
-    uint16_t buf[8];
-    Assembler e(buf, 8);
+    TestAssembler e_ta(8);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofImm(1000);
     Shape operand = Shape::ofReg(SCRATCH_REG);
     emitBinaryOp(e, Op::ADD, Combo::REG_ACC, acc, operand, SCRATCH_REG);
@@ -405,8 +436,9 @@ TEST(TwoOpInPlaceNativeCoversEveryOpcode)
     };
     for(auto &c : cases)
     {
-        uint16_t buf[4];
-        Assembler e(buf, 4);
+        TestAssembler e_ta(4);
+        Assembler &e = e_ta.a;
+        const uint16_t *buf = e_ta.code();
         Shape acc = Shape::ofReg(0);
         Shape operand = Shape::ofReg(5);
         emitBinaryOp(e, c.op, Combo::REG_ACC, acc, operand, 0);
@@ -421,10 +453,69 @@ TEST(TwoOpInPlacePeekPeekUsesDestAsRhs)
     // — dest is a window register here (r5, mirroring window.topReg()),
     // safe to read as Rm before it's overwritten as Rdn's move-out
     // target.
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Shape acc = Shape::ofReg(1); // not ACC_REG — must be materialized first
     emitBinaryOp(e, Op::AND, Combo::PEEK_PEEK, acc, Shape::ofReg(5), 5);
     CHECK(e.halfwordCount() == 1);
     CHECK(buf[0] == ArmV6M::ands(ArmV6M::LoReg(5), ArmV6M::LoReg(1))); // ANDS r0, r5  (r5 == dest itself, PEEK_PEEK's own operand)
+}
+
+
+TEST(negEmitsSingleInstruction)
+{
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
+    emitUnary(e, Op::NEG, ACC_REG, ACC_REG);
+    CHECK(e.halfwordCount() == 1);
+    CHECK(buf[0] == ArmV6M::negs(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ACC_REG)));
+}
+
+TEST(notEmitsSingleInstructionAndMovesOutWhenDestDiffers)
+{
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
+    emitUnary(e, Op::NOT, 5, ACC_REG);
+    CHECK(e.halfwordCount() == 1);
+    CHECK(buf[0] == ArmV6M::mvns(ArmV6M::LoReg(5), ArmV6M::LoReg(ACC_REG)));
+}
+
+TEST(negReadsSrcDirectlyWhenOperandLivesOutsideAccReg)
+{
+    // negs/mvns have an independent source register field — the caller
+    // need not flush the operand into ACC_REG first (translate_proc.cpp's
+    // NEG/NOT dispatch relies on exactly this to skip a redundant MOV).
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
+    emitUnary(e, Op::NEG, ACC_REG, 7);
+    CHECK(e.halfwordCount() == 1);
+    CHECK(buf[0] == ArmV6M::negs(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(7)));
+}
+
+TEST(clzEmitsHelperVectorCallSequence)
+{
+    TestAssembler e_ta(8);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
+    emitUnary(e, Op::CLZ, ACC_REG, ACC_REG);
+    CHECK(e.halfwordCount() == 3); // MOV r3,r10 / LDR r3,[r3,#16] / BLX r3 — no trailing MOV, dest is already ACC_REG
+    CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
+    CHECK(buf[1] == ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(16))); // clzHelper, index 4
+    CHECK(buf[2] == ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
+}
+
+TEST(revbitsEmitsHelperVectorCallSequenceAndMovesOutWhenDestDiffers)
+{
+    TestAssembler e_ta(8);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
+    emitUnary(e, Op::REVBITS, 6, ACC_REG);
+    CHECK(e.halfwordCount() == 4); // MOV + LDR + BLX + trailing MOV out
+    CHECK(buf[1] == ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(20))); // revbitsHelper, index 5
+    CHECK(buf[2] == ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
+    CHECK(buf[3] == ArmV6M::mov(ArmV6M::AnyReg(6), ArmV6M::AnyReg(ACC_REG)));
 }

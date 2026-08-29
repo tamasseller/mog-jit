@@ -5,6 +5,8 @@
 #include "abi_strategy.h"
 #include "imm_synth.h"
 
+#include "host_runtime_support.h"
+
 using namespace jitc;
 
 // The 32-bit word a pooled literal load at halfword index site actually
@@ -23,16 +25,18 @@ static uint32_t loadedWord(const uint16_t *buf, uint32_t site)
 
 TEST(stubSizeMatchesActualEmittedLength)
 {
-    uint16_t buf[8];
-    Assembler e(buf, 8);
+    TestAssembler e_ta(8);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     emitPrologueStub(e);
     CHECK(e.halfwordCount() * 2 == STUB_SIZE);
 }
 
 TEST(prologueStubExactEncoding)
 {
-    uint16_t buf[8];
-    Assembler e(buf, 8);
+    TestAssembler e_ta(8);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     emitPrologueStub(e);
     CHECK(e.halfwordCount() == 6);
     CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(11))); // MOV r3, r11
@@ -63,8 +67,9 @@ TEST(abiEmitCallFitsImm8CalleeIndexIsAFixedFiveHalfwordSequence)
     // closed-form constant — record(1) + calleeIndex(1, fits imm8) +
     // movHi+ldr(callHelper)+bx(3) = 5 — rather than something a
     // fixed-point search has to converge on.
-    uint16_t buf[16];
-    Assembler e(buf, 16);
+    TestAssembler e_ta(16);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     emitPrologueStub(e); // advances e.pc() to STUB_SIZE, matching abiEmitCall's real call site
     uint32_t before = e.halfwordCount();
     abiEmitCall(e, /*procIdx=*/0, /*calleeIndex=*/1);
@@ -90,8 +95,9 @@ TEST(abiEmitCallForcePoolsACalleeIndexNotFittingImm8Too)
     // the record — both operands cost exactly one halfword at the call
     // site regardless of value, keeping the sequence's own length a true
     // constant (still 5) even here.
-    uint16_t buf[16];
-    Assembler e(buf, 16);
+    TestAssembler e_ta(16);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     emitPrologueStub(e);
     uint32_t before = e.halfwordCount();
     abiEmitCall(e, /*procIdx=*/2, /*calleeIndex=*/300);
@@ -110,8 +116,9 @@ TEST(abiEmitCallForcePoolsACalleeIndexNotFittingImm8Too)
 
 TEST(abiEmitReturnLeafDispatchesToReturnHelperFromLr)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     abiEmitReturn(e, /*savesLR=*/false, /*initialSpilledCount=*/0);
     CHECK(e.halfwordCount() == 3);
     CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10))); // MOV r3, r10
@@ -123,8 +130,9 @@ TEST(abiEmitReturnOrdinaryNonLeafDispatchesToReturnHelperFromStack)
 {
     // savesLR, but argCount <= WINDOW_SIZE (initialSpilledCount=0) — the
     // common non-leaf case, still a bare 3-instruction dispatch.
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     abiEmitReturn(e, /*savesLR=*/true, /*initialSpilledCount=*/0);
     CHECK(e.halfwordCount() == 3);
     CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10))); // MOV r3, r10
@@ -139,8 +147,9 @@ TEST(abiEmitReturnDeepArgsNonLeafDispatchesToReturnHelperFromStackReclaim)
     // out-of-window arguments below it, so this loads that one
     // per-procedure byte count into r2 and dispatches to the shared helper
     // that expects it there (index 7), instead of returnHelperFromStack.
-    uint16_t buf[8];
-    Assembler e(buf, 8);
+    TestAssembler e_ta(8);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     abiEmitReturn(e, /*savesLR=*/true, /*initialSpilledCount=*/3);
     CHECK(e.halfwordCount() == 4);
     CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(12))); // MOVS r2, #12  (4 * initialSpilledCount)
@@ -160,8 +169,9 @@ TEST(abiEmitReturnDeepArgsNonLeafSynthesizesLargeReclaimByteCount)
     // which disallow the two-instruction-sequence forms) — 400 = 25 << 4,
     // so it synthesizes inline via the shift-trick (MOVS + LSLS, 2
     // halfwords) rather than pooling.
-    uint16_t buf[16];
-    Assembler e(buf, 16);
+    TestAssembler e_ta(16);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     abiEmitReturn(e, /*savesLR=*/true, /*initialSpilledCount=*/100); // 4*100 = 400 > 0xff
     uint32_t n = e.halfwordCount();
     CHECK(n == 2 + 3); // MOVS + LSLS (400 = 25 << 4), then MOV/LDR/BX
@@ -172,13 +182,15 @@ TEST(abiEmitReturnDeepArgsNonLeafSynthesizesLargeReclaimByteCount)
 
 TEST(abiEmitPrologueAddsPushLrOnlyWhenSavesLR)
 {
-    uint16_t buf1[8];
-    Assembler e1(buf1, 8);
+    TestAssembler e1_ta(8);
+    Assembler &e1 = e1_ta.a;
+    const uint16_t *buf1 = e1_ta.code();
     abiEmitPrologue(e1, /*savesLR=*/false);
     CHECK(e1.halfwordCount() == 6); // just the stub
 
-    uint16_t buf2[8];
-    Assembler e2(buf2, 8);
+    TestAssembler e2_ta(8);
+    Assembler &e2 = e2_ta.a;
+    const uint16_t *buf2 = e2_ta.code();
     abiEmitPrologue(e2, /*savesLR=*/true);
     CHECK(e2.halfwordCount() == 7);
     CHECK(buf2[6] == ArmV6M::pushWithLr(ArmV6M::LoRegs{0})); // PUSH {lr}

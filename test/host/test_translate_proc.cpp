@@ -15,9 +15,6 @@
 #include "dispatch_abi.h"
 #include "host_runtime_support.h"
 
-#include <sys/mman.h>
-#include <cassert>
-
 using namespace jitc;
 
 
@@ -77,41 +74,10 @@ static const Instr kProc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)}
 // process's own real memory doesn't generally fit that (ASLR puts both
 // the stack and ordinary heap/static storage above 4GB), so this file
 // can't just point those fields at an ordinary local buffer the way the
-// old detached Assembler(buf, capacity) could. LowMemory below is the
-// fix: an mmap(..., MAP_32BIT) region — real, dereferenceable memory
-// that also happens to live below 4GB, so the uint32_t round-trip loses
-// nothing.
-class LowMemory
-{
-    uint8_t *mem;
-    uint32_t size;
-    uint32_t cursor = 0;
-public:
-    explicit LowMemory(uint32_t bytes) : size(bytes)
-    {
-        void *p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
-        assert(p != MAP_FAILED); // GCOV_EXCL_LINE — this file's own setup, not the thing under test
-        mem = (uint8_t *)p;
-    }
-    ~LowMemory() { munmap(mem, size); }
-    LowMemory(const LowMemory &) = delete;
-    LowMemory &operator=(const LowMemory &) = delete;
-
-    // Bump-allocates bytes (4-aligned, mirroring Runtime::reserveFor's own
-    // rounding) and returns its address as the bare uint32_t every
-    // ProcSlot::bodyPtr/Runtime::arenaCursor field expects.
-    uint32_t alloc(uint32_t bytes)
-    {
-        uint32_t at = cursor;
-        cursor = (cursor + bytes + 3u) & ~3u;
-        assert(cursor <= size); // GCOV_EXCL_LINE — this file's own sizing, not the thing under test
-        return (uint32_t)(uintptr_t)(mem + at);
-    }
-
-    uint8_t *raw(uint32_t addr) const { return (uint8_t *)(uintptr_t)addr; }
-    const uint16_t *code(uint32_t addr) const { return (const uint16_t *)(uintptr_t)addr; }
-};
+// old detached Assembler(buf, capacity) could. LowMemory (host_runtime_
+// support.h) is the fix: an mmap(..., MAP_32BIT) region — real,
+// dereferenceable memory that also happens to live below 4GB, so the
+// uint32_t round-trip loses nothing.
 
 // Arbitrary but fixed — none of this file's tests exercise eviction
 // ordering (that's test/qemu's job), so the exact LRU tick a compiled

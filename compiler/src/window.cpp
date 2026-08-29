@@ -138,7 +138,7 @@ uint32_t Window::spillOffset(uint32_t k) const
     return (savesLR && k < initialSpilledCount) ? raw + 4 : raw;
 }
 
-void Window::discard(Assembler &e) const
+bool Window::discard(Assembler &e) const
 {
     uint32_t spilled = spilledCount(tos) - (savesLR ? initialSpilledCount : 0);
     if(spilled > 0)
@@ -146,11 +146,12 @@ void Window::discard(Assembler &e) const
         uint32_t bytes = 4 * spilled;
         if(!ArmV6M::Uoff<2, 7>::isInRange(bytes))
         {
-            e.fail(RESOURCE_LIMIT_WINDOW_RECLAIM);
-            return;
+            return false;
         }
         e.emit(ArmV6M::incrSp(ArmV6M::Uoff<2, 7>((uint16_t)bytes)));
     }
+
+    return true;
 }
 
 void Window::pushValue(Assembler &e, AccState &accState)
@@ -200,7 +201,7 @@ void Window::fillCalleeArgs(Assembler &e, uint32_t stackArgs)
     popRuns(e, stackArgs - m, m);
 }
 
-void Window::restore(Assembler &e, uint32_t targetTos)
+bool Window::restore(Assembler &e, uint32_t targetTos)
 {
     uint32_t spilledNow = spilledCount(this->tos);
     uint32_t spilledTarget = spilledCount(targetTos);
@@ -211,14 +212,14 @@ void Window::restore(Assembler &e, uint32_t targetTos)
         uint32_t bytes = 4 * (spilledNow - reloadTop);
         if(!ArmV6M::Uoff<2, 7>::isInRange(bytes))
         {
-            e.fail(RESOURCE_LIMIT_WINDOW_RECLAIM);
-            return;
+            return false;
         }
         e.emit(ArmV6M::incrSp(ArmV6M::Uoff<2, 7>((uint16_t)bytes)));
     }
     popRuns(e, spilledTarget, reloadTop - spilledTarget);
 
     this->tos = targetTos;
+    return true;
 }
 
 void Window::reloadAfterCall(Assembler &e, uint32_t targetTos)

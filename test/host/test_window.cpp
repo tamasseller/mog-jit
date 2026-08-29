@@ -51,8 +51,9 @@ TEST(spillOffsetGetsSavesLRAdjustmentOnlyForOriginalOutOfWindowArgs)
     // k=1 here — needs no adjustment even though it's non-leaf: it was
     // spilled strictly after the prologue's own push{lr}, so this
     // procedure's own view of sp is already self-consistent for it.
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     AccState acc;
     acc.producer(Shape::ofImm(99));
     nonLeaf.pushValue(e, acc); // tos: 5 -> 6, evicts k=1 to the real stack
@@ -62,8 +63,9 @@ TEST(spillOffsetGetsSavesLRAdjustmentOnlyForOriginalOutOfWindowArgs)
 
 TEST(pushValueEvictsAtWindowBoundary)
 {
-    uint16_t buf[16];
-    Assembler e(buf, 16);
+    TestAssembler e_ta(16);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Window w(0);
     AccState acc;
     int values[] = {10, 20, 30, 40, 50};
@@ -85,8 +87,9 @@ TEST(pushValueEvictsAtWindowBoundary)
 
 TEST(finishPopReloadsWhatPushEvicted)
 {
-    uint16_t buf[16];
-    Assembler e(buf, 16);
+    TestAssembler e_ta(16);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Window w(0);
     AccState acc;
     for(int v : {10, 20, 30, 40, 50})
@@ -104,8 +107,9 @@ TEST(finishPopReloadsWhatPushEvicted)
 
 TEST(discardWindowIsOneBareSpAdjustment)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Window w(6); // 2 slots spilled (tos=6, WINDOW_SIZE=4), leaf
     w.discard(e);
     CHECK(e.halfwordCount() == 1);
@@ -119,8 +123,9 @@ TEST(discardWindowForSavesLRReclaimsOnlySelfSpilledLocals)
     // argument: it sits below this procedure's own push{lr}, which
     // abiEmitReturn (not discardWindow) reclaims after retrieving the
     // saved record.
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Window w(5, /*savesLR=*/true); // tos=5, spilledCount=1, all of it "original"
     w.discard(e);
     CHECK(e.halfwordCount() == 0); // nothing self-spilled — nothing to reclaim here
@@ -128,8 +133,9 @@ TEST(discardWindowForSavesLRReclaimsOnlySelfSpilledLocals)
 
 TEST(discardWindowAcceptsTheMaxEncodableSpAdjustment)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Window w(4 + 127); // 127 words spilled -> 508 bytes, exactly Uoff<2,7>::maxValue
     w.discard(e);
     CHECK(e.halfwordCount() == 1);
@@ -141,18 +147,20 @@ TEST(discardWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
     // F6: incrSp(Uoff<2,7>(...)) used to silently flip ADD into SUB
     // (fmtImm7's unmasked OR bleeds into the opcode's own ADD/SUB bit)
     // instead of failing once more than 127 words are spilled.
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Window w(4 + 128); // 128 words spilled -> 512 bytes, one word past the limit
-    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_WINDOW_RECLAIM, w.discard(e));
+    CHECK(!w.discard(e));
 }
 
 TEST(restoreWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Window w(4 + 128);
-    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_WINDOW_RECLAIM, w.restore(e, 0));
+    CHECK(!w.restore(e, 0));
 }
 
 TEST(callShuffleWithStackArgsExceedingWindowSize)
@@ -162,23 +170,26 @@ TEST(callShuffleWithStackArgsExceedingWindowSize)
     // fillCalleeArgs's WINDOW_SIZE-1 cap (not WINDOW_SIZE) exists for; a
     // wrong cap here would silently reassign which value lands in which
     // register.
-    uint16_t buf1[8];
-    Assembler e1(buf1, 8);
+    TestAssembler e1_ta(8);
+    Assembler &e1 = e1_ta.a;
+    const uint16_t *buf1 = e1_ta.code();
     Window w(6);
     w.spillForCall(e1, 6);
     CHECK(e1.halfwordCount() == 2);
     CHECK(buf1[0] == ArmV6M::push(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(4)).add(ArmV6M::LoReg(5)))); // PUSH {r4, r5}  (pre-wrap run, k=2,3)
     CHECK(buf1[1] == ArmV6M::push(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(6)).add(ArmV6M::LoReg(7)))); // PUSH {r6, r7}  (post-wrap run, k=4,5)
 
-    uint16_t buf2[8];
-    Assembler e2(buf2, 8);
+    TestAssembler e2_ta(8);
+    Assembler &e2 = e2_ta.a;
+    const uint16_t *buf2 = e2_ta.code();
     Window::fillCalleeArgs(e2, 6);
     CHECK(e2.halfwordCount() == 2);
     CHECK(buf2[0] == ArmV6M::pop(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(6)).add(ArmV6M::LoReg(7)))); // POP {r6, r7}  (larger-k run first)
     CHECK(buf2[1] == ArmV6M::pop(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(4)))); // POP {r4}      (k=3's own lone run)
 
-    uint16_t buf3[8];
-    Assembler e3(buf3, 8);
+    TestAssembler e3_ta(8);
+    Assembler &e3 = e3_ta.a;
+    const uint16_t *buf3 = e3_ta.code();
     w.reloadAfterCall(e3, 0); // targetTos = tos(6) - stackArgs(6) = 0
     CHECK(e3.halfwordCount() == 0); // nothing left over to restore
     CHECK(w.tos == 0);
@@ -191,8 +202,9 @@ TEST(callShuffleWithLeftoverLocalsAboveTheStackArgs)
     // call returns, so spillForCall's own leading plain-PUSH branch (base >
     // bottom) fires to preserve them, distinct from pushLargestKClosest's
     // own per-argument pushes just below.
-    uint16_t buf[8];
-    Assembler e(buf, 8);
+    TestAssembler e_ta(8);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     Window w(5);
     w.spillForCall(e, 2);
     CHECK(e.halfwordCount() == 3);

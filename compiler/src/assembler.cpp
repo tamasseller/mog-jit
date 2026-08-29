@@ -23,31 +23,23 @@ static uint32_t roundUpToWord(uint32_t v)
     return (v + 3u) & ~3u;
 }
 
-Assembler::Assembler(uint16_t *buf, uint32_t capacityHalfwords)
-    : buf(buf), capacity(capacityHalfwords) {}
-
-Assembler::Assembler(Runtime *rt, uint32_t procIdx, uint32_t lruTick)
-    : buf((uint16_t *)(uintptr_t)rt->arenaCursor),
-      capacity((rt->arenaEnd - rt->arenaCursor) / 2),
+Assembler::Assembler(Runtime &rt, uint32_t procIdx, uint32_t lruTick)
+    : buf((uint16_t *)(uintptr_t)rt.arenaCursor),
+      capacity((rt.arenaEnd - rt.arenaCursor) / 2),
       runtime(rt), procIdx(procIdx), lruTick(lruTick) {}
 
 bool Assembler::growForAttached()
 {
-    if(runtime == nullptr)
-    {
-        return false; // detached: fixed capacity, nothing to grow — emit()'s own bounds check catches any shortfall
-    }
-
-    int victim = runtime->findEvictionVictim(lruTick);
+    int victim = runtime.findEvictionVictim(lruTick);
     if(victim < 0)
     {
         return false;
     }
 
-    runtime->evict((uint32_t)victim, count * 2);
+    runtime.evict((uint32_t)victim, count * 2);
 
-    buf = (uint16_t *)(uintptr_t)runtime->arenaCursor;
-    capacity = (runtime->arenaEnd - runtime->arenaCursor) / 2;
+    buf = (uint16_t *)(uintptr_t)runtime.arenaCursor;
+    capacity = (runtime.arenaEnd - runtime.arenaCursor) / 2;
 
     return true;
 }
@@ -62,7 +54,7 @@ uint32_t Assembler::emit(uint16_t word)
     {
         if(!this->growForAttached())
         {
-            fail(RESOURCE_EXHAUSTED_ARENA);
+            runtimeBail(&runtime, RESOURCE_EXHAUSTED_ARENA);
             return at; // host's mocked runtimeBail() returns normally; every call site, including this one, must return right after per fail()'s own contract
         }
     }
@@ -77,11 +69,6 @@ uint32_t Assembler::emit(uint16_t word)
     }
 
     return at;
-}
-
-void Assembler::fail(uint32_t code)
-{
-    runtimeBail(runtime, code);
 }
 
 // ── branches ────────────────────────────────────────────────────────────
@@ -171,31 +158,12 @@ bool Assembler::branchTo(Label &label)
 
     // Nothing ever falls through an unconditional branch, so a guarded
     // flush's own branch-around would be wasted bytes right here.
-    flushPoolNoGuard();
+    flushPool();
     return true;
-}
-
-void Assembler::flushPool()
-{
-    flushPoolImpl(false);
-}
-
-void Assembler::flushPoolNoGuard()
-{
-    flushPoolImpl(true);
 }
 
 bool Assembler::bind(Label &label)
 {
-    // Flush first (always guarded — a bound label can be reached via
-    // fallthrough, e.g. an if-then's "end" via both the skip branch and
-    // the body's own fallthrough, so it can never assume the
-    // branch-around is unneeded the way an unconditional jump's own
-    // target can), so nothing already chained onto label can end up
-    // resolving to a spot the flush then inserts pool words into — the
-    // one ordering guarantee that makes this safe to call from anywhere
-    // a fixup resolves to "wherever we are now."
-    flushPoolImpl(false);
     uint32_t target = pc();
     for(int32_t site = label.chain; site != -1;)
     {
@@ -227,9 +195,6 @@ void Assembler::patchRawHalfword(uint32_t siteOffset, uint16_t value)
 
 void Assembler::parkPoolSite(uint32_t dstReg, uint32_t value)
 {
-    // The immediate field carries nothing meaningful — flushPoolImpl()
-    // recovers the value from pendingValues, never by re-decoding this
-    // instruction — so a placeholder zero is as good as any tag.
     uint32_t site = emit(ArmV6M::fmtImm8(ArmV6M::Imm8Op::LDR, (uint16_t)dstReg, 0));
     pendingSites[pendingCount] = site;
     pendingValues[pendingCount] = value;
@@ -307,26 +272,7 @@ void Assembler::patchPoolSite(uint32_t siteOffset, uint32_t word)
     buf[idx] = ArmV6M::setLiteralOffset(buf[idx], ArmV6M::Uoff<2, 8>(off));
 }
 
-// Close the open chunk: branch around the pool (nothing executes past a
-// terminator, so the end-of-procedure flush needs none), pad to a word
-// boundary, then walk the chunk's own (site, value) pairs directly —
-// nothing here scans the output buffer, so a BR_TABLE(N>2) jump table's
-// raw halfwords are never at risk of being misread as a pooled site, no
-// matter what's still open when one is emitted. Identical values dedupe
-// to one shared pool word.
-//
-// endOfProcedure, despite its name, really means "no branch-around
-// needed" — flushPoolNoGuard() uses it for any known-safe, no-fallthrough
-// point (right after an unconditional branch, a jump table's own
-// dispatch), not just true end-of-procedure; see those call sites and
-// branchTo(Label&)'s own unconditional overload.
-//
-// Wrapped in its own AtomicScope: the emit() calls below (branch-around,
-// pad, pool words) must not re-trigger emit()'s own automatic
-// ensurePoolRoom(0) check — pendingCount only clears at the very end, so
-// an unsuppressed recursive check here would see the same still-pending
-// set and could call back into this function while it's still running.
-void Assembler::flushPoolImpl(bool endOfProcedure)
+void Assembler::flushPool(bool emitGuard)
 {
     if(pendingCount == 0)
     {
@@ -336,10 +282,11 @@ void Assembler::flushPoolImpl(bool endOfProcedure)
     AtomicScope atomic(*this);
 
     uint32_t branchSite = 0;
-    if(!endOfProcedure)
+    if(emitGuard)
     {
         branchSite = placeholderBranch();
     }
+
     if(pc() % 4 != 0)
     {
         emit(ArmV6M::nop());
@@ -356,6 +303,7 @@ void Assembler::flushPoolImpl(bool endOfProcedure)
                 break;
             }
         }
+
         if(!isFirstOccurrence)
         {
             continue;
@@ -365,6 +313,7 @@ void Assembler::flushPoolImpl(bool endOfProcedure)
         emit((uint16_t)(pendingValues[i] & 0xffff));
         emit((uint16_t)(pendingValues[i] >> 16));
         patchPoolSite(pendingSites[i], word);
+
         for(uint32_t j = i + 1; j < pendingCount; j++)
         {
             if(pendingValues[j] == pendingValues[i])
@@ -374,7 +323,7 @@ void Assembler::flushPoolImpl(bool endOfProcedure)
         }
     }
 
-    if(!endOfProcedure)
+    if(emitGuard)
     {
         const auto ok = patchBranch(branchSite, pc());
         assert(ok && "should be able to branch over literal pool");
@@ -389,25 +338,26 @@ void Assembler::ensurePoolRoom(uint32_t poolEntries, uint32_t extraBytes)
     {
         return;
     }
+
     uint32_t poolEnd = roundUpToWord(pc() + 2 + extraBytes) + 4 * (pendingCount + poolEntries);
     bool reachAtRisk = poolEnd - pendingSites[0] + LITERAL_POOL_REACH_MARGIN > LITERAL_POOL_MAX_REACH;
     bool countAtRisk = pendingCount + poolEntries > POOL_MAX_PENDING;
+    
     if(reachAtRisk || countAtRisk)
     {
-        flushPoolImpl(false);
+        flushPool(true);
     }
 }
 
 uint32_t Assembler::finalize()
 {
-    flushPoolImpl(/*endOfProcedure=*/true);
-    if(runtime != nullptr)
-    {
-        uint32_t need = count * 2;
-        uint32_t dest = runtime->allocate(need);
-        assert(dest == (uint32_t)(uintptr_t)buf); // GCOV_EXCL_LINE — growForAttached's own base-tracking invariant
-        runtime->markCompiled(procIdx, dest);
-    }
+    flushPool();
+
+    uint32_t need = count * 2;
+    uint32_t dest = runtime.allocate(need);
+    assert(dest == (uint32_t)(uintptr_t)buf); // GCOV_EXCL_LINE — growForAttached's own base-tracking invariant
+    runtime.markCompiled(procIdx, dest);
+
     return count;
 }
 

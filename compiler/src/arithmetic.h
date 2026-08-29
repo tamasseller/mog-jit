@@ -8,6 +8,7 @@
 #include <cstdint>
 #include "instr.h"
 #include "shape.h"
+#include "armv6.h"
 
 namespace jitc
 {
@@ -15,6 +16,10 @@ namespace jitc
 class Assembler;
 
 void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const Shape &rhs, uint32_t dest);
+
+ArmV6M::Condition emitComparison(Assembler &a, Shape left, Op op, const Shape &operand);
+
+void emitUnary(Assembler &e, Op op, uint32_t dest, uint32_t src);
 
 } // namespace jitc
 

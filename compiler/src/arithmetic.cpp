@@ -1,4 +1,4 @@
-#include "binops.h"
+#include "arithmetic.h"
 #include "assembler.h"
 #include "registers.h"
 #include "imm_synth.h"
@@ -295,6 +295,79 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
                 default: assert(false); // GCOV_EXCL_LINE
             }
         }
+    }
+}
+
+
+static constexpr ArmV6M::Condition DIRECT_CONDITION[10] = {
+    ArmV6M::Condition::EQ, ArmV6M::Condition::NE, ArmV6M::Condition::LT, ArmV6M::Condition::LE, ArmV6M::Condition::GT, ArmV6M::Condition::GE, ArmV6M::Condition::LO, ArmV6M::Condition::LS, ArmV6M::Condition::HI, ArmV6M::Condition::HS,
+}; // EQ, NE, LT_S, LE_S, GT_S, GE_S, LT_U, LE_U, GT_U, GE_U
+
+static constexpr ArmV6M::Condition MIRRORED_CONDITION[10] = {
+    ArmV6M::Condition::EQ, ArmV6M::Condition::NE, ArmV6M::Condition::GT, ArmV6M::Condition::GE, ArmV6M::Condition::LT, ArmV6M::Condition::LE, ArmV6M::Condition::HI, ArmV6M::Condition::HS, ArmV6M::Condition::LO, ArmV6M::Condition::LS,
+};
+
+ArmV6M::Condition emitComparison(Assembler &a, Shape left, Op op, const Shape &operand)
+{
+    assert(isComparisonOp(op)); // GCOV_EXCL_LINE — translate_proc.cpp's own caller already checked
+    uint32_t idx = (uint32_t)op - (uint32_t)Op::EQ;
+    ArmV6M::Condition condition = DIRECT_CONDITION[idx];
+
+    if(left.isImm && !operand.isImm && fitsImm8(left.imm))
+    {
+        a.emit(ArmV6M::cmp(R((uint16_t)operand.reg), ArmV6M::Imm<8>((uint16_t)left.imm)));
+        return MIRRORED_CONDITION[idx];
+    }
+
+    if(left.isImm)
+    {
+        left.materialize(a, ACC_REG);
+        left = Shape::ofReg(ACC_REG);
+    }
+
+    if(!operand.isImm)
+    {
+        a.emit(ArmV6M::cmp(R((uint16_t)left.reg), R((uint16_t)operand.reg)));
+    }
+    else if(fitsImm8(operand.imm))
+    {
+        a.emit(ArmV6M::cmp(R((uint16_t)left.reg), ArmV6M::Imm<8>((uint16_t)operand.imm)));
+    }
+    else
+    {
+        operand.materialize(a, SCRATCH_REG);
+        a.emit(ArmV6M::cmp(R((uint16_t)left.reg), R((uint16_t)SCRATCH_REG)));
+    }
+    return condition;
+}
+
+void emitUnary(Assembler &e, Op op, uint32_t dest, uint32_t src)
+{
+    if(op == Op::NEG)
+    {
+        e.emit(ArmV6M::negs(R((uint16_t)dest), R((uint16_t)src)));
+        return;
+    }
+    if(op == Op::NOT)
+    {
+        e.emit(ArmV6M::mvns(R((uint16_t)dest), R((uint16_t)src)));
+        return;
+    }
+
+    assert(src == ACC_REG); // GCOV_EXCL_LINE — clzHelper/revbitsHelper hardcode ACC_REG, caller's job to flush there first
+
+    // CLZ / REVBITS in the flash-resident helper vector (docs/design.md
+    // §11). BLX rather than BX: both routines are ordinary subroutines
+    // that return via `bx lr`, unlike the tail-jumping callHelper/
+    // returnHelper* this same MOV/LDR idiom also reaches (abi_strategy.cpp's
+    // own precedent).
+    uint32_t offset = (op == Op::CLZ) ? HELPER_CLZ_OFFSET : HELPER_REVBITS_OFFSET;
+    e.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
+    e.emit(ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>((uint16_t)offset)));
+    e.emit(ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
+    if(dest != ACC_REG)
+    {
+        e.emit(ArmV6M::mov(ArmV6M::AnyReg((uint16_t)dest), ArmV6M::AnyReg((uint16_t)ACC_REG)));
     }
 }
 

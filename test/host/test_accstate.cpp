@@ -4,6 +4,8 @@
 #include "shape.h"
 #include "armv6.h"
 
+#include "host_runtime_support.h"
+
 using namespace jitc;
 
 TEST(startsCleanInAccReg)
@@ -15,8 +17,9 @@ TEST(startsCleanInAccReg)
 
 TEST(producerThenPeekReturnsPendingShapeUnmaterialized)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     AccState acc;
     acc.producer(Shape::ofImm(42));
     CHECK(e.halfwordCount() == 0); // producer alone never emits
@@ -27,8 +30,9 @@ TEST(producerThenPeekReturnsPendingShapeUnmaterialized)
 
 TEST(flushMaterializesPendingAndBecomesClean)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     AccState acc;
     acc.producer(Shape::ofImm(3));
     acc.flush(e, 5);
@@ -40,8 +44,9 @@ TEST(flushMaterializesPendingAndBecomesClean)
 
 TEST(flushOfAlreadyCleanSameRegisterIsANoOp)
 {
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     AccState acc; // starts Clean(ACC_REG)
     acc.flush(e, ACC_REG);
     CHECK(e.halfwordCount() == 0);
@@ -56,8 +61,9 @@ TEST(flushLiveOnPoisonedAccIsANoOp)
     // body happened to clobber it via REG_REG/PEEK_PEEK. flushLive treats
     // this as a no-op, not an error — nothing downstream could read acc
     // either way.
-    uint16_t buf[4];
-    Assembler e(buf, 4);
+    TestAssembler e_ta(4);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
     AccState acc;
     acc.poison();
     acc.flushLive(e, ACC_REG);
