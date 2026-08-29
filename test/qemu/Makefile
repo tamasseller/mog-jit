@@ -28,7 +28,6 @@ SOURCES += ../../compiler/src/assembler.cpp
 SOURCES += ../../compiler/src/shape.cpp
 SOURCES += ../../compiler/src/abi_strategy.cpp
 SOURCES += ../../compiler/src/decode_instr.cpp
-SOURCES += ../../compiler/src/blocks.cpp
 SOURCES += ../../compiler/src/unaryops.cpp
 SOURCES += ../../compiler/src/proc_scan.cpp
 SOURCES += ../../compiler/src/translate_proc.cpp

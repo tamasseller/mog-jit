@@ -96,24 +96,32 @@ uint32_t Assembler::placeholderBranch()
     return emit(ArmV6M::b(ArmV6M::Ioff<1, 11>(0)));
 }
 
-void Assembler::patchBranch(uint32_t siteOffset, uint32_t targetOffset)
+bool Assembler::patchBranch(uint32_t siteOffset, uint32_t targetOffset)
 {
     uint32_t idx = siteOffset / 2;
-    if(idx >= count)
-    {
-        return; // GCOV_EXCL_LINE — only reachable once overflow already started
-    }
+    assert(idx < count);  // GCOV_EXCL_LINE — only reachable once overflow already started
+
     uint16_t isn = buf[idx];
     int32_t delta = (int32_t)targetOffset - (int32_t)(siteOffset + 4);
-    bool cond = ArmV6M::isCondBranch(isn);
-    if(cond ? !ArmV6M::Ioff<1, 8>::isInRange(delta) : !ArmV6M::Ioff<1, 11>::isInRange(delta))
+
+    if(ArmV6M::isCondBranch(isn))
     {
-        fail(RESOURCE_LIMIT_BRANCH_RANGE);
-        return;
+        if(ArmV6M::Ioff<1, 8>::isInRange(delta))
+        {
+            buf[idx] = ArmV6M::setCondBranchOffset(isn, ArmV6M::Ioff<1, 8>((int16_t)delta));
+            return true;
+        }
     }
-    buf[idx] = cond
-        ? ArmV6M::setCondBranchOffset(isn, ArmV6M::Ioff<1, 8>((int16_t)delta))
-        : ArmV6M::setBranchOffset(isn, ArmV6M::Ioff<1, 11>((int16_t)delta));
+    else
+    {
+        if(ArmV6M::Ioff<1, 11>::isInRange(delta))
+        {
+            buf[idx] = ArmV6M::setBranchOffset(isn, ArmV6M::Ioff<1, 11>((int16_t)delta));
+            return true;
+        }
+    }
+
+    return false;
 }
 
 uint32_t Assembler::readBranchTarget(uint32_t siteOffset) const
@@ -138,23 +146,33 @@ uint32_t Assembler::readBranchTarget(uint32_t siteOffset) const
     return siteOffset + 4 + delta;
 }
 
-void Assembler::linkIntoChain(Label &label, uint32_t site)
+bool Assembler::linkIntoChain(Label &label, uint32_t site)
 {
-    patchBranch(site, label.chain == -1 ? site : (uint32_t)label.chain);
+    if(!patchBranch(site, label.chain == -1 ? site : (uint32_t)label.chain))
+    {
+        return false;
+    }
+
     label.chain = (int32_t)site;
+    return true;
 }
 
-void Assembler::branchTo(Label &label, ArmV6M::Condition c)
+bool Assembler::branchTo(Label &label, ArmV6M::Condition c)
 {
-    linkIntoChain(label, placeholderCondBranch(c));
+    return linkIntoChain(label, placeholderCondBranch(c));
 }
 
-void Assembler::branchTo(Label &label)
+bool Assembler::branchTo(Label &label)
 {
-    linkIntoChain(label, placeholderBranch());
+    if(!linkIntoChain(label, placeholderBranch()))
+    {
+        return false;
+    }
+
     // Nothing ever falls through an unconditional branch, so a guarded
     // flush's own branch-around would be wasted bytes right here.
     flushPoolNoGuard();
+    return true;
 }
 
 void Assembler::flushPool()
@@ -167,7 +185,7 @@ void Assembler::flushPoolNoGuard()
     flushPoolImpl(true);
 }
 
-void Assembler::bind(Label &label)
+bool Assembler::bind(Label &label)
 {
     // Flush first (always guarded — a bound label can be reached via
     // fallthrough, e.g. an if-then's "end" via both the skip branch and
@@ -182,10 +200,17 @@ void Assembler::bind(Label &label)
     for(int32_t site = label.chain; site != -1;)
     {
         uint32_t prevSite = readBranchTarget((uint32_t)site);
-        patchBranch((uint32_t)site, target);
+
+        if(!patchBranch((uint32_t)site, target))
+        {
+            return false;
+        }
+
         site = (prevSite == (uint32_t)site) ? -1 : (int32_t)prevSite;
     }
+
     label.chain = -1;
+    return true;
 }
 
 void Assembler::patchRawHalfword(uint32_t siteOffset, uint16_t value)
@@ -351,8 +376,10 @@ void Assembler::flushPoolImpl(bool endOfProcedure)
 
     if(!endOfProcedure)
     {
-        patchBranch(branchSite, pc());
+        const auto ok = patchBranch(branchSite, pc());
+        assert(ok && "should be able to branch over literal pool");
     }
+
     pendingCount = 0;
 }
 

@@ -8,7 +8,6 @@
 #include "ext.h"
 #include "decode_instr.h"
 #include "proc_scan.h"
-#include "blocks.h"
 #include "encode_instr.h"
 #include "instr.h"
 
@@ -231,17 +230,6 @@ TEST(ScanProcBodyReportsAnOpcodeTheExtensionDeclines)
     BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0, ext);
     CHECK(!r.ok);
     CHECK(r.failCode == RESOURCE_PROGRAM_EXT_UNKNOWN);
-}
-
-TEST(InstrMaxBytesBudgetsTheDeclaredHalfwords)
-{
-    const ExtHooks *ext = &FAKE;
-    const uint8_t bytes[] = {EXT_HELPER};
-    DecodedInstr d = decodeInstr(bytes, sizeof(bytes), 0, ext);
-
-    // Read off the same packed word the prologue's lr decision used — the
-    // span budget and needsLRSave cannot disagree by construction.
-    CHECK(instrMaxBytes(d.instr) == 6 * 2);
 }
 
 TEST(TheCoreReservedOpcodesAreNeverOfferedToAnExtension)

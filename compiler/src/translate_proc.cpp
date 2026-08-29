@@ -10,7 +10,6 @@
 #include "registers.h"
 #include "armv6.h"
 #include "decode_instr.h"
-#include "blocks.h"
 #include "unaryops.h"
 
 #include "runtime_internal.h"
@@ -74,6 +73,97 @@ static ArmV6M::Uoff<2, 8> spillImm(Assembler &a, uint32_t byteOffset)
     return ArmV6M::Uoff<2, 8>((uint16_t)byteOffset);
 }
 
+static constexpr Cond DIRECT_CONDITION[10] = {
+    Cond::EQ, Cond::NE, Cond::LT, Cond::LE, Cond::GT, Cond::GE, Cond::LO, Cond::LS, Cond::HI, Cond::HS,
+}; // EQ, NE, LT_S, LE_S, GT_S, GE_S, LT_U, LE_U, GT_U, GE_U
+
+static constexpr Cond MIRRORED_CONDITION[10] = {
+    Cond::EQ, Cond::NE, Cond::GT, Cond::GE, Cond::LT, Cond::LE, Cond::HI, Cond::HS, Cond::LO, Cond::LS,
+};
+
+Cond emitComparison(Assembler &a, AccState &accState, Op op, const Shape &operand)
+{
+    assert(isComparisonOp(op)); // GCOV_EXCL_LINE — translate_proc.cpp's own caller already checked
+    uint32_t idx = (uint32_t)op - (uint32_t)Op::EQ;
+    Cond condition = DIRECT_CONDITION[idx];
+
+    Shape left = accState.peek();
+
+    if(left.isImm && !operand.isImm && fitsImm8(left.imm))
+    {
+        a.emit(ArmV6M::cmp(R((uint16_t)operand.reg), ArmV6M::Imm<8>((uint16_t)left.imm)));
+        return MIRRORED_CONDITION[idx];
+    }
+
+    if(left.isImm)
+    {
+        left.materialize(a, ACC_REG);
+        left = Shape::ofReg(ACC_REG);
+    }
+
+    if(!operand.isImm)
+    {
+        a.emit(ArmV6M::cmp(R((uint16_t)left.reg), R((uint16_t)operand.reg)));
+    }
+    else if(fitsImm8(operand.imm))
+    {
+        a.emit(ArmV6M::cmp(R((uint16_t)left.reg), ArmV6M::Imm<8>((uint16_t)operand.imm)));
+    }
+    else
+    {
+        operand.materialize(a, SCRATCH_REG);
+        a.emit(ArmV6M::cmp(R((uint16_t)left.reg), R((uint16_t)SCRATCH_REG)));
+    }
+    return condition;
+}
+
+Cond testAccNonzero(Assembler &a, AccState &accState)
+{
+    // No fixed-register requirement here (unlike a CALL/RETURN boundary) —
+    // every caller only consumes the returned Cond and poisons acc right
+    // after, so read the comparison operand from wherever it already
+    // lives instead of forcing a flush into ACC_REG first, same as
+    // emitComparison above.
+    uint32_t r = accState.peek().peek(a, SCRATCH_REG);
+    a.emit(ArmV6M::cmp(R(r), ArmV6M::Imm<8>(0)));
+    return Cond::NE;
+}
+
+enum class BranchWidth
+{
+    Narrow, Wide
+};
+
+bool emitGuardedBranch(Assembler &a, Label &label, Cond condition, BranchWidth width)
+{
+    switch(width)
+    {
+        case BranchWidth::Narrow:
+            return a.branchTo(label, condition);
+
+        case BranchWidth::Wide:
+        {
+            Label fallThrough;
+
+            const auto branchOk = a.branchTo(fallThrough, ArmV6M::inverse(condition));
+            assert(branchOk);
+
+            if(!a.branchTo(label))
+            {
+                return false;
+            }
+
+            const auto bindOk = a.bind(fallThrough);
+            assert(bindOk);
+
+            return true;
+        }
+        default:
+            assert(false);
+            return false;
+    }
+}
+
 struct Ctx
 {
     Assembler a;
@@ -102,16 +192,18 @@ struct Ctx
     }
 
     void returnSequence();
-    ArmV6M::Condition handleComparisonEmission(const Instr &instr);
-    DecodedInstr processUntilTerminator(uint32_t pc, bool isThisLoopCondBlock);
-    uint32_t translateLoop(uint32_t pc);
-    uint32_t translateIfThen(uint32_t pc);
-    uint32_t translateIfThenElse(uint32_t pc);
-    uint32_t translateSwitch(uint32_t pc, uint32_t n);
     void localJumpCleanup(uint32_t tos);
     void globalJumpCleanup(uint32_t tos);
     void handleGlobalJump(Instr term, uint32_t tos);
-    void translateBody();
+
+    ArmV6M::Condition handleComparisonEmission(const Instr &instr);
+
+    bool processUntilTerminator(uint32_t pc, BranchWidth width, bool isThisLoopCondBlock, DecodedInstr &out);
+    uint32_t translateLoop(uint32_t pc, BranchWidth width);
+    uint32_t translateIfThen(uint32_t pc, BranchWidth width);
+    uint32_t translateIfThenElse(uint32_t pc, BranchWidth width);
+    uint32_t translateSwitch(uint32_t pc, BranchWidth width, uint32_t n);
+    bool translateBody(BranchWidth width);
 };
 
 void Ctx::returnSequence()
@@ -153,7 +245,7 @@ ArmV6M::Condition Ctx::handleComparisonEmission(const Instr &instr)
     }
 }
 
-DecodedInstr Ctx::processUntilTerminator(uint32_t pc, bool isThisLoopCondBlock)
+bool Ctx::processUntilTerminator(uint32_t pc, BranchWidth width, bool isThisLoopCondBlock, DecodedInstr& out)
 {
     while(pc < this->bytesLen)
     {
@@ -453,70 +545,88 @@ DecodedInstr Ctx::processUntilTerminator(uint32_t pc, bool isThisLoopCondBlock)
             case Op::GT_U:
             case Op::GE_U:
             {
-                bool hasLookahead = afterInstr < this->bytesLen;
-                DecodedInstr lookahead = hasLookahead ? decodeInstr(this->bytes, this->bytesLen, afterInstr, this->a.r().extension()) : DecodedInstr{};
-                
-                bool fusesIntoBrTable = 
-                    hasLookahead && lookahead.instr.op == Op::BR_TABLE && 
-                    (lookahead.instr.imm == 1 || lookahead.instr.imm == 2);
-
-                bool fusesIntoLoopExit = 
-                    isThisLoopCondBlock && 
-                    hasLookahead && 
-                    lookahead.instr.op == Op::BLOCK_END;
-
                 Cond trueCondition = this->handleComparisonEmission(instr);
 
-                if(fusesIntoBrTable || fusesIntoLoopExit)
+                if(afterInstr < this->bytesLen)
                 {
-                    this->pendingComparisonCondition = trueCondition;
-                    this->hasPendingComparisonCondition = true;
-                    this->accState.poison();
+                    DecodedInstr lookahead = decodeInstr(this->bytes, this->bytesLen, afterInstr, this->a.r().extension());
                     
-                    pc = afterInstr;
-                    break;
+                    bool fusesIntoBrTable = lookahead.instr.op == Op::BR_TABLE && (lookahead.instr.imm == 1 || lookahead.instr.imm == 2);
+                    bool fusesIntoLoopExit = isThisLoopCondBlock && lookahead.instr.op == Op::BLOCK_END;
+
+                    if(fusesIntoBrTable || fusesIntoLoopExit)
+                    {
+                        this->pendingComparisonCondition = trueCondition;
+                        this->hasPendingComparisonCondition = true;
+                        this->accState.poison();
+                        
+                        pc = afterInstr;
+                        break;
+                    }
                 }
-                else
-                {
-                    FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.r().extension());
-                    uint32_t dest = fold.redirectReg(ACC_REG);
 
-                    Label falseLabel;
-                    a.branchTo(falseLabel, ArmV6M::inverse(trueCondition));
-                    a.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(1)));
-                    Label endLabel;
-                    a.branchTo(endLabel);
-                    a.bind(falseLabel);
-                    a.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(0)));
-                    a.bind(endLabel);
+                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.r().extension());
+                uint32_t dest = fold.redirectReg(ACC_REG);
 
-                    this->accState.setClean(dest);
+                Label falseLabel;
+                if(!a.branchTo(falseLabel, ArmV6M::inverse(trueCondition))) return false;
+                
+                a.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(1)));
 
-                    pc = fold.redirectAfterNext(afterInstr);
-                    break;
-                }
+                Label endLabel;
+                const auto endOk = a.branchTo(endLabel);
+                assert(endOk);
+
+                const auto falseOk = a.bind(falseLabel);
+                assert(falseOk);
+
+                a.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(0)));
+                
+                const auto endBound = a.bind(endLabel);
+                assert(endBound);
+
+                this->accState.setClean(dest);
+
+                pc = fold.redirectAfterNext(afterInstr);
+                break;
             }
             
-            case Op::LOOP: pc = this->translateLoop(afterInstr); break;
+            case Op::LOOP: 
+                pc = this->translateLoop(afterInstr, width); 
+
+                if(pc == -1) 
+                {
+                    return false;
+                }
+
+                break;
 
             case Op::BR_TABLE:
                 switch(instr.imm)
                 {
-                    case 1: pc = this->translateIfThen(afterInstr); break;
-                    case 2: pc = this->translateIfThenElse(afterInstr); break;
-                    default: pc = this->translateSwitch(afterInstr, instr.imm);break;
+                    case 1: pc = this->translateIfThen(afterInstr, width); break;
+                    case 2: pc = this->translateIfThenElse(afterInstr, width); break;
+                    default: pc = this->translateSwitch(afterInstr, width, instr.imm);break;
                 }
+
+                if(pc == -1) 
+                {
+                    return false;
+                }
+
                 break;
 
             default:
                 assert(isTerminator(instr));
                 assert(!this->hasPendingComparisonCondition || (isThisLoopCondBlock && instr.op == Op::BLOCK_END)); // GCOV_EXCL_LINE — comparison fused into nothing; malformed program
-                return {.instr = instr, .next = afterInstr};
+
+                out = DecodedInstr{.instr = instr, .next = afterInstr};
+                return true;
         }
     }
 
     assert(false); // GCOV_EXCL_LINE
-    for(;;);
+    return false;
 }
 
 void Ctx::localJumpCleanup(uint32_t tos)
@@ -549,7 +659,7 @@ void Ctx::handleGlobalJump(Instr term, uint32_t tos)
     this->globalJumpCleanup(tos);
 }
 
-uint32_t Ctx::translateIfThen(uint32_t pc)
+uint32_t Ctx::translateIfThen(uint32_t pc, BranchWidth width)
 {
     if(!checkStackFloor(a, this->a.r()))
     {
@@ -564,31 +674,39 @@ uint32_t Ctx::translateIfThen(uint32_t pc)
 
     const auto cond = fused ? this->pendingComparisonCondition : testAccNonzero(a, this->accState);
 
-    emitGuardedBranch(a, skip, cond, this->bytes, this->bytesLen, pc, 1);
+    if(!emitGuardedBranch(a, skip, cond, width))
+    {
+        return -1;
+    }
 
     if(fused)
     {
         this->accState.producer(Shape::ofImm(0));
     }
-
-    const auto term = this->processUntilTerminator(pc, false);
-    if(term.instr.op == Op::BLOCK_END)
+    
+    if(DecodedInstr term; this->processUntilTerminator(pc, width, false, term))
     {
-        this->localJumpCleanup(entryTos);
+        if(term.instr.op == Op::BLOCK_END)
+        {
+            this->localJumpCleanup(entryTos);
+        }
+        else
+        {
+            this->handleGlobalJump(term.instr, entryTos);
+        }
+
+        this->accState.poison();
+
+        if(a.bind(skip))
+        {
+            return term.next;
+        }
     }
-    else
-    {
-        this->handleGlobalJump(term.instr, entryTos);
-    }
 
-    this->accState.poison();
-
-    a.bind(skip);
-
-    return term.next;
+    return -1;
 }
 
-uint32_t Ctx::translateIfThenElse(uint32_t pc)
+uint32_t Ctx::translateIfThenElse(uint32_t pc, BranchWidth width)
 {
     if(!checkStackFloor(this->a, this->a.r()))
     {
@@ -603,58 +721,84 @@ uint32_t Ctx::translateIfThenElse(uint32_t pc)
 
     if(fused)
     {
-        emitGuardedBranch(a, otherwise, this->pendingComparisonCondition, this->bytes, this->bytesLen, pc, 1);
+        if(!emitGuardedBranch(a, otherwise, this->pendingComparisonCondition, width))
+        {
+            return -1;
+        }
     }
     else
     {
         this->accState.flush(a, ACC_REG);
 
         a.emit(ArmV6M::cmp(R(ACC_REG), ArmV6M::Imm<8>(1)));
-        emitGuardedBranch(a, end, Cond::HI, this->bytes, this->bytesLen, pc, 2); // acc > 1: the implicit default, past both arms
+
+        if(!emitGuardedBranch(a, end, Cond::HI, width))
+        {
+            return -1;
+        }
 
         a.emit(ArmV6M::cmp(R(ACC_REG), ArmV6M::Imm<8>(1)));
-        emitGuardedBranch(a, otherwise, Cond::EQ, this->bytes, this->bytesLen, pc, 1); // acc == 1: case[1]
+
+        if(!emitGuardedBranch(a, otherwise, Cond::EQ, width))
+        {
+            return -1;
+        }
     }
 
     this->accState.producer(Shape::ofImm(0));
 
-    const auto term = this->processUntilTerminator(pc, false);
-    if(term.instr.op == Op::BLOCK_END)
+    if(DecodedInstr term; this->processUntilTerminator(pc, width, false, term))
     {
-        this->localJumpCleanup(entryTos);
-        a.branchTo(end);
+        if(term.instr.op == Op::BLOCK_END)
+        {
+            this->localJumpCleanup(entryTos);
+            if(!a.branchTo(end))
+            {
+                return -1;
+            }
+        }
+        else
+        {
+            this->handleGlobalJump(term.instr, entryTos);
+        }
+
+        a.flushPoolNoGuard();
+        if(!a.bind(otherwise))
+        {
+            return -1;
+        }
+
+        this->accState.producer(Shape::ofImm(1));
+
+        if(DecodedInstr term2; this->processUntilTerminator(term.next, width, false, term2))
+        {
+            if(term2.instr.op == Op::BLOCK_END)
+            {
+                this->localJumpCleanup(entryTos);
+            }
+            else
+            {
+                this->handleGlobalJump(term2.instr, entryTos);
+            }
+
+            this->accState.poison();
+
+            if(end.chain != -1)
+            {
+                if(!a.bind(end))
+                {
+                    return -1;
+                }
+            }
+
+            return term2.next;
+        }
     }
-    else
-    {
-        this->handleGlobalJump(term.instr, entryTos);
-    }
 
-    a.flushPoolNoGuard();
-    a.bind(otherwise);
-
-    this->accState.producer(Shape::ofImm(1));
-
-    const auto term2 = this->processUntilTerminator(term.next, false);
-    if(term2.instr.op == Op::BLOCK_END)
-    {
-        this->localJumpCleanup(entryTos);
-    }
-    else
-    {
-        this->handleGlobalJump(term2.instr, entryTos);
-    }
-
-    this->accState.poison();
-
-    if(end.chain != -1)
-    {
-        a.bind(end);
-    }
-
-    return term2.next;
+    return -1;
 }
 
-uint32_t Ctx::translateSwitch(uint32_t pc, uint32_t n)
+uint32_t Ctx::translateSwitch(uint32_t pc, BranchWidth width, uint32_t n)
 {
     if(!checkStackFloor(a, this->a.r()))
     {
@@ -693,23 +837,33 @@ uint32_t Ctx::translateSwitch(uint32_t pc, uint32_t n)
 
         this->accState.poison();
 
-        const auto term = this->processUntilTerminator(pc, false);
-        if(term.instr.op == Op::BLOCK_END)
+        if(DecodedInstr term; this->processUntilTerminator(pc, width, false, term))
         {
-            this->localJumpCleanup(entryTos);
-            if(i + 1 < n)
+            if(term.instr.op == Op::BLOCK_END)
             {
-                a.branchTo(end);
+                this->localJumpCleanup(entryTos);
+                if(i + 1 < n)
+                {
+                    if(!a.branchTo(end))
+                    {
+                        return -1;
+                    }
+
+                    a.flushPoolNoGuard();
+                }
+            }
+            else
+            {
+                this->handleGlobalJump(term.instr, entryTos);
                 a.flushPoolNoGuard();
             }
+
+            pc = term.next;
         }
         else
         {
-            this->handleGlobalJump(term.instr, entryTos);
-            a.flushPoolNoGuard();
+            return -1;
         }
-
-        pc = term.next;
     }
 
     a.patchRawHalfword(base + n * 2, (uint16_t)(a.pc() - base));
@@ -718,13 +872,16 @@ uint32_t Ctx::translateSwitch(uint32_t pc, uint32_t n)
 
     if(end.chain != -1)
     {
-        a.bind(end);
+        if(!a.bind(end))
+        {
+            return -1;
+        }
     }
 
     return pc;
 }
 
-uint32_t Ctx::translateLoop(uint32_t pc)
+uint32_t Ctx::translateLoop(uint32_t pc, BranchWidth width)
 {
     if(!checkStackFloor(a, this->a.r()))
     {
@@ -736,76 +893,83 @@ uint32_t Ctx::translateLoop(uint32_t pc)
     this->accState.flushLive(a, ACC_REG);
     const auto start = a.pc();
 
-    const auto condTerm = this->processUntilTerminator(pc, true);
-    assert(condTerm.instr.op == Op::BLOCK_END);
-
-    if(this->window.tos != entryTos)
+    if(DecodedInstr condTerm; this->processUntilTerminator(pc, width, true, condTerm))
     {
-        this->accState.flushLive(a, ACC_REG);
-        this->window.restore(a, entryTos);
-    }
+        assert(condTerm.instr.op == Op::BLOCK_END);
 
-    const bool fused = this->hasPendingComparisonCondition;
-    this->hasPendingComparisonCondition = false;
-
-    const auto cond = fused ? this->pendingComparisonCondition : testAccNonzero(a, this->accState);
-
-    Label out;
-    emitGuardedBranch(a, out, ArmV6M::inverse(cond), this->bytes, this->bytesLen, condTerm.next, 1);
-
-    if(fused)
-    {
-        this->accState.producer(Shape::ofImm(1));
-    }
-
-    const auto bodyTerm = this->processUntilTerminator(condTerm.next, false);
-    if(bodyTerm.instr.op == Op::BLOCK_END)
-    {
-        this->localJumpCleanup(entryTos);
-        int32_t delta = (int32_t)start - (int32_t)(a.pc() + 4);
-        if(!ArmV6M::Ioff<1, 11>::isInRange(delta))
+        if(this->window.tos != entryTos)
         {
-            a.fail(RESOURCE_LIMIT_LOOP_BACK_EDGE);
+            this->accState.flushLive(a, ACC_REG);
+            this->window.restore(a, entryTos);
+        }
+
+        const bool fused = this->hasPendingComparisonCondition;
+        this->hasPendingComparisonCondition = false;
+
+        const auto cond = fused ? this->pendingComparisonCondition : testAccNonzero(a, this->accState);
+
+        Label out;
+        if(!emitGuardedBranch(a, out, ArmV6M::inverse(cond), width))
+        {
             return -1;
         }
-        a.emit(ArmV6M::b(ArmV6M::Ioff<1, 11>((int16_t)delta)));
+
+        if(fused)
+        {
+            this->accState.producer(Shape::ofImm(1));
+        }
+
+        if(DecodedInstr bodyTerm; this->processUntilTerminator(condTerm.next, width, false, bodyTerm))
+        {
+            if(bodyTerm.instr.op == Op::BLOCK_END)
+            {
+                this->localJumpCleanup(entryTos);
+                int32_t delta = (int32_t)start - (int32_t)(a.pc() + 4);
+                if(!ArmV6M::Ioff<1, 11>::isInRange(delta))
+                {
+                    a.fail(RESOURCE_LIMIT_LOOP_BACK_EDGE);
+                    return -1;
+                }
+                a.emit(ArmV6M::b(ArmV6M::Ioff<1, 11>((int16_t)delta)));
+            }
+            else
+            {
+                this->handleGlobalJump(bodyTerm.instr, entryTos);
+            }
+
+            a.flushPoolNoGuard();
+
+            this->accState.poison();
+
+            if(!a.bind(out))
+            {
+                return -1;
+            }
+
+            return bodyTerm.next;
+        }
     }
-    else
-    {
-        this->handleGlobalJump(bodyTerm.instr, entryTos);
-    }
-
-    a.flushPoolNoGuard();
-
-    this->accState.poison();
-
-    a.bind(out);
-
-    return bodyTerm.next;
+    
+    return -1;
 }
 
-void Ctx::translateBody()
+bool Ctx::translateBody(BranchWidth width)
 {
-    if(!checkStackFloor(a, this->a.r()))
+    if(checkStackFloor(a, this->a.r()))
     {
-        return;
+        if(DecodedInstr decoded; processUntilTerminator(0, width, false, decoded))
+        {
+            const Instr &instr = decoded.instr;
+
+            assert(instr.op == Op::RETURN || instr.op == Op::TRAP); // GCOV_EXCL_LINE — BLOCK_END with no open block; malformed program
+            this->handleGlobalJump(instr, this->window.tos);
+            assert(decoded.next == this->bytesLen);
+
+            return true;
+        }
     }
 
-    DecodedInstr decoded = processUntilTerminator(0, false);
-    const Instr &instr = decoded.instr;
-
-    switch(instr.op)
-    {
-    case Op::BLOCK_END:
-        assert(false); // GCOV_EXCL_LINE — BLOCK_END with no open block; malformed program
-        return;
-            
-    case Op::RETURN:
-    case Op::TRAP:
-        this->handleGlobalJump(instr, this->window.tos);
-        assert(decoded.next == this->bytesLen);
-        return;
-    }
+    return false;
 }
 
 uint32_t translateProc(uint32_t procIdx, Runtime& r, uint32_t lruTick)
@@ -819,7 +983,13 @@ uint32_t translateProc(uint32_t procIdx, Runtime& r, uint32_t lruTick)
         ctx.accState.flush(ctx.a, physReg(ctx.window.tos - 1));
     }
 
-    ctx.translateBody();
+    if(!ctx.translateBody(BranchWidth::Narrow))
+    {
+        if(ctx.translateBody(BranchWidth::Wide))
+        {
+            ctx.a.fail(RESOURCE_LIMIT_BRANCH_RANGE);
+        }
+    }
 
     return ctx.a.finalize();
 }

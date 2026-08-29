@@ -57,7 +57,7 @@ class Assembler
     uint32_t pendingValues[POOL_MAX_PENDING];
     uint32_t pendingCount = 0;
 
-    void linkIntoChain(Label &label, uint32_t site);
+    bool linkIntoChain(Label &label, uint32_t site);
     void parkPoolSite(uint32_t dstReg, uint32_t value);
     void patchPoolSite(uint32_t siteOffset, uint32_t word);
     void flushPoolImpl(bool endOfProcedure);
@@ -170,7 +170,7 @@ public:
     // closes."
     uint32_t placeholderBranch();
     uint32_t placeholderCondBranch(ArmV6M::Condition c);
-    void patchBranch(uint32_t siteOffset, uint32_t targetOffset);
+    bool patchBranch(uint32_t siteOffset, uint32_t targetOffset) __attribute__((warn_unused_result));
     uint32_t readBranchTarget(uint32_t siteOffset) const;
 
     // Chain site onto label (self-linking it if label was empty) — the
@@ -179,8 +179,8 @@ public:
     // falls through an unconditional branch, so whatever follows in the
     // buffer is never reached that way, and a guarded flush's own
     // branch-around would be wasted bytes here.
-    void branchTo(Label &label, ArmV6M::Condition c);
-    void branchTo(Label &label);
+    bool branchTo(Label &label, ArmV6M::Condition c) __attribute__((warn_unused_result));
+    bool branchTo(Label &label) __attribute__((warn_unused_result));
 
     // Flush the pool (if one is open — safe to call on an empty Label),
     // then resolve every branch chained onto label to right here. This is
@@ -192,7 +192,7 @@ public:
     // fallthrough (e.g. an if-then's "end", reached both by the skip
     // branch and by falling through the body), unlike an unconditional
     // branch's own target.
-    void bind(Label &label);
+    bool bind(Label &label) __attribute__((warn_unused_result));
 
     // Flush the pool right now (guarded), regardless of ensurePoolRoom's
     // own risk heuristic — the explicit, unconditional counterpart to it.

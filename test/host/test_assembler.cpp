@@ -145,10 +145,10 @@ TEST(LabelSelfLinksOnItsFirstBranchAndBindResolvesIt)
     uint16_t buf[8];
     Assembler a(buf, 8);
     Label label;
-    a.branchTo(label, ArmV6M::Condition::EQ); // site 0
+    CHECK(a.branchTo(label, ArmV6M::Condition::EQ)); // site 0
     a.emit(ArmV6M::mvns(ArmV6M::LoReg(0), ArmV6M::LoReg(0))); // filler, site 2
 
-    a.bind(label);
+    CHECK(a.bind(label));
     uint16_t rawOff;
     CHECK(ArmV6M::getCondBranchOffset(buf[0], rawOff));
     int32_t delta = ArmV6M::signExtend(rawOff, 8) << 1;
@@ -160,10 +160,10 @@ TEST(LabelChainsMultipleBranchesAndBindResolvesEveryOne)
     uint16_t buf[8];
     Assembler a(buf, 8);
     Label label;
-    a.branchTo(label);                        // site 0
-    a.branchTo(label, ArmV6M::Condition::NE); // site 2, chains onto site 0
+    CHECK(a.branchTo(label));                        // site 0
+    CHECK(a.branchTo(label, ArmV6M::Condition::NE)); // site 2, chains onto site 0
 
-    a.bind(label);
+    CHECK(a.bind(label));
     uint16_t rawOff;
     CHECK(ArmV6M::getBranchOffset(buf[0], rawOff));
     int32_t delta0 = ArmV6M::signExtend(rawOff, 11) << 1;
@@ -183,13 +183,13 @@ TEST(UnconditionalBranchToFlushesAnyOpenPoolChunkNoGuardRightAfter)
     Assembler a(buf, 16);
     a.materializeImm32(0, 0x12345678u); // pool site at pc=0, pc now 2
     Label label;
-    a.branchTo(label); // site 2, pc now 4, flushes no-guard right after
+    CHECK(a.branchTo(label)); // site 2, pc now 4, flushes no-guard right after
 
     CHECK(a.pc() == 4 + 4); // site(2) + branch(2) + pool word(4), no branch-around
     CHECK(buf[2] == 0x5678);
     CHECK(buf[3] == 0x1234);
 
-    a.bind(label); // pool already empty -- only resolves the branch target
+    CHECK(a.bind(label)); // pool already empty -- only resolves the branch target
     uint16_t rawOff;
     CHECK(ArmV6M::getBranchOffset(buf[1], rawOff));
     int32_t delta = ArmV6M::signExtend(rawOff, 11) << 1;
@@ -206,9 +206,9 @@ TEST(BindFlushesAnyOpenPoolChunkBeforeResolvingTheTarget)
     Assembler a(buf, 16);
     a.materializeImm32(0, 0x12345678u); // pool site at pc=0, pc now 2
     Label label;
-    a.branchTo(label, ArmV6M::Condition::EQ); // site 2, pc now 4, pool still open
+    CHECK(a.branchTo(label, ArmV6M::Condition::EQ)); // site 2, pc now 4, pool still open
 
-    a.bind(label); // must flush the pool (branch-around + pad + word) *before* resolving label's own target
+    CHECK(a.bind(label)); // must flush the pool (branch-around + pad + word) *before* resolving label's own target
     uint16_t rawOff;
     CHECK(ArmV6M::getCondBranchOffset(buf[1], rawOff));
     int32_t delta = ArmV6M::signExtend(rawOff, 8) << 1;
@@ -236,7 +236,7 @@ TEST(PatchBranchBailsOnAnUnencodableUnconditionalDelta)
     uint16_t buf[1];
     Assembler a(buf, 1);
     uint32_t site = a.placeholderBranch(); // site 0, pc now 2
-    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_BRANCH_RANGE, a.patchBranch(site, 3000)); // delta 2996 > Ioff<1,11>::maxValue
+    CHECK(!a.patchBranch(site, 3000)); // delta 2996 > Ioff<1,11>::maxValue
 }
 
 TEST(PatchBranchBailsOnAnUnencodableConditionalDelta)
@@ -244,7 +244,7 @@ TEST(PatchBranchBailsOnAnUnencodableConditionalDelta)
     uint16_t buf[1];
     Assembler a(buf, 1);
     uint32_t site = a.placeholderCondBranch(ArmV6M::Condition::EQ); // site 0, pc now 2
-    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_BRANCH_RANGE, a.patchBranch(site, 400)); // delta 396 > Ioff<1,8>::maxValue
+    CHECK(!a.patchBranch(site, 400)); // delta 396 > Ioff<1,8>::maxValue
 }
 
 TEST(PatchBranchAcceptsTheMaxEncodableUnconditionalDelta)
@@ -252,7 +252,7 @@ TEST(PatchBranchAcceptsTheMaxEncodableUnconditionalDelta)
     uint16_t buf[1];
     Assembler a(buf, 1);
     uint32_t site = a.placeholderBranch();
-    a.patchBranch(site, site + 4 + 2046); // exactly Ioff<1,11>::maxValue -- must not fail()
+    CHECK(a.patchBranch(site, site + 4 + 2046)); // exactly Ioff<1,11>::maxValue -- must not fail()
     uint16_t rawOff;
     CHECK(ArmV6M::getBranchOffset(buf[0], rawOff));
     CHECK(ArmV6M::signExtend(rawOff, 11) << 1 == 2046);
