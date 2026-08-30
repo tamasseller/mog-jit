@@ -14,21 +14,21 @@ g++ -std=c++17 -O1 -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -fno-sanitize=shift-base \
     -m32 \
-    -I ../compiler/src -I ../runtime \
+    -I ../src/compiler -I ../src/runtime \
     harness.cpp \
-    ../compiler/src/window.cpp \
-    ../compiler/src/ext.cpp \
-    ../compiler/src/accstate.cpp \
-    ../compiler/src/assembler.cpp \
-    ../compiler/src/arithmetic.cpp \
-    ../compiler/src/shape.cpp \
-    ../compiler/src/abi_strategy.cpp \
-    ../compiler/src/decode_instr.cpp \
-    ../compiler/src/proc_scan.cpp \
-    ../compiler/src/translate_proc.cpp \
-    ../compiler/src/translate_data_flow.cpp \
-    ../compiler/src/translate_control_flow.cpp \
-    ../runtime/runtime.cpp \
+    ../src/compiler/window.cpp \
+    ../src/compiler/ext.cpp \
+    ../src/compiler/accstate.cpp \
+    ../src/compiler/assembler.cpp \
+    ../src/compiler/arithmetic.cpp \
+    ../src/compiler/shape.cpp \
+    ../src/compiler/abi_strategy.cpp \
+    ../src/compiler/decode_instr.cpp \
+    ../src/compiler/proc_scan.cpp \
+    ../src/compiler/translate_proc.cpp \
+    ../src/compiler/translate_data_flow.cpp \
+    ../src/compiler/translate_control_flow.cpp \
+    ../src/runtime/runtime.cpp \
     -o fuzz_driver
 
 echo "built ./fuzz_driver"

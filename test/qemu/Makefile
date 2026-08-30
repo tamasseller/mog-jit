@@ -2,24 +2,24 @@ OUTPUT = run.elf
 
 SOURCES += vectors.S
 
-SOURCES += ../../runtime/runtime.S
-SOURCES += ../../runtime/runtime.cpp
-SOURCES += ../../runtime/enter_program.cpp
-SOURCES += ../../runtime/dispatch_abi.cpp
+SOURCES += ../../src/runtime/runtime.S
+SOURCES += ../../src/runtime/runtime.cpp
+SOURCES += ../../src/runtime/enter_program.cpp
+SOURCES += ../../src/runtime/dispatch_abi.cpp
 
 # The compiler itself
-SOURCES += ../../compiler/src/window.cpp
-SOURCES += ../../compiler/src/ext.cpp
-SOURCES += ../../compiler/src/accstate.cpp
-SOURCES += ../../compiler/src/arithmetic.cpp
-SOURCES += ../../compiler/src/assembler.cpp
-SOURCES += ../../compiler/src/shape.cpp
-SOURCES += ../../compiler/src/abi_strategy.cpp
-SOURCES += ../../compiler/src/decode_instr.cpp
-SOURCES += ../../compiler/src/proc_scan.cpp
-SOURCES += ../../compiler/src/translate_proc.cpp
-SOURCES += ../../compiler/src/translate_data_flow.cpp
-SOURCES += ../../compiler/src/translate_control_flow.cpp
+SOURCES += ../../src/compiler/window.cpp
+SOURCES += ../../src/compiler/ext.cpp
+SOURCES += ../../src/compiler/accstate.cpp
+SOURCES += ../../src/compiler/arithmetic.cpp
+SOURCES += ../../src/compiler/assembler.cpp
+SOURCES += ../../src/compiler/shape.cpp
+SOURCES += ../../src/compiler/abi_strategy.cpp
+SOURCES += ../../src/compiler/decode_instr.cpp
+SOURCES += ../../src/compiler/proc_scan.cpp
+SOURCES += ../../src/compiler/translate_proc.cpp
+SOURCES += ../../src/compiler/translate_data_flow.cpp
+SOURCES += ../../src/compiler/translate_control_flow.cpp
 
 SOURCES += ../encode_instr.cpp
 SOURCES += fixtures.cpp
@@ -31,11 +31,11 @@ SOURCES += main.cpp
 
 SOURCES += ../../vendor/1test/TestRunner.cpp
 
-INCLUDE_DIRS += ../../compiler/src   # jitc:: headers, armv6.h
-INCLUDE_DIRS += ../../runtime         # runtime_host.h / runtime.h
-INCLUDE_DIRS += .                      # fixtures.h / semihosting_output.h
-INCLUDE_DIRS += ..                      # corpus_programs.h, encode_instr.h
-INCLUDE_DIRS += ../../vendor/1test      # Test.h
+INCLUDE_DIRS += .
+INCLUDE_DIRS += ..
+INCLUDE_DIRS += ../../src/runtime
+INCLUDE_DIRS += ../../src/compiler
+INCLUDE_DIRS += ../../vendor/1test
 
 CC  = arm-none-eabi-gcc
 CXX = arm-none-eabi-g++

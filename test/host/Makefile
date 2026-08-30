@@ -22,33 +22,33 @@ SOURCES += ../encode_instr.cpp
 
 # The compiler itself (armv6.h is header-only — test_armv6_encoding.cpp
 # reaches it straight off INCLUDE_DIRS, no extra .cpp to compile)
-SOURCES += ../../compiler/src/window.cpp
-SOURCES += ../../compiler/src/ext.cpp
-SOURCES += ../../compiler/src/accstate.cpp
-SOURCES += ../../compiler/src/assembler.cpp
-SOURCES += ../../compiler/src/arithmetic.cpp
-SOURCES += ../../compiler/src/shape.cpp
-SOURCES += ../../compiler/src/abi_strategy.cpp
-SOURCES += ../../compiler/src/decode_instr.cpp
-SOURCES += ../../compiler/src/proc_scan.cpp
-SOURCES += ../../compiler/src/translate_proc.cpp
-SOURCES += ../../compiler/src/translate_data_flow.cpp
-SOURCES += ../../compiler/src/translate_control_flow.cpp
+SOURCES += ../../src/compiler/window.cpp
+SOURCES += ../../src/compiler/ext.cpp
+SOURCES += ../../src/compiler/accstate.cpp
+SOURCES += ../../src/compiler/assembler.cpp
+SOURCES += ../../src/compiler/arithmetic.cpp
+SOURCES += ../../src/compiler/shape.cpp
+SOURCES += ../../src/compiler/abi_strategy.cpp
+SOURCES += ../../src/compiler/decode_instr.cpp
+SOURCES += ../../src/compiler/proc_scan.cpp
+SOURCES += ../../src/compiler/translate_proc.cpp
+SOURCES += ../../src/compiler/translate_data_flow.cpp
+SOURCES += ../../src/compiler/translate_control_flow.cpp
 
 # The runtime's own entry layer. Compiles and links cleanly on the host —
 # its only target-specific dependency is enterDispatch, which
 # test_enter_program.cpp fakes so the descriptor it is handed can be
 # inspected without booting an emulator.
-SOURCES += ../../runtime/enter_program.cpp
-SOURCES += ../../runtime/runtime.cpp
+SOURCES += ../../src/runtime/enter_program.cpp
+SOURCES += ../../src/runtime/runtime.cpp
 
 # 1test library
 SOURCES += ../../vendor/1test/TestRunner.cpp
 SOURCES += ../../vendor/1test/PrintfOutput.cpp
 
-INCLUDE_DIRS += ../../compiler/src   # jitc:: headers, armv6.h
-INCLUDE_DIRS += ..                    # encode_instr.h
-INCLUDE_DIRS += ../../runtime         # runtime.h / runtime_host.h
+INCLUDE_DIRS += ..               
+INCLUDE_DIRS += ../../src/runtime
+INCLUDE_DIRS += ../../src/compiler
 INCLUDE_DIRS += ../../vendor/1test
 
 ASMFLAGS += -m32
