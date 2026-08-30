@@ -568,8 +568,8 @@ per procedure by what that procedure's own prologue did:
 |---|---|---|
 | `returnHelperFromLr` (1) | leaf procedure | `MOV r1, lr`: the record has sat untouched since entry |
 | `returnHelperFromStack` (2) | ordinary non-leaf | `POP {r1}`: retrieve what its own prologue pushed |
-| `returnHelperFromStackReclaim` (7) | non-leaf with out-of-window arguments below the pushed record | `POP {r1}` then `ADD sp, sp, r2`: same retrieval, plus reclaiming what `discardWindow` deliberately left behind |
-| `returnHelperTail` (3) | (shared unpack+dispatch) | reached by fallthrough from index 2/7, or by a plain branch from index 1 |
+| `returnHelperFromStackReclaim` (6) | non-leaf with out-of-window arguments below the pushed record | `POP {r1}` then `ADD sp, sp, r2`: same retrieval, plus reclaiming what `discardWindow` deliberately left behind |
+| `returnHelperTail` (not in the vector) | (shared unpack+dispatch) | reached by fallthrough from index 2/6, or by a plain branch from index 1 |
 
 The fourth variant exists because reclaiming out-of-window arguments
 sitting below the pushed record needs a procedure-specific byte count no
@@ -733,6 +733,13 @@ copy, and both routines already hold `slotAddr` with a low register dead in
 hand — `r2` between the `LSLS` and the `MOVS` here, `r3` before the
 `code_ptr` load there. One flash copy each instead of 8 bytes of arena per
 resident procedure.
+
+Those two are also the *only* stampers. Translation does not add one of its
+own: whichever of them dispatched into `translatorTrampoline` has already
+spent a tick on the slot, so `markCompiled` writing `lruTick` again would
+hand the same value to the next call as well, leaving a procedure and the
+first thing it calls indistinguishable by age. It still takes the tick as
+`now`, which is what un-rotates `now - last_used` for the eviction scan.
 
 `returnHelperTail` stamps *unconditionally*, the sentinel included. Guarding
 it would put a branch on the one path `slots[-1]` exists to keep free —
@@ -1138,12 +1145,17 @@ needs nothing beyond the index:
 | 0 | `callHelper` |
 | 1 | `returnHelperFromLr` |
 | 2 | `returnHelperFromStack` |
-| 3 | `returnHelperTail` |
-| 4-6 | `clzHelper`, `revbitsHelper`, `brTableJumpHelper` |
-| 7 | `returnHelperFromStackReclaim` |
-| 8 | `trapHelper` |
+| 3-5 | `clzHelper`, `revbitsHelper`, `brTableJumpHelper` |
+| 6 | `returnHelperFromStackReclaim` |
+| 7 | `trapHelper` |
+| 8 | `extThunkHelper` |
 
-Slot 8 is the odd one out: every other entry either returns to its caller
+The shared `returnHelperTail` is deliberately absent: no emitted code ever
+targets it, because a return site always knows which of the three prologue
+shapes it is undoing, and the three entries that do feed it reach it by a
+branch inside `runtime.S`.
+
+Slot 7 is the odd one out: every other entry either returns to its caller
 or tail-jumps into another procedure's code, while `trapHelper` ends the
 whole excursion. A bytecode `TRAP` (isa-core.md §4.5) unwinds every frame
 between itself and the entry procedure, which it does the same way
@@ -1639,7 +1651,7 @@ wrong number, or no answer at all:
 - The structural one: `TRAP` did not unwind. It compiled to a normal
   return carrying `0x80000000 | code` — correct for the entry procedure,
   silently wrong for a nested one, whose caller read the sentinel as an
-  ordinary return value and carried on. Now helper slot 8, `trapHelper`
+  ordinary return value and carried on. Now helper slot 7, `trapHelper`
   (§11), doing for a bytecode trap what `runtimeBail` does for a resource
   error: restore `Runtime::savedSp`, jump to the sentinel landing carrying
   `LANDING_TRAP`. That retired the sentinel encoding altogether —
@@ -1812,7 +1824,7 @@ next `ensurePoolRoom` has to place.
 | `site.helperCall` | pooled address into r3, `BLX r3` | hand-written Thumb with a known clobber set, like the core's own `clzHelper`. No AAPCS guarantees — sp is legitimately 4-mod-8 inside an excursion. |
 | `site.cHelperCall` | address into r12, then the r10-vector reach to `extThunkHelper` | independently-compiled C. |
 
-`extThunkHelper` (runtime.S, helper index 9) is `push {lr}` /
+`extThunkHelper` (runtime.S, helper index 8) is `push {lr}` /
 `REALIGN_ENTER` / `blx r12` / `REALIGN_LEAVE` / `pop {pc}`. It exists for
 two things emitted code cannot do itself: realign sp to 8 for AAPCS, and
 preserve `lr` across the call — emitted code cannot, because `lr` carries

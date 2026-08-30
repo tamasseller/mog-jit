@@ -8,7 +8,6 @@ extern "C" const HelperVec helperVec = {
     .call                   = (uint32_t)(uintptr_t)callHelper,
     .returnFromLr           = (uint32_t)(uintptr_t)returnHelperFromLr,
     .returnFromStack        = (uint32_t)(uintptr_t)returnHelperFromStack,
-    .returnTail             = (uint32_t)(uintptr_t)returnHelperTail,
     .clz                    = (uint32_t)(uintptr_t)clzHelper,
     .revbits                = (uint32_t)(uintptr_t)revbitsHelper,
     .brTableJump            = (uint32_t)(uintptr_t)brTableJumpHelper,

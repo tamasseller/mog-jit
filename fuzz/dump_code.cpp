@@ -76,6 +76,7 @@ int main(int argc, char **argv)
         uint32_t halfwords = 0;
         bool bailed = false;
         g_bailCode = 0;
+        rt.slot(i).lastUsed = 0; // callHelper's stamp
         if(setjmp(g_escape) == 0) halfwords = translateProc(i, rt, /*lruTick=*/1);
         else bailed = true;
 

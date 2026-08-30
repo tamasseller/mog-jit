@@ -393,7 +393,7 @@ TEST(BrTableJumpTableHelperViaFullPipeline)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)),  // MOVS r0,#1 (CONST 1, the jump-table selector)
         ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(3)),  // MOVS r2,#3 (n=3, into SCRATCH_REG)
         ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), // MOV r3,r10 (HELPER_VEC_REG)
-        ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(24)), // LDR r3,[r3,#24] — brTableJumpHelper slot
+        ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(20)), // LDR r3,[r3,#20] — brTableJumpHelper slot
         ArmV6M::blx(ArmV6M::AnyReg(3)),                     // BLX r3 (brTableJumpHelper — lr now points at the table right after)
         0x0008, // -- jump table slot 0 (case0): 8 bytes past the table base
         0x000c, // -- jump table slot 1 (case1)
@@ -509,8 +509,8 @@ TEST(ClzHelperViaFullPipeline)
         PROLOGUE_STUB,
         ArmV6M::pushWithLr(ArmV6M::LoRegs{0}),             // PUSH {lr}  (savesLR — CLZ dispatches through the helper vector, clobbers real lr)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(5)), // MOVS r0, #5  (CONST 5)
-        // CLZ helper dispatch (clzHelper, helper-vector index 4, offset 16) — BLX not BX, since clzHelper returns via `bx lr` instead of tail-jumping
-        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(16)),
+        // CLZ helper dispatch (clzHelper, helper-vector index 3, offset 12) — BLX not BX, since clzHelper returns via `bx lr` instead of tail-jumping
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(12)),
         ArmV6M::blx(ArmV6M::AnyReg(3)),
         RETURN_VIA_STACK,
     };
@@ -995,8 +995,8 @@ TEST(RevbitsHelperViaFullPipeline)
         PROLOGUE_STUB,
         ArmV6M::pushWithLr(ArmV6M::LoRegs{0}),             // PUSH {lr}  (savesLR — REVBITS needs LR save, reached via BLX like CALL)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)), // MOVS r0, #1  (CONST 1)
-        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(20)),
-        ArmV6M::blx(ArmV6M::AnyReg(3)),                    // MOV r3,r10; LDR r3,[r3,#20]; BLX r3  (revbitsHelper, index 5 — BLX not BX: it returns via bx lr like an ordinary subroutine)
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(16)),
+        ArmV6M::blx(ArmV6M::AnyReg(3)),                    // MOV r3,r10; LDR r3,[r3,#16]; BLX r3  (revbitsHelper, index 4 — BLX not BX: it returns via bx lr like an ordinary subroutine)
         RETURN_VIA_STACK,
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -1037,8 +1037,8 @@ TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
         ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                  // skip the false branch
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)),  // MOVS r0, #0  (materialized false value)
         ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(3)),  // MOVS r2, #3  (materializeImm32(SCRATCH_REG, n=3) for openBrTableJump)
-        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(24)),
-        ArmV6M::blx(ArmV6M::AnyReg(3)),                     // MOV r3,r10; LDR r3,[r3,#24]; BLX r3  (brTableJumpHelper, index 6 — lr must point at the table right after)
+        ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(20)),
+        ArmV6M::blx(ArmV6M::AnyReg(3)),                     // MOV r3,r10; LDR r3,[r3,#20]; BLX r3  (brTableJumpHelper, index 5 — lr must point at the table right after)
         0x0008, // jump table slot 0 (case0 start, byte offset from table base)
         0x000c, // jump table slot 1 (case1 start)
         0x0010, // jump table slot 2 (case2 start)

@@ -502,9 +502,9 @@ TEST(clzEmitsHelperVectorCallSequence)
     Assembler &e = e_ta.a;
     const uint16_t *buf = e_ta.code();
     emitUnary(e, Op::CLZ, ACC_REG, ACC_REG);
-    CHECK(e.halfwordCount() == 3); // MOV r3,r10 / LDR r3,[r3,#16] / BLX r3 — no trailing MOV, dest is already ACC_REG
+    CHECK(e.halfwordCount() == 3); // MOV r3,r10 / LDR r3,[r3,#12] / BLX r3 — no trailing MOV, dest is already ACC_REG
     CHECK(buf[0] == ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));
-    CHECK(buf[1] == ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(16))); // clzHelper, index 4
+    CHECK(buf[1] == ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(12))); // clzHelper, index 3
     CHECK(buf[2] == ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
 }
 
@@ -515,7 +515,7 @@ TEST(revbitsEmitsHelperVectorCallSequenceAndMovesOutWhenDestDiffers)
     const uint16_t *buf = e_ta.code();
     emitUnary(e, Op::REVBITS, 6, ACC_REG);
     CHECK(e.halfwordCount() == 4); // MOV + LDR + BLX + trailing MOV out
-    CHECK(buf[1] == ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(20))); // revbitsHelper, index 5
+    CHECK(buf[1] == ArmV6M::ldr(R(ENTRY_JUMP_REG), R(ENTRY_JUMP_REG), ArmV6M::Uoff<2, 5>(16))); // revbitsHelper, index 4
     CHECK(buf[2] == ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)));
     CHECK(buf[3] == ArmV6M::mov(ArmV6M::AnyReg(6), ArmV6M::AnyReg(ACC_REG)));
 }

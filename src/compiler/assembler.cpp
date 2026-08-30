@@ -317,7 +317,7 @@ uint32_t Assembler::finalize(uint32_t procIdx)
     flushPool();
 
     runtime.commit((uint32_t)(uintptr_t)(buf + count)); // buf is uint16_t*, count a halfword index — scale, don't add raw
-    runtime.markCompiled(procIdx, (uint32_t)buf, lruTick);
+    runtime.markCompiled(procIdx, (uint32_t)buf);
 
     return count;
 }

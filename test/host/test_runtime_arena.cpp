@@ -92,7 +92,7 @@ TEST(OccupiedSizeIsAlwaysAWholeNumberOfWords)
     uint32_t sizes[] = {6, 2, 14, 10};
     for(uint32_t i = 0; i < 4; i++)
     {
-        runtime->markCompiled(i, place(runtime, sizes[i]), /*lruTick=*/0);
+        runtime->markCompiled(i, place(runtime, sizes[i]));
     }
     CHECK(!runtime->isResident(4));
     for(uint32_t i = 0; i < 4; i++)
@@ -175,13 +175,18 @@ TEST(RoomCheckAccountsForThePaddingAllocateWillConsume)
 
 TEST(AFreshlyCompiledProcedureIsTheYoungestNotTheOldest)
 {
+    // The stamp comes from the dispatch helper that entered the trampoline,
+    // not from markCompiled — see runtime.S's callHelper.
     RuntimeStorage<3> runtime;
-    runtime->markCompiled(0, place(runtime, 8), /*lruTick=*/10);
-    runtime->markCompiled(1, place(runtime, 8), /*lruTick=*/20);
+    runtime->slot(0).lastUsed = 10;
+    runtime->markCompiled(0, place(runtime, 8));
+    runtime->slot(1).lastUsed = 20;
+    runtime->markCompiled(1, place(runtime, 8));
 
     CHECK(RuntimeProbe::findEvictionVictim(*runtime.operator->(), /*now=*/21) == 0); // slot 1 is younger
 
-    runtime->markCompiled(2, place(runtime, 8), /*lruTick=*/30);
+    runtime->slot(2).lastUsed = 30;
+    runtime->markCompiled(2, place(runtime, 8));
     CHECK(RuntimeProbe::findEvictionVictim(*runtime.operator->(), /*now=*/31) == 0); // still the oldest, not the newest
 }
 

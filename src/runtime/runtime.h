@@ -76,7 +76,7 @@ public:
     inline ProcSlot &slot(uint32_t idx) { return dispatch.slot(idx); }
     inline const ProcSlot &slot(uint32_t idx) const { return dispatch.slot(idx); }
     inline bool isResident(uint32_t idx) const { return dispatch.isResident(idx); }
-    inline void markCompiled(uint32_t idx, uint32_t dest, uint32_t lruTick) { dispatch.markCompiled(idx, dest, lruTick); }
+    inline void markCompiled(uint32_t idx, uint32_t dest) { dispatch.markCompiled(idx, dest); }
     inline uint32_t sentinelLandingAddress() const { return dispatch.sentinelLandingAddress(); }
     inline uint32_t savedSp() const { return dispatch.savedSp(); }
 

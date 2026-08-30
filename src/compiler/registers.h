@@ -9,7 +9,6 @@ struct HelperVec
     uint32_t call;
     uint32_t returnFromLr;
     uint32_t returnFromStack;
-    uint32_t returnTail;
     uint32_t clz;
     uint32_t revbits;
     uint32_t brTableJump;

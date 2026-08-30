@@ -27,7 +27,6 @@ extern void translatorTrampoline(void); /* runtime.S */
 extern const uint16_t callHelper[];              /* runtime.S */
 extern const uint16_t returnHelperFromLr[];      /* runtime.S */
 extern const uint16_t returnHelperFromStack[];   /* runtime.S */
-extern const uint16_t returnHelperTail[];        /* runtime.S */
 extern const uint16_t clzHelper[];               /* runtime.S */
 extern const uint16_t revbitsHelper[];           /* runtime.S */
 extern const uint16_t brTableJumpHelper[];       /* runtime.S */

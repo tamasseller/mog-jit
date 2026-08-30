@@ -4,52 +4,92 @@
 
 #include "dispatch_abi.h" // DISPATCH_SENTINEL_OFFSET / CALL_RECORD_BOOT / LANDING_*
 
+/*
+ * r0: acc to pass
+ * r1: return record (caller proc idx & offset)
+ * r2: callee proc idx
+ */
 .thumb_func
 .global callHelper
 callHelper:
-    mov   lr, r1                            @ persist the record in lr — r1 is free again immediately after
-    lsls  r1, r2, #4                        @ slotAddr-relative = Q_idx * 16 (sizeof(ProcSlot))
-    add   r1, r1, r8                        @ r1 = slotAddr
-    ldr   r3, [r1, #0]                      @ r3 = codePtr
-    mov   r2, r11                           @ low-mirror the LRU tick (STR has no hi form) — r2 is dead
-    str   r2, [r1, #4]                      @ from the lsls above until the movs below, so it costs no save
+    // Store return record in LR right away (frees r1 as scratch)
+    mov   lr, r1
+
+    // Load the jump target address from dispatch table into r3 (also keep slot base in r1)
+    lsls  r1, r2, #4
+    add   r1, r1, r8
+    ldr   r3, [r1, #0]
+
+    // LRU bump
+    mov   r2, r11
+    str   r2, [r1, #4]
     adds  r2, #1
-    mov   r11, r2                           @ publish the bumped tick
-    movs  r2, #1                            @ offset+1 = 1, hardwired — a fresh call never resumes mid-procedure
+    mov   r11, r2
+
+    // Set offset for entry (thumb bit) and enter, prolog stub jumps to PC+r2
+    movs  r2, #1
     bx    r3
 
+/*
+ * r0: acc to pass
+ * LR: return record (caller proc idx & offset)
+ *
+ * Return from leaf case (LR stayed put).
+ */
 .thumb_func
 .global returnHelperFromLr
 returnHelperFromLr:                         @ leaf procedures: the record has sat untouched in lr since entry
     mov   r1, lr
     b     returnHelperTail
 
+/*
+ * r0: acc to pass
+ * tos has return record but no window restoration is needed after
+ *
+ * Return from non-leaf with no spilled args
+ */
 .thumb_func
 .global returnHelperFromStack
 returnHelperFromStack:                      @ ordinary non-leaf procedures: retrieve what their own prologue pushed
     pop   {r1}                              @ r1 = packed record
 
+/*
+ * r0: acc to passed
+ * r1: return record (caller proc idx & offset)
+ */
 .thumb_func
-.global returnHelperTail
-returnHelperTail:
-    lsrs  r2, r1, #16                       @ r2 = offset+1
-    sxth  r1, r1                            @ r1 = callerIdx, SXTH: sentinel procIdx -1
-    lsls  r1, r1, #4                        @ slotAddr-relative = callerIdx * 16 (sizeof(ProcSlot))
-    add   r1, r1, r8                        @ r1 = slotAddr
+returnHelperTail:                           @ not in the helper vector: only ever reached from within this file
+    // Split return record, offset in r2, proc idx in r1
+    lsrs  r2, r1, #16
+    sxth  r1, r1
 
-    mov   r3, r11                           @ the LRU stamp, same as callHelper's — r3 is free
-    str   r3, [r1, #4]                      @ until the codePtr load below. Deliberately NOT
-    adds  r3, #1                            @ guarded against the sentinel: the whole point of
-    mov   r11, r3                           @ slots[0] is that return-from-entry costs no extra code
+    // Calculate slot base from proc idx into r1 
+    lsls  r1, r1, #4
+    add   r1, r1, r8
 
-    ldr   r3, [r1, #0]                      @ r3 = codePtr
+    // LRU bump
+    mov   r3, r11
+    str   r3, [r1, #4]
+    adds  r3, #1
+    mov   r11, r3
+
+    // Load target address and enter (r2 already has the offset for the PC+r2 jump)
+    ldr   r3, [r1, #0]
     bx    r3
 
+/*
+ * r0: acc to pass
+ * r2: the stack fixed needed after return record load
+ * tos has return record and spilled args behind it
+ *
+ * Return from non-leaf with spilled args (can not be cleaned 
+ * up earlier due to the return record being in the way).
+ */
 .thumb_func
 .global returnHelperFromStackReclaim
-returnHelperFromStackReclaim:               @ non-leaf, with out-of-window arguments below the pushed record
-    pop   {r1}                              @ r1 = packed record
-    add   sp, sp, r2                        @ reclaim what discardWindow deliberately left for us — r2 set by the call site
+returnHelperFromStackReclaim:               
+    pop   {r1}                              
+    add   sp, sp, r2                        
     b     returnHelperTail
 
 .thumb_func
@@ -112,44 +152,73 @@ trapHelper:
     mov   sp, r1
     bx    r3
 
-.macro REALIGN_ENTER
-    mov  r3, sp
-    subs r2, r3, #4
-    lsrs r2, r2, #3
-    lsls r2, r2, #3
-    mov  sp, r2
-    str  r3, [sp, #0]
-.endm
-
-.macro REALIGN_LEAVE
-    ldr  r3, [sp, #0]
-    mov  sp, r3
-.endm
-
 .thumb_func
 .global extThunkHelper
 extThunkHelper:
+    // Spill LR and store original SP in LR for restore point later
     push {lr}
-    REALIGN_ENTER
+    mov  lr, sp
+
+    // Realign SP to 8 for AAPCS callee is C code
+    mov  r3, sp
+    subs r3, #4
+    lsrs r3, r3, #3
+    lsls r3, r3, #3
+    mov  sp, r3
+
+    // Store original SP but leave it in r3 for four arg
+    mov  r3, lr
+    str  r3, [sp, #0]
+    adds r3, #4
+
+    // Execute target as per AAPCS
     blx  r12
-    REALIGN_LEAVE
+
+    // Restore stack and return
+    ldr  r3, [sp, #0]
+    mov  sp, r3
     pop  {pc}
 
 .thumb_func
 .global translatorTrampoline
 translatorTrampoline:
+    // Spill original args and LR
     push {r0, r1, r2, lr}
-    mov  r3, r8                             @ low-mirror the dispatch table base
-    subs r0, r1, r3                         @ r0 = slotAddr - dispatchBase
-    lsrs r0, r0, #4                         @ r0 = idx — translateProc's 1st argument (/16, sizeof(ProcSlot))
-    mov  r1, r9                             @ r1 = runtime pointer — translateProc's 2nd argument
-    REALIGN_ENTER                           @ translateProc is real, independently-compiled C — see above
-    mov  r2, r11                            @ r2 = lruTick — 3rd argument, after REALIGN_ENTER's own use of r2
+
+    // Calculate target proc idx (so that translateProc doesn't need to handle dispatchBase in hi-reg)
+    mov  r3, r8
+    subs r0, r1, r3
+    lsrs r0, r0, #4
+
+    // Fetch runtime pointer from r9
+    mov  r1, r9
+
+    // Realign SP to 8 for AAPCS callee is C code
+    mov  r3, sp
+    subs r2, r3, #4
+    lsrs r2, r2, #3
+    lsls r2, r2, #3
+    mov  sp, r2
+
+    // Store original SP at new TOS
+    str  r3, [sp, #0]
+
+    // Fetch lruTick from r11
+    mov  r2, r11
+
+    // Enter the compiler
     bl   translateProc    
-    REALIGN_LEAVE   
-    pop  {r0, r1, r2}                       @ restore acc, slotAddr, offset+1
-    pop  {r3}                               @ r3 = the saved record; POP can't target lr directly
+
+    // Restore SP
+    ldr  r3, [sp, #0]
+    mov  sp, r3
+
+    // Restore original args and LR (via r3, because Thumb-1)
+    pop  {r0, r1, r2}
+    pop  {r3}
     mov  lr, r3 
+
+    // Continue to call entry helper
     ldr  r3, [r1, #0]                       @ r3 = the codePtr translateProc just wrote
     bx   r3
 

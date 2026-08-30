@@ -91,9 +91,7 @@ public:
     void cHelperCall(uint32_t helperAddr);
 };
 
-/* Bound at link time, not through a table: an extension replaces the weak
- * defaults in ext_default.cpp. Direct calls keep the translator's stack
- * bound derivable from the call graph. */
+/* Bound at link time, direct calls for stack bound checking */
 extern "C" uint32_t extDecode(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t *decl);
 extern "C" void extEmit(ExtSite &site);
 extern "C" uint32_t extHelperStackBytes();

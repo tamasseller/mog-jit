@@ -23,6 +23,8 @@ SOURCES += ../../src/compiler/translate_control_flow.cpp
 SOURCES += ../../src/compiler/translate_data_flow.cpp
 
 SOURCES += ../encode_instr.cpp
+SOURCES += ../ext_rawmem.cpp
+SOURCES += ../ext_rawmem_helper.S
 SOURCES += test_calls.cpp
 SOURCES += test_data_flow.cpp
 SOURCES += test_unary_ops.cpp
@@ -35,6 +37,7 @@ SOURCES += test_entry_args.cpp
 SOURCES += test_program_rejection.cpp
 SOURCES += test_eviction.cpp
 SOURCES += test_stack_budget.cpp
+SOURCES += test_ext_rawmem.cpp
 SOURCES += stack_paint.cpp
 SOURCES += semihosting_output.cpp
 SOURCES += cxx_stubs.cpp

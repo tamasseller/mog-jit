@@ -20,7 +20,9 @@ TEST(AProgramWithNoProceduresIsRejected)
 
 TEST(AnExtensionRangeOpcodeIsRejectedOnHardware)
 {
-    const uint8_t literal[] = {0x01, 0x01, 0x01, 0x00, 0x80};
+    // 0xff, not 0x80: the image links the rawmem extension (test/ext_rawmem.cpp),
+    // which claims 0x80-0x86 and declines everything else.
+    const uint8_t literal[] = {0x01, 0x01, 0x01, 0x00, 0xff};
     const jitc::FramedProgram p = jitc::framedProgram(literal, sizeof(literal));
 
     ProgramResult r = Executor::onStack(0, /*interruptReserve=*/0).run(p.bytes, p.len, nullptr, 0);

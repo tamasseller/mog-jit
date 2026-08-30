@@ -104,11 +104,9 @@ public:
         return slot(idx).codePtr & ~1u;
     }
 
-    inline void markCompiled(uint32_t idx, uint32_t dest, uint32_t lruTick)
+    inline void markCompiled(uint32_t idx, uint32_t dest)
     {
-        ProcSlot &entry = slot(idx);
-        entry.setCodePtr(dest);
-        entry.lastUsed = lruTick;
+        slot(idx).setCodePtr(dest);
     }
 
     /* Not inlined: ensureSpace runs per emitted halfword and this only on a

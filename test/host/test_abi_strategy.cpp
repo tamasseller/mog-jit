@@ -142,7 +142,7 @@ TEST(abiEmitReturnDeepArgsNonLeafDispatchesToReturnHelperFromStackReclaim)
     // fetch variant can both retrieve the record and reclaim the original
     // out-of-window arguments below it, so this loads that one
     // per-procedure byte count into r2 and dispatches to the shared helper
-    // that expects it there (index 7), instead of returnHelperFromStack.
+    // that expects it there (index 6), instead of returnHelperFromStack.
     TestAssembler e_ta(8);
     Assembler &e = e_ta.a;
     const uint16_t *buf = e_ta.code();
@@ -150,7 +150,7 @@ TEST(abiEmitReturnDeepArgsNonLeafDispatchesToReturnHelperFromStackReclaim)
     CHECK(e.halfwordCount() == 4);
     CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(12))); // MOVS r2, #12  (4 * initialSpilledCount)
     CHECK(buf[1] == ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10))); // MOV r3, r10
-    CHECK(buf[2] == ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(28))); // LDR r3, [r3, #28] (returnHelperFromStackReclaim, index 7)
+    CHECK(buf[2] == ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(24))); // LDR r3, [r3, #24] (returnHelperFromStackReclaim, index 6)
     CHECK(buf[3] == ArmV6M::bx(ArmV6M::AnyReg(3))); // BX r3
 }
 
@@ -172,7 +172,7 @@ TEST(abiEmitReturnDeepArgsNonLeafSynthesizesLargeReclaimByteCount)
     uint32_t n = e.halfwordCount();
     CHECK(n == 2 + 3); // MOVS + LSLS (400 = 25 << 4), then MOV/LDR/BX
     CHECK(buf[n - 3] == ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10))); // MOV r3, r10
-    CHECK(buf[n - 2] == ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(28))); // LDR r3, [r3, #28] (returnHelperFromStackReclaim, index 7)
+    CHECK(buf[n - 2] == ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(24))); // LDR r3, [r3, #24] (returnHelperFromStackReclaim, index 6)
     CHECK(buf[n - 1] == ArmV6M::bx(ArmV6M::AnyReg(3))); // BX r3
 }
 

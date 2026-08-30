@@ -264,6 +264,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
         if(setjmp(g_resourceEscape) == 0)
         {
+            rt.slot(i).lastUsed = 0; // callHelper's stamp, which nothing here emits
             translateProc(i, rt, /*lruTick=*/1);
             // TODO(execute): feed the emitted halfwords at
             // rt.slot(i).codePtr through an ARM execution oracle (Unicorn
@@ -315,7 +316,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             {
                 if(rt.isResident(i)) continue; // a dispatch only ever lands on a cold slot
 
-                translateProc(i, rt, lruTick++);
+                rt.slot(i).lastUsed = lruTick++; // callHelper's stamp, which nothing here emits
+                translateProc(i, rt, lruTick);
             }
         }
     }
