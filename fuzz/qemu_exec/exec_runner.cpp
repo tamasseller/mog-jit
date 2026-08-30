@@ -64,8 +64,9 @@
 #include "dispatch_abi.h"
 #include "resource_codes.h"
 
-/* Exactly linker.ld's own rom ORIGIN+LENGTH, and BATCH_LIMIT is the rest of
- * this model's flash, whose end was measured at 0xA000 rather than assumed.
+/* Exactly linker.ld's own rom ORIGIN+LENGTH. BATCH_LIMIT is a window into
+ * flash rather than all of it — the microbit model has far more, but the
+ * generic loader will not place a blob larger than `-m`.
  * Placing the batch immediately above the rom region is what makes the
  * linker itself guarantee the two never overlap — an image that outgrew its
  * region would fail to link rather than quietly run over the batch. Flash,
@@ -89,9 +90,9 @@ static constexpr uint32_t BATCH_MAGIC = 0x50504C42u; /* "PPLB" */
  * accept the same programs; it is a framing sanity bound here, not a memory
  * one.
  *
- * RAM is 8KB on this model (test/qemu passes `-m 8k` for the same reason)
- * and has to hold the code arena, Runtime, the operand stack and the
- * translator's own recursive C stack. The arena gets 5KB of it, leaving
+ * RAM is 8KB as linked — the model has 16KB, linker.ld caps it — and has to
+ * hold the code arena, Runtime, the operand stack and the translator's own
+ * recursive C stack. The arena gets 5KB of it, leaving
  * about 3KB of stack against a typical program's own requirement
  * (`requiredStackBytes`: Runtime, the operand stack, and
  * TRANSLATOR_ENTRY_WORST_CASE_BYTES's 444 — roughly 600 to 1500 bytes) plus

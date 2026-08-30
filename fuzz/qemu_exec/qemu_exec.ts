@@ -214,15 +214,15 @@ function runQemu(): QemuRun
     // UART to stdio, which would interleave its output with the semihosting
     // lines this parses.
     const r = spawnSync("qemu-system-arm", [
-        // -m 64k, where test/qemu passes 8k: this board takes its SRAM size
-        // from its own DC0 register, not from -m, so the guest still sees
-        // exactly the same 8KB. What -m does change is the *generic
+        // -m 64k, where test/qemu passes none at all: this board takes its
+        // SRAM size from its own SoC, not from -m, so the guest still sees
+        // exactly the same 16KB. What -m does change is the *generic
         // loader's* own cap on a blob it will place — it is
         // load_image_targphys's max_sz, and it is ram_size — which at 8k
         // silently refused any batch over 8192 bytes with nothing but
         // "Cannot load specified image". Raising it is what makes a
         // BATCH_LIMIT-sized batch loadable at all.
-        "-M", "lm3s811evb", "-m", "64k",
+        "-M", "microbit", "-m", "64k",
         "-serial", "none", "-monitor", "none", "-display", "none",
         "-semihosting-config", "enable=on,target=native",
         "-kernel", ELF,

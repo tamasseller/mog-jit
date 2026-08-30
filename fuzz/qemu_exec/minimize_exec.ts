@@ -109,7 +109,7 @@ function reproduces(variants: Variant[]): boolean[]
     fs.writeFileSync(BATCH_PATH, Buffer.concat(parts))
 
     const r = spawnSync("qemu-system-arm", [
-        "-M", "lm3s811evb", "-m", "64k",
+        "-M", "microbit", "-m", "64k",
         "-serial", "none", "-monitor", "none", "-display", "none",
         "-semihosting-config", "enable=on,target=native",
         "-kernel", ELF,

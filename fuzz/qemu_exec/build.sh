@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the execution-oracle image (exec_runner.cpp) — the real translator
-# plus the real, unmodified runtime/, linked for the same lm3s811evb model
+# plus the real, unmodified runtime/, linked for the same microbit model
 # test/qemu targets.
 #
 # A plain script rather than an ultimate-makefile target, matching the rest

@@ -651,12 +651,12 @@ Recorded because each cost real time and none is discoverable from the docs.
   which needs no semihosting for input at all.
 - **`-device loader` caps a blob at `ram_size`.** At `-m 8k` it silently
   refused anything over 8192 bytes with nothing but "Cannot load specified
-  image". `qemu_exec.ts` passes `-m 64k`; this board takes its SRAM size from
-  its own DC0 register, not from `-m`, so the guest still sees exactly 8 KB.
-- **Flash on `lm3s811evb` ends at 0xA000** (measured, not assumed). The
-  runner's `rom` region is therefore 16 KB, not `test/qemu`'s 32 KB, which
-  both gives a 24 KB batch window and makes the *linker* guarantee image and
-  batch never overlap.
+  image". `qemu_exec.ts` passes `-m 64k`; the board takes its SRAM size from
+  its own SoC, not from `-m`, so the guest still sees exactly what it links
+  for. That cap, not flash, is what bounds `BATCH_LIMIT` on `microbit`.
+- **The runner's `rom` region is 16 KB**, against an image of about 11 KB,
+  which both leaves the 24 KB batch window and makes the *linker* guarantee
+  image and batch never overlap.
 - **`-serial none`, not `-nographic`.** The latter wires the model's UART to
   stdio and interleaves it with the semihosting result lines. Semihosting
   output arrives on **stderr** under `target=native`.
