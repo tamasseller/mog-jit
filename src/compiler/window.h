@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include "registers.h"
+#include "armv6.h"
 
 namespace jitc
 {
@@ -13,6 +14,9 @@ class AccState;
 bool inWindow(uint32_t tos, uint32_t k);
 
 uint32_t physReg(uint32_t k);
+
+/** Bails with RESOURCE_LIMIT_SPILL_OFFSET past LDR/STR [sp,#imm]'s reach. */
+ArmV6M::Uoff<2, 8> spillImm(Assembler &a, uint32_t byteOffset);
 
 class Window
 {
@@ -36,7 +40,15 @@ public:
         return physReg(tos - 1);
     }
 
+    /** True when finishPop reloads a spill into topReg's own register. */
+    bool popUncovers() const
+    {
+        return (tos - 1) >= WINDOW_SIZE;
+    }
+
     void pushValue(Assembler &e, AccState &accState);
+
+    void pushFrom(Assembler &e, AccState &accState, uint32_t srcReg);
 
     void finishPop(Assembler &e);
 

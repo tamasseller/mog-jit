@@ -1473,57 +1473,70 @@ struct SeenSite
 {
     bool called = false;
     uint32_t opcodeByte = 0;
-    uint8_t in[EXT_MAX_INPUTS] = {};
-    uint8_t inCount = 0;
-    uint8_t out = 0;
-    uint32_t scratch = 0;
+    uint32_t depthOnEntry = 0;
 };
 SeenSite g_seen;
 
 uint32_t twoPopDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
 {
-    // Pops two, writes acc, four halfwords of budget.
-    *decl = jitc::extDecl(0x80, jitc::EXT_FLAG_WRITES_ACC, /*tosDelta=*/-2, 0, /*halfwords=*/4);
+    *decl = jitc::extDecl(0, /*tosDelta=*/-2, /*halfwords=*/6);
     return 1;
 }
 
-void captureEmit(jitc::Assembler &a, const ExtSite &site)
+void captureEmit(ExtSite &site)
 {
     g_seen.called = true;
-    g_seen.opcodeByte = site.bytes[site.pc];
-    g_seen.inCount = site.inCount;
-    for(uint32_t i = 0; i < site.inCount; i++) g_seen.in[i] = site.in[i];
-    g_seen.out = site.out;
-    g_seen.scratch = site.scratch;
-    // Something real and recognisable: out = in[0] + in[1].
-    a.emit(ArmV6M::adds(ArmV6M::LoReg(site.out), ArmV6M::LoReg(site.in[0]), ArmV6M::LoReg(site.in[1])));
+    g_seen.opcodeByte = *site.opcode();
+    g_seen.depthOnEntry = site.depth();
+
+    // Something real and recognisable: acc = top + next, taken off the
+    // stack through the site rather than staged for it.
+    site.pop(ENTRY_IDX_REG);
+    site.pop(SCRATCH_REG);
+    site.a.emit(ArmV6M::adds(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ENTRY_IDX_REG), ArmV6M::LoReg(SCRATCH_REG)));
+    site.accIsNowIn(ACC_REG);
 }
 
-void overrunEmit(jitc::Assembler &a, const ExtSite &site)
+void overrunEmit(ExtSite &site)
 {
-    // Declares 4 halfwords (twoPopDecode) but emits 5.
-    for(uint32_t i = 0; i < 5; i++) a.emit(ArmV6M::adds(ArmV6M::LoReg(site.out), ArmV6M::LoReg(site.out), ArmV6M::Imm<3>(1)));
+    // Declares 6 halfwords (twoPopDecode) but emits 7.
+    for(uint32_t i = 0; i < 7; i++)
+    {
+        site.a.emit(ArmV6M::adds(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<3>(1)));
+    }
+}
+
+void underPopEmit(ExtSite &site)
+{
+    // Declares -2 but takes only one off the stack.
+    site.pop(ENTRY_IDX_REG);
+    site.accIsNowIn(ENTRY_IDX_REG);
 }
 
 uint32_t helperDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
 {
     // Declares NEEDS_LR, which both reach forms require: a BLX clobbers lr,
     // and the prologue's decision to save it came from this flag.
-    *decl = jitc::extDecl(0x80, jitc::EXT_FLAG_NEEDS_LR | jitc::EXT_FLAG_WRITES_ACC,
-        /*tosDelta=*/-2, 0, /*halfwords=*/16);
+    *decl = jitc::extDecl(jitc::EXT_FLAG_NEEDS_LR, /*tosDelta=*/-2, /*halfwords=*/16, /*poolWords=*/1);
     return 1;
 }
 
 constexpr uint32_t FAKE_HELPER_ADDR = 0x0800BEEFu;
 
-void rawHelperEmit(jitc::Assembler &a, const ExtSite &site)
+void rawHelperEmit(ExtSite &site)
 {
-    jitc::extEmitHelperCall(a, site, FAKE_HELPER_ADDR);
+    site.pop(ENTRY_IDX_REG);
+    site.pop(SCRATCH_REG);
+    site.helperCall(FAKE_HELPER_ADDR);
+    site.accIsNowIn(ACC_REG);
 }
 
-void cHelperEmit(jitc::Assembler &a, const ExtSite &site)
+void cHelperEmit(ExtSite &site)
 {
-    jitc::extEmitCHelperCall(a, site, FAKE_HELPER_ADDR);
+    site.pop(ENTRY_IDX_REG);
+    site.pop(SCRATCH_REG);
+    site.cHelperCall(FAKE_HELPER_ADDR);
+    site.accIsNowIn(ACC_REG);
 }
 
 const ExtStub EXT_RAW_HELPER = {helperDecode, rawHelperEmit, 0};
@@ -1543,6 +1556,7 @@ bool containsSeq(const uint16_t *buf, uint32_t n, const uint16_t *needle, uint32
 
 const ExtStub EXT_CAPTURE = {twoPopDecode, captureEmit};
 const ExtStub EXT_OVERRUN = {twoPopDecode, overrunEmit};
+const ExtStub EXT_UNDER_POP = {twoPopDecode, underPopEmit};
 
 
 // PUSH PUSH <0x80> RETURN, hand-spliced: encodeBody takes Instr[], which
@@ -1555,29 +1569,61 @@ uint32_t extBody(uint8_t *out)
     out[n++] = 100; // RETURN
     return n;
 }
+
+// Five pushes, so slot 0 is out of the four-register window and only
+// reachable through the spill area.
+uint32_t deepExtBody(uint8_t *out)
+{
+    const Instr prelude[] = {
+        CONST(1), PUSH(), CONST(2), PUSH(), CONST(3), PUSH(),
+        CONST(4), PUSH(), CONST(5), PUSH()};
+    uint32_t n = encodeBody(prelude, 10, out, 48);
+    out[n++] = 0x80;
+    out[n++] = 100; // RETURN
+    return n;
+}
+
+uint32_t deepDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+{
+    *decl = jitc::extDecl(0, /*tosDelta=*/0, /*halfwords=*/4);
+    return 1;
+}
+
+void deepLoadEmit(ExtSite &site)
+{
+    uint32_t r = site.load(/*slot=*/0, ENTRY_IDX_REG);
+    site.a.emit(ArmV6M::adds(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(r), ArmV6M::Imm<3>(1)));
+    site.accIsNowIn(ACC_REG);
+}
+
+void deepStoreEmit(ExtSite &site)
+{
+    site.accInto(ACC_REG);
+    site.store(/*slot=*/0, ACC_REG);
+}
+
+const ExtStub EXT_DEEP_LOAD = {deepDecode, deepLoadEmit};
+const ExtStub EXT_DEEP_STORE = {deepDecode, deepStoreEmit};
 } // namespace
 
-TEST(AnExtensionOpIsStagedIntoR1R2AndEmitsThroughTheAssembler)
+TEST(AnExtensionOpDrivesTheOperandStackThroughItsSite)
 {
     g_seen = SeenSite{};
     FakeRuntime<1> rt(/*arenaBytes=*/128);
     uint8_t *raw = rt.bodyBuf(0, 32);
     rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/false);
     ExtScope extScope(&EXT_CAPTURE);
-    translateProc(0, rt.runtime(), LRU_TICK);
+    uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
 
     CHECK(g_seen.called);
-    // site.pc addresses the opcode byte itself, not the byte after it.
+    // site.opcode() addresses the opcode byte itself, not the byte after it.
     CHECK(g_seen.opcodeByte == 0x80);
-    // Two stack pops, no acc read: r1 then r2, top first. Never r0 (acc's)
-    // and never r3 (the only register a helper reach can use).
-    CHECK(g_seen.inCount == 2);
-    CHECK(g_seen.in[0] == ENTRY_IDX_REG);
-    CHECK(g_seen.in[1] == SCRATCH_REG);
-    CHECK(g_seen.out == ACC_REG);
-    CHECK((g_seen.scratch & (1u << ENTRY_JUMP_REG)) != 0);
-    CHECK((g_seen.scratch & (1u << ACC_REG)) == 0);      // acc is not scratch
-    CHECK((g_seen.scratch & (1u << ENTRY_IDX_REG)) == 0); // nor are the staged inputs
+    // Both pushes are visible to the site — the core stages nothing.
+    CHECK(g_seen.depthOnEntry == 2);
+
+    const uint16_t adds[] = {
+        ArmV6M::adds(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ENTRY_IDX_REG), ArmV6M::LoReg(SCRATCH_REG))};
+    CHECK(containsSeq(rt.code(), n, adds, 1));
 }
 
 TEST(AnExtensionOpOverrunningItsDeclaredBudgetIsReported)
@@ -1593,6 +1639,43 @@ TEST(AnExtensionOpOverrunningItsDeclaredBudgetIsReported)
     EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_EXT_UNSUPPORTED, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
+TEST(AnExtensionOpContradictingItsDeclaredTosDeltaIsReported)
+{
+    // The wire's total_depth was validated against the declared delta, and
+    // nothing re-derives it here — so the emitted effect has to match.
+    FakeRuntime<1> rt(/*arenaBytes=*/128);
+    uint8_t *raw = rt.bodyBuf(0, 32);
+    rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/false);
+    ExtScope extScope(&EXT_UNDER_POP);
+
+    EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_EXT_UNSUPPORTED, translateProc(0, rt.runtime(), LRU_TICK));
+}
+
+TEST(ASlotBelowTheWindowIsLoadedFromTheSpillArea)
+{
+    FakeRuntime<1> rt(/*arenaBytes=*/256);
+    uint8_t *raw = rt.bodyBuf(0, 48);
+    rt.setLen(0, /*argCount=*/0, deepExtBody(raw), /*savesLR=*/false);
+    ExtScope extScope(&EXT_DEEP_LOAD);
+    uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
+
+    // tos is 5, so slot 0 is the one spilled value.
+    const uint16_t ldr[] = {ArmV6M::ldrSp(ArmV6M::LoReg(ENTRY_IDX_REG), ArmV6M::Uoff<2, 8>(0))};
+    CHECK(containsSeq(rt.code(), n, ldr, 1));
+}
+
+TEST(ASlotBelowTheWindowIsStoredIntoTheSpillArea)
+{
+    FakeRuntime<1> rt(/*arenaBytes=*/256);
+    uint8_t *raw = rt.bodyBuf(0, 48);
+    rt.setLen(0, /*argCount=*/0, deepExtBody(raw), /*savesLR=*/false);
+    ExtScope extScope(&EXT_DEEP_STORE);
+    uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
+
+    const uint16_t str[] = {ArmV6M::strSp(ArmV6M::LoReg(ACC_REG), ArmV6M::Uoff<2, 8>(0))};
+    CHECK(containsSeq(rt.code(), n, str, 1));
+}
+
 TEST(ARawHelperReachIsAPooledAddressAndABlx)
 {
     FakeRuntime<1> rt(/*arenaBytes=*/256);
@@ -1603,7 +1686,7 @@ TEST(ARawHelperReachIsAPooledAddressAndABlx)
 
     // No r10 vector detour: the address comes from the literal pool, so the
     // reach itself is just the BLX. r3 because Thumb-1 leaves nothing else
-    // free — r0-r2 are the staged operands.
+    // free — r0-r2 hold acc and the popped operands.
     const uint16_t blx[] = {ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG))};
     CHECK(containsSeq(rt.code(), n, blx, 1));
 
@@ -1638,4 +1721,3 @@ TEST(ACHelperReachGoesThroughTheThunkWithTheTargetInR12)
     };
     CHECK(containsSeq(rt.code(), n, seq, 4));
 }
-

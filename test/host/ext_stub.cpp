@@ -24,14 +24,14 @@ extern "C" uint32_t extDecode(const uint8_t *bytes, uint32_t bytesLen, uint32_t 
     return active->decode(bytes, bytesLen, offset, decl);
 }
 
-extern "C" void extEmit(jitc::Assembler &a, const ExtSite &site)
+extern "C" void extEmit(ExtSite &site)
 {
     if(active == nullptr || active->emit == nullptr)
     {
-        runtimeBail(&a.runtime, RESOURCE_PROGRAM_EXT_UNKNOWN);
+        runtimeBail(&site.a.runtime, RESOURCE_PROGRAM_EXT_UNKNOWN);
     }
-    
-    active->emit(a, site);
+
+    active->emit(site);
 }
 
 extern "C" uint32_t extHelperStackBytes()

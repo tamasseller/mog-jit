@@ -7,9 +7,9 @@ extern "C" __attribute__((weak)) uint32_t extDecode(const uint8_t *, uint32_t, u
     return 0;
 }
 
-extern "C" __attribute__((weak)) void extEmit(jitc::Assembler &a, const ExtSite &)
+extern "C" __attribute__((weak)) void extEmit(ExtSite &site)
 {
-    runtimeBail(&a.runtime, RESOURCE_PROGRAM_EXT_UNSUPPORTED);
+    runtimeBail(&site.a.runtime, RESOURCE_PROGRAM_EXT_UNSUPPORTED);
 }
 
 extern "C" __attribute__((weak)) uint32_t extHelperStackBytes()

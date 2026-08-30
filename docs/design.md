@@ -1207,8 +1207,7 @@ unencodable at any size, this backend cannot compile it at all.
 | `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` | `0x52451500` | `executor.cpp` `Executor::run` | `argCount != slot(0).argCount()` |
 | `RESOURCE_PROGRAM_ENTRY_DEPTH` | `0x52451600` | `executor.cpp` `Executor::run` | the entry procedure's out-of-window args exceed `total_depth` |
 | `RESOURCE_PROGRAM_EXT_UNKNOWN` | `0x52451700` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | a wire byte past `LAST_CORE_OPCODE`: the extension range (§11) or a reserved code (§5.3) |
-| `RESOURCE_PROGRAM_EXT_UNSUPPORTED` | `0x52451800` | `Runtime::init`, and `translate_proc.cpp`'s `EXT` arm | a well-formed declaration asking for a capability this core doesn't implement |
-| `RESOURCE_PROGRAM_EXT_ABI` | `0x52451900` | `Runtime::init` | `ExtHooks::abiVersion` != `EXT_ABI_VERSION` |
+| `RESOURCE_PROGRAM_EXT_UNSUPPORTED` | `0x52451800` | `Runtime::init`, and `translate_proc.cpp`'s `EXT` arm | a declaration asking for a capability this core doesn't implement, or one the emitted code then contradicts (halfword overrun, `tosDelta` mismatch) |
 | `RESOURCE_PROGRAM_RESERVED_OPCODE` | `0x52451a00` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | one of the four core codes §5.3 reserves but hasn't assigned (124-127) |
 | `RESOURCE_EXHAUSTED_ARENA` | `0x52452100` | `assembler.cpp` `emit` | buffer full and nothing left to evict (§8) |
 | `RESOURCE_EXHAUSTED_STACK_BUDGET` | `0x52452200` | `executor.cpp`, both variants | the up-front §2 check; nothing was touched |
@@ -1630,10 +1629,6 @@ The `fuzz/seeds` corpus keeps a regression seed for each fixed finding, so
 
 ## 18. Extension mechanism
 
-> **Status:** the decode/declaration half is in (`compiler/src/ext.h`).
-> Codegen is not: an extension op reaching `processNonControl` bails with
-> `RESOURCE_PROGRAM_EXT_UNSUPPORTED`.
-
 isa-core.md §11 gives wire bytes **≥128** to one registered extension. The
 core never interprets them. Note the two boundaries are not the same one,
 which is the easy mistake here:
@@ -1651,7 +1646,7 @@ The core needs exactly two things per extension opcode:
 2. the **declared effect** (§11.2), so `needsLRSave` and the span budget
    stay right without knowing semantics.
 
-Both come from `ExtHooks::decode`, packed into one 32-bit word carried in
+Both come from `extDecode`, packed into one 32-bit word carried in
 `Instr`'s existing union. That is the load-bearing choice:
 `instrMaxBytes(const Instr&)` and `triggersLRSave(const Instr&)` keep their
 signatures and become bitfield reads, so `maxSpanBytes` — which re-walks
@@ -1674,24 +1669,42 @@ the core checks rather than trusts, because both would turn a bad extension
 into a hang or an overrun instead of a diagnostic: a claimed length of zero
 (no forward progress), and one running past `bytesLen`.
 
-**What v1 rejects**, each at `init` with `EXT_UNSUPPORTED`:
+**What the declaration carries** is only what the core cannot derive at the
+site: `NEEDS_LR` and `halfwords` because the pre-pass consumes them before
+any `Assembler` exists, `poolWords` because only the extension knows how
+many literals an `ATOMIC` block will add, `CALL_SHAPED` because
+`Executor::run`'s budget takes the *max* of a translation and an extension
+helper rather than their sum, and `tosDelta` — which is not a driver but a
+postcondition, checked against the real `window.tos` after emit, since the
+wire's `total_depth` was validated against it and nothing re-derives it
+here. Everything else an earlier draft declared is derivable or belongs
+upstream: `maxTransient` is already folded into `total_depth` by
+`validate.ts`, `terminates` is honoured in exactly one of three places on
+the TS side, and the opcode byte is at `site.opcode()`.
 
-| declared | why |
-|---|---|
-| call-shaped (§11.2) | control re-enters a procedure through its own prologue stub (§9), so nothing an extension leaves in a register survives a `CALL`. Needs per-frame state in memory, a depth bound, and a reset path for the `TRAP`/`RESOURCE_ERROR` unwind — none of which exist. |
-| `terminates` | honored in exactly one of three places on the TS side (`validate.ts` yes; `vm.ts`'s `EXT` case does `pc++` unconditionally; `bytecode.ts`'s `decodeProcBody` considers only `RETURN`/`TRAP`), so a terminating extension op is already broken upstream. `isProcTerminator` (`instr.h`) is the seam for admitting it later. |
-| `maxTransient > 0` | `window.tos` must agree with the real `sp` exactly — there is no per-procedure reservation (§5) — so a transient push reopens a desync class for no shipped client. |
-| net TOS push | not representable on the TS side either (`extension.ts`: no net push), and v1 stages the popped values, so the count staged is `-tosDelta`. |
+Two rejections remain, at `init` with `EXT_UNSUPPORTED`: call-shaped, and a
+net TOS push (not representable on the TS side either — `extension.ts`).
 
-`EXT_ABI_VERSION` is compared once at `init`, before the walk can call
-`decode` at all. It is the only *enforced* point of the rule that a native
-declaration is a subset of the TS one: the wire carries only the
-consequences of effects (`max_call_depth`, `total_depth`), never the
-effects, and there is no runtime depth check anywhere.
+**The stack and the accumulator are a service, not a handout.** `ExtSite`
+exposes `load`/`store` on absolute slot indices, `push`/`pop`, and
+`accInto`/`accIsNowIn`/`accInvalidate`; `Window` and `AccState` are
+forward-declared and never defined in `ext.h`, so an extension TU that names
+one fails to compile. The boundary is a compile error rather than a
+guideline, and it earns its keep on one invariant an extension could not
+infer: **every call that writes a window register first resolves an
+accumulator living in it.** The window is a rotating four-register file, so
+`physReg(tos)` aliases `physReg(tos - WINDOW_SIZE)` and `finishPop` reloads
+a spill into the very register `topReg()` names. `pushValue` avoids the
+first only by coincidence — its flush destination happens to be the
+aliasing register — which is not a property an open-coded `mov` + `tos++`
+would inherit.
 
-`Window` and `AccState` are forward-declared and never defined in `ext.h`,
-so an extension TU that names one fails to compile — the availability
-boundary is a compile error rather than a guideline.
+The cost is that `halfwords` now budgets core-emitted code too, and the
+worst case per call (2 for `push`/`pop`, 1 for a spilled `load`/`store`,
+`materializeImm32`'s own for `accInto`) depends on a `tos` the author
+cannot know. That is survivable because the check is empirical: the
+translator measures the real `a.pc()` delta and bails before anything runs,
+so miscounting is a deterministic diagnostic, never a bad branch offset.
 
 **The extension is per-program state, not per-image.** It arrives as an
 `enterProgram*` argument and is stored on the `Runtime` that program runs
@@ -1750,7 +1763,11 @@ or reversed. Note `ensurePoolRoom` is advisory rather than a reservation —
 it returns immediately when the pending set is empty — which is exactly why
 the count belongs in the type rather than in a call the author might omit.
 
-### 18.1 Helper reach
+`EXT_FLAG_ATOMIC` is what wraps an extension site in one: the block covers
+the core-emitted service code as well as the extension's own, so
+`poolWords` has to be declared rather than derived.
+
+### 18.3 Helper reach
 
 Two forms, both costing one **pooled literal word** for the helper's address
 rather than a slot in the flash-resident r10 vector. That vector is a fixed
@@ -1762,8 +1779,8 @@ against `SAFE_COND_BRANCH_SPAN`.
 
 | form | emitted | for |
 |---|---|---|
-| `extEmitHelperCall` | pooled address into r3, `BLX r3` | hand-written Thumb with a known clobber set, like the core's own `clzHelper`. No AAPCS guarantees — sp is legitimately 4-mod-8 inside an excursion. |
-| `extEmitCHelperCall` | address into r12, then the r10-vector reach to `extThunkHelper` | independently-compiled C. |
+| `site.helperCall` | pooled address into r3, `BLX r3` | hand-written Thumb with a known clobber set, like the core's own `clzHelper`. No AAPCS guarantees — sp is legitimately 4-mod-8 inside an excursion. |
+| `site.cHelperCall` | address into r12, then the r10-vector reach to `extThunkHelper` | independently-compiled C. |
 
 `extThunkHelper` (runtime.S, helper index 9) is `push {lr}` /
 `REALIGN_ENTER` / `blx r12` / `REALIGN_LEAVE` / `pop {pc}`. It exists for
