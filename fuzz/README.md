@@ -90,7 +90,7 @@ seed that doesn't validate is silently discarded on every single execution:
 the old hand-encoded `loop` seed had been doing exactly that.
 
 `dump_seeds.sh` stages `test/corpus_programs.h`'s bodies (shared with
-`test/qemu/fixtures.cpp`) into `seeds_raw/` for `make_seeds.ts` to wrap:
+`test/qemu/program_tests.cpp`) into `seeds_raw/` for `make_seeds.ts` to wrap:
 
 ```sh
 ./dump_seeds.sh

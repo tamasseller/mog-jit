@@ -7,7 +7,7 @@
 // harness discards on every execution.
 //
 // Three groups: the small single-procedure shapes (also what
-// test/qemu/fixtures.cpp exercises on real hardware), the
+// test/qemu/program_tests.cpp exercises on real hardware), the
 // multi-procedure/CALL shapes no single-procedure format could express at
 // all (isa-core.md §8.2 rejects self-recursion, so a lone procedure can
 // never legally CALL anything), and the large shapes aimed at specific
@@ -26,7 +26,7 @@ const SEED_DIR = path.join(__dirname, "seeds")
 /** dump_seeds.cpp's staging output: ../test/corpus_programs.h's bodies,
  *  each as one arg_count LEB128 followed by that procedure's own body
  *  bytes. Wrapped into whole-program envelopes below rather than
- *  re-authored here, so the shapes test/qemu/fixtures.cpp exercises on real
+ *  re-authored here, so the shapes test/qemu/program_tests.cpp exercises on real
  *  hardware stay a single definition. A dedicated directory, not a guess
  *  about which files in seeds/ happen to be in the older format — a
  *  new-format seed's header bytes decode as a plausible arg_count and body
@@ -688,7 +688,7 @@ const entryArgs = (argCount: number): RtlProgram => ({
 /** An entry procedure whose arguments spill, that then TRAPs. enterDispatch
  *  captures savedSp *before* pushing those out-of-window words, so
  *  trapHelper's single `mov sp, savedSp` has to subsume them — the shape
- *  test/qemu/fixtures.cpp fixture 47 pins down, absent from seeds/ until
+ *  test/qemu/program_tests.cpp's EntryWithSixArgumentsThatTraps pins down, absent from seeds/ until
  *  now. Distinguishes a trap from a return: the value is the trap code. */
 const entryArgsSpilledTrap: RtlProgram = {
     procedures: [{

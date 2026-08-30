@@ -23,7 +23,7 @@ SOURCES += ../../src/compiler/translate_control_flow.cpp
 SOURCES += ../../src/compiler/translate_data_flow.cpp
 
 SOURCES += ../encode_instr.cpp
-SOURCES += fixtures.cpp
+SOURCES += program_tests.cpp
 SOURCES += smoke_test.cpp
 SOURCES += stack_paint.cpp
 SOURCES += semihosting_output.cpp
@@ -50,6 +50,10 @@ ASMFLAGS += -mcpu=cortex-m0 -mthumb
 CXXFLAGS += -mcpu=cortex-m0 -mthumb -Os -DNDEBUG
 CXXFLAGS += -fno-tree-loop-distribute-patterns
 CXXFLAGS += -std=gnu++17 -fno-exceptions -fno-rtti
+
+# 1test embeds __FILE__ ":" __LINE__ once per TEST and once per CHECK; at
+# absolute paths those strings alone cost several KB of the 64KB image.
+CXXFLAGS += -ffile-prefix-map=$(abspath ../../..)/=
 
 CXXFLAGS += -fstack-usage
 

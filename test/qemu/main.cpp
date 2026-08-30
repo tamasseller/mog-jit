@@ -1,6 +1,5 @@
 #include <stdint.h>
 #include <cassert>
-#include "fixtures.h"
 #include "ext.h"
 #include "instr.h"
 #include "encode_instr.h"
@@ -51,51 +50,6 @@ static Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8
 {
     uint32_t len = encodeBody(body, count, bytesOut, bytesCap);
     return Proc{argCount, bytesOut, len};
-}
-
-TEST(HandTranscribedFixturesMatchExpectedResults)
-{
-    bool allOk = true;
-
-    for(uint32_t f = 0; f < fixtureCount; f++)
-    {
-        const Fixture &fx = fixtures[f];
-
-        uint32_t argv[fx.program->entryArgCount];
-        if(fx.args != nullptr)
-        {
-            for(uint32_t i = 0; i < fx.program->entryArgCount; i++)
-            {
-                argv[i] = fx.args[i];
-            }
-        }
-        else if(fx.program->entryArgCount != 0)
-        {
-            argv[0] = fx.argIn; // the one-argument case (fixtures.h): args is for two or more
-        }
-
-        ProgramResult r = enterProgramWithSharedArena(argv, fx.program->entryArgCount,
-            fx.program->bytes, fx.program->size, fx.arenaSize);
-
-        bool ok = r.trapped == fx.expectLanding && r.value == fx.expectValue;
-        allOk = allOk && ok;
-
-        if(!ok)
-        {
-            semihostingWrite0(fx.name);
-            semihostingWrite0(": ");
-            if(r.trapped)
-            {
-                writeHexTrap(r.value);
-            }
-            else
-            {
-                writeHexResult(r.value);
-            }
-        }
-    }
-
-    CHECK(allOk);
 }
 
 TEST(OnStackGenerousSucceeds)
@@ -355,7 +309,7 @@ TEST(EvictionChurnUnderLoopedCallChain)
     // once. The arena is sized to fit only the two smallest of the five
     // procedures at a time, so every iteration but (at most) the first has
     // to evict and recompile something — exercising findEvictionVictim/
-    // evict across many rounds, where every existing eviction fixture
+    // evict across many rounds, where every other eviction TEST here
     // evicts exactly once.
     const Instr proc0Body[] = {
         LOAD(0), PUSH(),  // k1 = counter := L
@@ -446,9 +400,10 @@ TEST(EvictionChurnUnderLoopedCallChain)
 // the two boundary TESTs below can derive stackLimit from the exact
 // formula the real upfront check applies, rather than the deliberately
 // generous stackLimitAboveBss() every other Executor::onStack TEST here
-// relies on. fixtures.cpp's own finishProgram comment flags this as the
-// one thing nothing here yet exercises: real, hand-derived max_call_depth/
-// total_depth values pushed right up against the computed floor.
+// relies on. program_tests.cpp's own runProgram() envelope is deliberately
+// too slack to reject anything, so these are the only TESTs that push real,
+// hand-derived max_call_depth/total_depth values up against the computed
+// floor.
 static uint32_t requiredStackBytesFor(uint32_t procCount, uint32_t totalDepth, uint32_t maxCallDepth)
 {
     return Runtime::storageBytesFor(procCount)
@@ -615,7 +570,6 @@ int main(void)
 {
     paintStack();
 
-    initFixtures();
     bool ok = test::TestRunner::runAllTests(&SemihostingOutput::instance);
     ok = reportStackHighWaterMark() && ok;
     semihostingExit(ok ? 0 : 1);

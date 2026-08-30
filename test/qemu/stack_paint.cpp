@@ -55,9 +55,9 @@ static constexpr uint32_t REQUIRED_SLACK_BYTES = 256;
 // compiler/flag change reintroduces a similar rewrite some other way.
 static constexpr uint32_t PAINT_CALL_SAFETY_MARGIN = 64;
 
-// Called as literally the first line of main(), before initFixtures() or
-// TestRunner push any frames of their own — everything below the current
-// sp (minus PAINT_CALL_SAFETY_MARGIN, see above) at that instant is
+// Called as literally the first line of main(), before TestRunner pushes any
+// frames of its own — everything below the current sp (minus
+// PAINT_CALL_SAFETY_MARGIN, see above) at that instant is
 // provably unused, the same reasoning the startup .bss-zero loop already
 // relies on for its own bound.
 void paintStack()

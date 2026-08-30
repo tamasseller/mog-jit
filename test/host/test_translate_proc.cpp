@@ -318,7 +318,7 @@ TEST(SpillLoadBailsWhenTheOffsetExceedsTheEncodableRange)
 // the last-argument's home slot/block-nesting-overflow through
 // translateProc()'s main loop. End-to-end behavioral correctness for all
 // of these is
-// already proven on real QEMU (test/qemu/fixtures.cpp), but that binary
+// already proven on real QEMU (test/qemu/program_tests.cpp), but that binary
 // isn't gcov-instrumented, so it doesn't contribute to this host suite's
 // own coverage. Sizes below are the measured halfwordCount for each body
 // — a structural regression guard, not a full hex dump (that's the QEMU
