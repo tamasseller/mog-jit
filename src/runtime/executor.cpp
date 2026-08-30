@@ -37,16 +37,27 @@ static uint32_t requiredStackBytes(
     uint32_t procCount, uint32_t operandStackBytes, uint32_t maxCallDepth,
     uint32_t interruptReserve)
 {
-    uint32_t extHelperBytes = extHelperStackBytes();
+    /* 
+     * The thunk's own frame is the runtime's, not the extension's: an
+     * extension can only know what its C helper costs. 
+     */
+    const uint32_t declared = extHelperStackBytes();
+    const uint32_t extHelperBytes = declared ? declared + EXT_THUNK_STACK_BYTES : 0;
+
+    /* 
+     * A translation and an extension helper are the two things that sit on top
+     * of the deepest the compiled code itself reaches, and they never coexist 
+     */
+    const uint32_t deepestExcursion = extHelperBytes > TRANSLATOR_ENTRY_WORST_CASE_BYTES
+        ? extHelperBytes : TRANSLATOR_ENTRY_WORST_CASE_BYTES;
 
     return Runtime::storageBytesFor(procCount)
          + operandStackBytes
          + maxCallDepth * CALL_RECORD_BYTES
          + ENTER_DISPATCH_FIXED_BYTES
          + EXECUTOR_RUN_FRAME_BYTES
-         + TRANSLATOR_ENTRY_WORST_CASE_BYTES
-         + interruptReserve
-         + extHelperBytes;
+         + deepestExcursion
+         + interruptReserve;
 }
 
 static uint32_t currentSp()

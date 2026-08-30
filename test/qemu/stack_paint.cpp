@@ -28,14 +28,18 @@ extern "C" uint8_t _stack_top; // linker.ld: _stack_top = ORIGIN(ram) + LENGTH(r
 
 static constexpr uint8_t PAINT_BYTE = 0xAA;
 
-// How much of _stack_top's own end must stay unpainted-over (i.e. real
-// slack below the true top) for the deep-nesting test below to count as
-// healthy — deliberately independent of translate_proc.cpp's own
-// TRANSLATE_BODY_STACK_MARGIN (a private implementation constant, not the
-// property this test cares about): the point here is real, empirically
-// observed headroom, not agreement with the constant this test exists to
-// double-check in the first place.
-static constexpr uint32_t REQUIRED_SLACK_BYTES = 256;
+// How much sentinel must survive directly above __bss_end: the measured
+// distance between .bss and the deepest address anything in this image
+// touched. Deliberately not derived from stack_budget.h — the point is
+// empirically observed headroom, not agreement with the constants this file
+// exists to double-check.
+//
+// The value is main.cpp's own GENEROUS_SLACK, the lowest stackLimit any TEST
+// in this image declares and therefore the floor every one of them promises
+// to stay above. An excursion's arena base sits exactly there, so a healthy
+// run lands on this number rather than over it; anything less means something
+// crossed a floor it had been checked against.
+static constexpr uint32_t REQUIRED_HEADROOM_BYTES = 128;
 
 // Real incident, found via this exact file: at -Os, GCC rewrites a plain
 // byte-fill loop into a call to memset(). That call needs its own stack
@@ -120,10 +124,11 @@ TEST(DeepNestingStaysWithinStackBudget)
     // instead of an -O0 host build standing in for it. Each level is a
     // real BR_TABLE(1) -> translateIfThen -> processUntilTerminator ->
     // processNonTerminators chain (translateIfThen itself is confirmed
-    // inlined into processNonTerminators at this optimization level —
-    // see check_stack_usage.py — so the per-level cost this measures is
+    // inlined into processNonTerminators at this optimization level — so
+    // the per-level cost this measures is
     // processNonTerminators + processUntilTerminator's real combined
-    // frame, not a hypothetical one).
+    // frame, not a hypothetical one — tools/stack-margin.ts reports the
+    // same inlining.)
     constexpr int kDepth = 8;
     Instr body[2 * kDepth + 2];
     for(int i = 0; i < kDepth; i++)
@@ -171,14 +176,13 @@ TEST(DeepNestingStaysWithinStackBudget)
 // or fail) and returns whether the required slack held.
 bool reportStackHighWaterMark()
 {
-    uint32_t used = highWaterMarkBytesFromBssEnd();
+    uint32_t headroom = highWaterMarkBytesFromBssEnd();
     uint32_t total = (uint32_t)(&_stack_top - &__bss_end);
-    uint32_t slack = total - used;
 
-    semihostingWrite0("STACK_HIGH_WATER_MARK_BYTES_FROM_BSS_END:");
-    writeHexResult(used);
-    semihostingWrite0("STACK_SLACK_BYTES_REMAINING:");
-    writeHexResult(slack);
+    semihostingWrite0("STACK_HEADROOM_BYTES_ABOVE_BSS_END:");
+    writeHexResult(headroom);
+    semihostingWrite0("STACK_BYTES_CONSUMED:");
+    writeHexResult(total - headroom);
 
-    return slack >= REQUIRED_SLACK_BYTES;
+    return headroom >= REQUIRED_HEADROOM_BYTES;
 }

@@ -20,6 +20,7 @@ extern "C" uint32_t extDecode(const uint8_t *bytes, uint32_t bytesLen, uint32_t 
     {
         return 0;
     }
+
     return active->decode(bytes, bytesLen, offset, decl);
 }
 
@@ -29,6 +30,7 @@ extern "C" void extEmit(jitc::Assembler &a, const ExtSite &site)
     {
         runtimeBail(&a.runtime, RESOURCE_PROGRAM_EXT_UNKNOWN);
     }
+    
     active->emit(a, site);
 }
 

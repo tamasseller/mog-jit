@@ -149,8 +149,16 @@ derived from the program's own wire envelope (§1) or a measured constant:
 | `Runtime` plus its dispatch table | `sizeof(Runtime) + (procCount+1)·sizeof(ProcSlot)` |
 | Operand stack | `operandStackBytes` = `totalDepth · 4`, from the program's own envelope |
 | Live call/return records | `maxCallDepth · CALL_RECORD_BYTES`, `maxCallDepth` from the same envelope |
-| Fixed implementation overhead | `ENTER_DISPATCH_FIXED_BYTES` plus the translator's entry worst case |
+| Fixed implementation overhead | `ENTER_DISPATCH_FIXED_BYTES` + `EXECUTOR_RUN_FRAME_BYTES` |
+| Deepest transient | the larger of `TRANSLATOR_ENTRY_WORST_CASE_BYTES` and `extHelperStackBytes()` + `EXT_THUNK_STACK_BYTES` — see below |
 | Exception entry | `interruptReserve` |
+
+The last row is a maximum, not a sum: a translation and an extension helper
+are the two things that sit on top of whatever depth the compiled code has
+itself reached, and they cannot coexist. Nothing executes while the
+translator runs, and `proc_scan.cpp` refuses any extension op shaped like a
+call (§11.2), so no helper can reach a dispatch. Lifting that restriction
+turns the maximum back into a sum.
 
 Because those are static, ordinary code growth needs no runtime check
 against the stack side: the reservation makes a collision impossible by
@@ -1771,10 +1779,12 @@ cost grounds. Both forms require `EXT_FLAG_NEEDS_LR` in the declaration,
 since a `BLX` clobbers `lr` and the prologue's decision to save it was made
 from that flag back in the pre-pass.
 
-**Stack cost.** `ExtHooks::helperStackBytes` is the extension's declared
-worst case, including `EXT_THUNK_STACK_BYTES` (12: 4 for the pushed `lr`, 8
-for the realignment slack). `enterProgram*` folds it into the up-front
-budget once, like `interruptReserve` — helpers do not recurse into bytecode
+**Stack cost.** `extHelperStackBytes()` is the extension's declared worst
+case for its own C helper, and nothing else — `Executor::run` adds
+`EXT_THUNK_STACK_BYTES` (12: 4 for the pushed `lr`, 8 for the realignment
+slack) on top, since that frame is the runtime's and an extension has no way
+to know it. The total goes into the up-front budget once, against the
+translator's own entry cost rather than on top of it (§2) — helpers do not recurse into bytecode
 while call-shaped ops are rejected, so the worst case is the deepest
 bytecode stack plus one helper frame. Nothing verifies the number: too
 small and the static reservation stops being a bound, so prove it the way
