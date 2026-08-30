@@ -1,6 +1,6 @@
 // Builds one encoded procedure body and measures what the real translator
-// compiles it to — the only helper eviction_tests.cpp and
-// stack_budget_tests.cpp both need, so it lives here rather than being
+// compiles it to — the only helper test_eviction.cpp and
+// test_stack_budget.cpp both need, so it lives here rather than being
 // duplicated. Everything else each of those files needs is small enough to
 // own locally.
 #ifndef JIT_ARMV6M_TEST_QEMU_MEASURE_PROC_H_

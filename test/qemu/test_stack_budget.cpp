@@ -102,8 +102,8 @@ TEST(OnStackRejectsBeforeTouchingAnything)
 // the two boundary TESTs below can derive stackLimit from the exact
 // formula the real upfront check applies, rather than the deliberately
 // generous stackLimitAboveBss() every other Executor::onStack TEST here
-// relies on. program_tests.cpp's own runProgram() envelope is deliberately
-// too slack to reject anything, so these are the only TESTs that push real,
+// relies on. run_program.h's own envelope is deliberately too slack to
+// reject anything, so these are the only TESTs that push real,
 // hand-derived max_call_depth/total_depth values up against the computed
 // floor.
 static uint32_t requiredStackBytesFor(uint32_t procCount, uint32_t totalDepth, uint32_t maxCallDepth)

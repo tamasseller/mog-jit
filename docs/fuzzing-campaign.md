@@ -603,7 +603,7 @@ widths — one boot per pass, including in `--hang` mode, where a timed-out
 batch identifies the first hanging variant by exactly how far it got.
 
 **Seeds.** 32, all validated at generation time: the small single-procedure
-shapes (shared with `test/qemu/program_tests.cpp` via `test/corpus_programs.h`),
+shapes (shared with `test/qemu/test_*.cpp` via `test/corpus_programs.h`),
 multi-procedure/`CALL` shapes no single-procedure format can express, large
 shapes aimed at specific compiled-size guards, and one regression seed per
 fixed finding. `qemu_exec.ts seeds` is a standing check on all of them.
@@ -697,7 +697,7 @@ Modified — runtime: `runtime.S` (`trapHelper`), `dispatch_abi.{h,cpp}`,
 `validate.ts`, `extension.ts`. `@ppl/codecs`:
 `engine/codec-extension.ts`, `test/list-union.test.ts`. Tests:
 `test_binops.cpp`, `test_blocks.cpp`, `test_translate_proc.cpp`,
-`test/corpus_programs.h`, `test/qemu/{program_tests.cpp,main.cpp,linker.ld}`,
+`test/corpus_programs.h`, `test/qemu/{test_*.cpp,main.cpp,linker.ld}`,
 `machine/test/{validate,extension}.test.ts`.
 Docs: `design.md` §10 (the `BR_TABLE` bullet), §10.1's acc-fold
 paragraph and the new §17, `target-profile.md`, `isa-core.md`
@@ -783,7 +783,7 @@ translator's.
   whose arguments spill, that then traps, and one that calls on top of the
   spill. `enterDispatch` captures `savedSp` before pushing those words, so
   `trapHelper`'s single `mov sp, savedSp` has to subsume them. The shape
-  existed as `program_tests.cpp`'s EntryWithSixArgumentsThatTraps but not as a seed, so the standing
+  existed as `test_entry_args.cpp`'s EntryWithSixArgumentsThatTraps but not as a seed, so the standing
   `qemu_exec.ts seeds` check never covered the rewritten `.LentrySpill`.
 - A filtered sub-corpus sweep for spilled entry procedures. They are only
   0.26% of approved programs, so a random 3,000-program sample reaches the
