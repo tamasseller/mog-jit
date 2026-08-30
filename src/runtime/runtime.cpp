@@ -51,25 +51,6 @@ int Runtime::findEvictionVictim(uint32_t now) const
     return victim;
 }
 
-uint32_t Runtime::occupiedSizeOf(uint32_t idx) const
-{
-    uint32_t addr = slot(idx).codePtr & ~1u;
-    uint32_t gapEnd = arenaCursor;
-    for(uint32_t i = 0; i < procCount; i++)
-    {
-        if(!isResident(i))
-        {
-            continue;
-        }
-        uint32_t a = slot(i).codePtr & ~1u;
-        if(a > addr && a < gapEnd)
-        {
-            gapEnd = a;
-        }
-    }
-    return gapEnd - addr;
-}
-
 void Runtime::evict(uint32_t idx, const uint16_t *end)
 {
     uint32_t victimAddr = slot(idx).codePtr & ~1u;

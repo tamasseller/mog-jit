@@ -1478,9 +1478,22 @@ over GCC's `-fcallgraph-info` output: it takes a signature filter, walks the
 subgraph below every matching function, cuts recursion back-edges to give the
 per-level cost, and computes the margin from the measured frames. It rejects
 anything it cannot bound exactly — dynamic frames, dynamic objects, indirect
-calls, calls with no definition in the graph. `--guard` names the functions
-that re-establish the floor themselves, so a margin is measured guard site to
-guard site; `--max` turns the report into a gate, and the Makefile feeds it
+calls, calls with no definition in the graph. `--guard` names the functions that
+re-check the floor at entry — those carry a `GUARDED_` name prefix, so the
+pattern cannot match an unguarded function by accident. One rule covers them,
+applied identically to the root and to every guarded callee: a guarded function
+contributes its own frame and nothing below it. Recursion is cut only at a
+guarded function; a cycle anywhere else is rejected outright rather than
+silently cut.
+
+The check inside the guard runs after that function's prologue, so at the check
+sp is already `CFA - frame` and the guarantee is `CFA - frame - M > floor`,
+while the deepest point before the next check is `CFA - M`. Sound, with the
+function's own frame as slack. Paying that one frame is what buys a rule with no
+assumption about prologue placement in it. It holds without case analysis
+because exactly one function is guarded — `GUARDED_processUntilTerminator`, the
+cut vertex every translator recursion cycle passes through — so the frame in the
+guarantee and the frame charged at the cut are the same number; `--max` turns the report into a gate, and the Makefile feeds it
 `TRANSLATE_BODY_STACK_MARGIN` read straight out of the source. A per-file
 `-Werror=stack-usage=512` backstops the one thing a static byte-count
 comparison can't catch on its own: an accidental unbounded `alloca`/VLA

@@ -19,8 +19,8 @@ SOURCES += ../../src/compiler/abi_strategy.cpp
 SOURCES += ../../src/compiler/decode_instr.cpp
 SOURCES += ../../src/compiler/proc_scan.cpp
 SOURCES += ../../src/compiler/translate_proc.cpp
-SOURCES += ../../src/compiler/translate_data_flow.cpp
 SOURCES += ../../src/compiler/translate_control_flow.cpp
+SOURCES += ../../src/compiler/translate_data_flow.cpp
 
 SOURCES += ../encode_instr.cpp
 SOURCES += fixtures.cpp
@@ -86,10 +86,14 @@ qemu-debug: $(OUTPUT)
 	qemu-system-arm -M lm3s811evb -m 8k -nographic -monitor none -s -S \
 	    -semihosting-config enable=on,target=native -kernel $(OUTPUT)
 
-TRANSLATE_MARGIN := $(shell sed -n 's/.*TRANSLATE_BODY_STACK_MARGIN = \([0-9]*\).*/\1/p' ../../src/compiler/translate_control_flow.cpp)
+BUDGET_H := ../../src/runtime/stack_budget.h
+SCAN_MARGIN := $(shell sed -n 's/.*SCAN_STACK_MARGIN \([0-9]*\).*/\1/p' $(BUDGET_H))
+ENTRY_MARGIN := $(shell sed -n 's/.*TRANSLATOR_ENTRY_CPP_BYTES \([0-9]*\).*/\1/p' $(BUDGET_H))
+TRANSLATE_MARGIN := $(shell sed -n 's/.*TRANSLATE_LEVEL_STACK_MARGIN \([0-9]*\).*/\1/p' $(BUDGET_H))
 
 stack-usage-check: $(OUTPUT)
-	../../tools/stack-margin.ts --guard 'jitc::Ctx::translate' --max $(TRANSLATE_MARGIN) \
-	    'jitc::Ctx::translate' $(OBJDIR)
+	../../tools/stack-margin.ts --guard 'GUARDED_' --max $(TRANSLATE_MARGIN) 'GUARDED_processUntilTerminator' $(OBJDIR)
+	../../tools/stack-margin.ts --guard 'GUARDED_' --max $(SCAN_MARGIN) 'GUARDED_scanBody' $(OBJDIR)
+	../../tools/stack-margin.ts --guard 'GUARDED_' --max $(ENTRY_MARGIN) 'translateProc|scanProcBody' $(OBJDIR)
 
 .PHONY: qemu-test qemu-debug stack-usage-check

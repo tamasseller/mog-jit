@@ -1190,9 +1190,8 @@ TEST(DeeplyNestedButWellFormedBlocksSucceedWithNoStackFloor)
 
 TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
 {
-    // rt's stackLimit pinned at (essentially) the current sp (translateBody's
-    // guard reads it via r.liveStackFloor()) — no margin left at all, so
-    // translateBody's very first live check already fails,
+    // rt's stackLimit pinned at (essentially) the current sp — no margin left
+    // at all, so processUntilTerminator's guard fails on the first block,
     // regardless of how shallow the body is. Deliberately does not
     // calibrate "how many nesting levels exhaust N bytes": this build is
     // -O0, unlike the target's -Os, so the number would not transfer. It
@@ -1202,7 +1201,7 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     const Instr body[] = {bare(Op::RETURN)};
     FakeRuntime<1> rt(/*arenaBytes=*/32);
     rt.set(0, 0, /*savesLR=*/false, body, 1);
-    rt.runtime().stackLimit = currentSp(); // translateBody's guard reads r.liveStackFloor()
+    rt.runtime().stackLimit = currentSp();
 
     EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_TRANSLATOR_STACK, translateProc(0, rt.runtime(), LRU_TICK));
 }
@@ -1211,23 +1210,20 @@ TEST(FlatBodySucceedsWithSlackThatOnlyCoversTranslateBodysOwnDepthZeroCheck)
 {
     // Companion to NestedIfChainReportsOverflowWithTheSameSlackADepthZeroBodyTolerates
     // below — establishes the baseline half of the comparison. A floor with
-    // comfortable slack beyond translateBody's own margin lets a body with
-    // no nesting at all (never reaching translateIfThen/translateLoop/
-    // translateSwitch) succeed outright.
+    // comfortable slack beyond one guard's margin lets a body with no nesting
+    // at all — a single pass through processUntilTerminator — succeed.
     const Instr body[] = {bare(Op::RETURN)};
     FakeRuntime<1> rt(/*arenaBytes=*/32);
     rt.set(0, 0, /*savesLR=*/false, body, 1);
-    rt.runtime().stackLimit = currentSp() - 1024; // generous slack — see the paired test below for why 1024
+    rt.runtime().stackLimit = currentSp() - 1536; // generous slack — see the paired test below for why 1024
     translateProc(0, rt.runtime(), LRU_TICK);
 }
 
 TEST(NestedIfChainReportsOverflowWithTheSameSlackADepthZeroBodyTolerates)
 {
-    // Proves the new per-construct checkStackFloor calls (translateIfThen
-    // and friends) are what catch this, not just translateBody's own
-    // depth-0 check: the exact same floor the companion test above shows a
-    // flat body tolerates comfortably (1024 bytes of slack beyond
-    // TRANSLATE_BODY_STACK_MARGIN(224)'s own headroom need) is exhausted
+    // Proves the guard fires per recursion level, not once: the exact same
+    // floor the companion test above shows a flat body tolerates comfortably
+    // is exhausted
     // once real translation recurses 8 levels deep through BR_TABLE(1) ->
     // translateIfThen -> processUntilTerminator -> processNonTerminators ->
     // back into translateIfThen — each level a handful of real,
@@ -1255,7 +1251,7 @@ TEST(NestedIfChainReportsOverflowWithTheSameSlackADepthZeroBodyTolerates)
 
     FakeRuntime<1> rt(/*arenaBytes=*/1024);
     rt.set(0, 0, /*savesLR=*/false, body, 2 * kDepth + 2, /*cap=*/512);
-    rt.runtime().stackLimit = currentSp() - 1024;
+    rt.runtime().stackLimit = currentSp() - 1536;
 
     EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_TRANSLATOR_STACK, translateProc(0, rt.runtime(), LRU_TICK));
 }

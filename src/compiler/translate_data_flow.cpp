@@ -1,4 +1,5 @@
 #include "translate_internal.h"
+#include "stack_budget.h"
 #include "decode_instr.h"
 #include "runtime.h"
 #include "abi_strategy.h"
@@ -81,8 +82,70 @@ ArmV6M::Condition Ctx::handleComparisonEmission(const Instr &instr)
     }
 }
 
-bool Ctx::processUntilTerminator(uint32_t pc, BranchWidth width, bool isThisLoopCondBlock, DecodedInstr& out)
+void Ctx::handleExt(const Instr &instr, uint32_t pc)
 {
+    const uint32_t decl = instr.extDecl;
+    const uint32_t pops = (uint32_t)(-extDeclTosDelta(decl));
+    const bool readsAcc = extDeclHas(decl, EXT_FLAG_READS_ACC);
+    const bool writesAcc = extDeclHas(decl, EXT_FLAG_WRITES_ACC);
+
+    ExtSite site;
+    site.inCount = 0;
+    site.bytes = this->bytes;
+    site.bytesLen = this->bytesLen;
+    site.pc = pc;
+    site.decl = decl;
+    site.out = (uint8_t)ACC_REG;
+    site.scratch = (1u << ENTRY_JUMP_REG) | (1u << 12);
+
+    if(readsAcc)
+    {
+        this->accState.flush(a, ACC_REG);
+        site.in[site.inCount++] = (uint8_t)ACC_REG;
+    }
+    else if(pops > 0 || writesAcc)
+    {
+        // Staging clobbers r1/r2, and a deferred acc must not be
+        // left depending on either. flushLive, not flush: a
+        // poisoned acc is legitimate here and stays poisoned.
+        this->accState.flushLive(a, ACC_REG);
+    }
+
+    // Top first, into r1 then r2 — never r0, which is acc's, and
+    // never r3, which is the only register a helper reach can use.
+    static const uint8_t STACK_STAGE[EXT_MAX_STACK_INPUTS] = {ENTRY_IDX_REG, SCRATCH_REG};
+    for(uint32_t i = 0; i < pops; i++)
+    {
+        uint32_t src = this->window.topReg();
+        uint8_t dst = STACK_STAGE[i];
+        if(src != dst)
+        {
+            a.emit(ArmV6M::mov(ArmV6M::AnyReg(dst), ArmV6M::AnyReg(src)));
+        }
+        site.in[site.inCount++] = dst;
+        this->window.finishPop(a);
+    }
+
+    const uint32_t before = a.pc();
+    extEmit(a, site);
+
+    if(a.pc() - before > extDeclHalfwords(decl) * 2)
+    {
+        runtimeBail(&a.runtime, RESOURCE_PROGRAM_EXT_UNSUPPORTED);
+    }
+
+    if(writesAcc)
+    {
+        this->accState.setClean(ACC_REG);
+    }
+}
+
+/* The one cut vertex of the translator's recursion: every cycle runs through
+ * here, so one check per level bounds them all. */
+bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool isThisLoopCondBlock, DecodedInstr& out)
+{
+    Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_LEVEL_STACK_MARGIN);
+
     while(pc < this->bytesLen)
     {
         DecodedInstr decoded = decodeInstr(this->bytes, this->bytesLen, pc);
@@ -93,63 +156,7 @@ bool Ctx::processUntilTerminator(uint32_t pc, BranchWidth width, bool isThisLoop
         {
             case Op::EXT:
             {
-                const uint32_t decl = instr.extDecl;
-                const uint32_t pops = (uint32_t)(-extDeclTosDelta(decl));
-                const bool readsAcc = extDeclHas(decl, EXT_FLAG_READS_ACC);
-                const bool writesAcc = extDeclHas(decl, EXT_FLAG_WRITES_ACC);
-
-                ExtSite site;
-                site.inCount = 0;
-                site.bytes = this->bytes;
-                site.bytesLen = this->bytesLen;
-                site.pc = pc;
-                site.decl = decl;
-                site.out = (uint8_t)ACC_REG;
-                site.scratch = (1u << ENTRY_JUMP_REG) | (1u << 12);
-
-                if(readsAcc)
-                {
-                    this->accState.flush(a, ACC_REG);
-                    site.in[site.inCount++] = (uint8_t)ACC_REG;
-                }
-                else if(pops > 0 || writesAcc)
-                {
-                    // Staging clobbers r1/r2, and a deferred acc must not be
-                    // left depending on either. flushLive, not flush: a
-                    // poisoned acc is legitimate here and stays poisoned.
-                    this->accState.flushLive(a, ACC_REG);
-                }
-
-                // Top first, into r1 then r2 — never r0, which is acc's, and
-                // never r3, which is the only register a helper reach can use.
-                static const uint8_t STACK_STAGE[EXT_MAX_STACK_INPUTS] = {ENTRY_IDX_REG, SCRATCH_REG};
-                for(uint32_t i = 0; i < pops; i++)
-                {
-                    uint32_t src = this->window.topReg();
-                    uint8_t dst = STACK_STAGE[i];
-                    if(src != dst)
-                    {
-                        a.emit(ArmV6M::mov(ArmV6M::AnyReg(dst), ArmV6M::AnyReg(src)));
-                    }
-                    site.in[site.inCount++] = dst;
-                    this->window.finishPop(a);
-                }
-
-                const uint32_t before = a.pc();
-                extEmit(a, site);
-
-                if(a.pc() - before > extDeclHalfwords(decl) * 2)
-                {
-                    runtimeBail(&a.runtime, RESOURCE_PROGRAM_EXT_UNSUPPORTED);
-                    pc = afterInstr;
-                    break;
-                }
-
-                if(writesAcc)
-                {
-                    this->accState.setClean(ACC_REG);
-                }
-
+                this->handleExt(instr, pc);
                 pc = afterInstr;
                 break;
             }

@@ -7,8 +7,6 @@ using namespace jitc;
 
 using R = ArmV6M::LoReg;
 
-static constexpr uint32_t TRANSLATE_BODY_STACK_MARGIN = 520;
-
 static bool emitBranch(Assembler &a, Label &label, ArmV6M::Condition condition, BranchWidth width)
 {
     if(width == BranchWidth::Narrow)
@@ -79,7 +77,6 @@ void Ctx::handleGlobalJump(Instr term, uint32_t tos)
 
 uint32_t Ctx::translateIfThen(uint32_t pc, BranchWidth width)
 {
-    Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
     
     const auto entryTos = this->window.tos;
     const bool fused = this->hasPendingComparisonCondition;
@@ -99,7 +96,7 @@ uint32_t Ctx::translateIfThen(uint32_t pc, BranchWidth width)
         this->accState.producer(Shape::ofImm(0));
     }
     
-    if(DecodedInstr term; this->processUntilTerminator(pc, width, false, term))
+    if(DecodedInstr term; this->GUARDED_processUntilTerminator(pc, width, false, term))
     {
         if(term.instr.op == Op::BLOCK_END)
         {
@@ -123,7 +120,6 @@ uint32_t Ctx::translateIfThen(uint32_t pc, BranchWidth width)
 
 uint32_t Ctx::translateIfThenElse(uint32_t pc, BranchWidth width)
 {
-    Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
 
     const auto entryTos = this->window.tos;
     const bool fused = this->hasPendingComparisonCondition;
@@ -159,7 +155,7 @@ uint32_t Ctx::translateIfThenElse(uint32_t pc, BranchWidth width)
 
     this->accState.producer(Shape::ofImm(0));
 
-    if(DecodedInstr term; this->processUntilTerminator(pc, width, false, term))
+    if(DecodedInstr term; this->GUARDED_processUntilTerminator(pc, width, false, term))
     {
         if(term.instr.op == Op::BLOCK_END)
         {
@@ -182,7 +178,7 @@ uint32_t Ctx::translateIfThenElse(uint32_t pc, BranchWidth width)
 
         this->accState.producer(Shape::ofImm(1));
 
-        if(DecodedInstr term2; this->processUntilTerminator(term.next, width, false, term2))
+        if(DecodedInstr term2; this->GUARDED_processUntilTerminator(term.next, width, false, term2))
         {
             if(term2.instr.op == Op::BLOCK_END)
             {
@@ -212,7 +208,6 @@ uint32_t Ctx::translateIfThenElse(uint32_t pc, BranchWidth width)
 
 uint32_t Ctx::translateSwitch(uint32_t pc, BranchWidth width, uint32_t n)
 {
-    Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
 
     const auto entryTos = this->window.tos;
     assert(this->hasPendingComparisonCondition == false);
@@ -246,7 +241,7 @@ uint32_t Ctx::translateSwitch(uint32_t pc, BranchWidth width, uint32_t n)
 
         this->accState.poison();
 
-        if(DecodedInstr term; this->processUntilTerminator(pc, width, false, term))
+        if(DecodedInstr term; this->GUARDED_processUntilTerminator(pc, width, false, term))
         {
             if(term.instr.op == Op::BLOCK_END)
             {
@@ -292,14 +287,13 @@ uint32_t Ctx::translateSwitch(uint32_t pc, BranchWidth width, uint32_t n)
 
 uint32_t Ctx::translateLoop(uint32_t pc, BranchWidth width)
 {
-    Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
 
     const auto entryTos = this->window.tos;
 
     this->accState.flushLive(a, ACC_REG);
     const auto start = a.pc();
 
-    if(DecodedInstr condTerm; this->processUntilTerminator(pc, width, true, condTerm))
+    if(DecodedInstr condTerm; this->GUARDED_processUntilTerminator(pc, width, true, condTerm))
     {
         assert(condTerm.instr.op == Op::BLOCK_END);
 
@@ -328,7 +322,7 @@ uint32_t Ctx::translateLoop(uint32_t pc, BranchWidth width)
             this->accState.producer(Shape::ofImm(1));
         }
 
-        if(DecodedInstr bodyTerm; this->processUntilTerminator(condTerm.next, width, false, bodyTerm))
+        if(DecodedInstr bodyTerm; this->GUARDED_processUntilTerminator(condTerm.next, width, false, bodyTerm))
         {
             if(bodyTerm.instr.op == Op::BLOCK_END)
             {
@@ -364,7 +358,6 @@ uint32_t Ctx::translateLoop(uint32_t pc, BranchWidth width)
 
 bool Ctx::translateBody(BranchWidth width)
 {
-    Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
 
     abiEmitPrologue(a, savesLR);
 
@@ -373,7 +366,7 @@ bool Ctx::translateBody(BranchWidth width)
         accState.flush(a, physReg(window.tos - 1));
     }
 
-    if(DecodedInstr decoded; processUntilTerminator(0, width, false, decoded))
+    if(DecodedInstr decoded; GUARDED_processUntilTerminator(0, width, false, decoded))
     {
         const Instr &instr = decoded.instr;
 

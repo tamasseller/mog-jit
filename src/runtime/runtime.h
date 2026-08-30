@@ -206,7 +206,24 @@ public:
 
     void markCompiled(uint32_t idx, uint32_t dest, uint32_t lruTick);
     int findEvictionVictim(uint32_t now) const;
-    uint32_t occupiedSizeOf(uint32_t idx) const;
+    inline uint32_t occupiedSizeOf(uint32_t idx) const
+    {
+        uint32_t addr = slot(idx).codePtr & ~1u;
+        uint32_t gapEnd = arenaCursor;
+        for(uint32_t i = 0; i < procCount; i++)
+        {
+            if(!isResident(i))
+            {
+                continue;
+            }
+            uint32_t a = slot(i).codePtr & ~1u;
+            if(a > addr && a < gapEnd)
+            {
+                gapEnd = a;
+            }
+        }
+        return gapEnd - addr;
+    }
     void evict(uint32_t idx, const uint16_t *end);
     uint16_t* ensureSpace(const uint16_t* end, uint32_t lruTick);
 

@@ -1,4 +1,5 @@
 #include "proc_scan.h"
+#include "stack_budget.h"
 #include "ext.h"
 #include "decode_instr.h"
 #include "instr.h"
@@ -7,8 +8,6 @@
 
 namespace jitc
 {
-static constexpr uint32_t SCAN_STACK_MARGIN = 128;
-
 static bool triggersLRSave(const Instr &instr)
 {
     if(instr.op == Op::EXT)
@@ -29,7 +28,7 @@ struct ScanFrame
     uint32_t remaining; // Case only
 };
 
-static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool &needsLRSave, ScanFrame *frame, uint32_t stackFloor, bool &stop, bool &foundEnd, uint32_t &failCode)
+static void GUARDED_scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool &needsLRSave, ScanFrame *frame, uint32_t stackFloor, bool &stop, bool &foundEnd, uint32_t &failCode)
 {
     register uint32_t sp asm("sp");
     if(sp < SCAN_STACK_MARGIN || sp - SCAN_STACK_MARGIN < stackFloor)
@@ -76,14 +75,14 @@ static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool
         if(d.instr.op == Op::BR_TABLE)
         {
             ScanFrame inner{ScanFrameKind::Case, (uint32_t)d.instr.imm};
-            scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, stop, foundEnd, failCode);
+            GUARDED_scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, stop, foundEnd, failCode);
             if(stop) return;
             continue;
         }
         if(d.instr.op == Op::LOOP)
         {
             ScanFrame inner{ScanFrameKind::LoopCond, 0};
-            scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, stop, foundEnd, failCode);
+            GUARDED_scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, stop, foundEnd, failCode);
             if(stop) return;
             continue;
         }
@@ -137,7 +136,7 @@ BodyScanResult scanProcBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t st
     bool foundEnd = false;
     uint32_t failCode = 0;
 
-    scanBody(bytes, maxBytes, pc, needsLRSave, nullptr, stackFloor, stop, foundEnd, failCode);
+    GUARDED_scanBody(bytes, maxBytes, pc, needsLRSave, nullptr, stackFloor, stop, foundEnd, failCode);
 
     if(!foundEnd && failCode == 0)
     {

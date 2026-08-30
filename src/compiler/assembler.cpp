@@ -19,7 +19,7 @@ static uint32_t roundUpToWord(uint32_t v)
 
 Assembler::Assembler(Runtime &rt, uint32_t lruTick): buf((uint16_t *)(uintptr_t)rt.getArenaCursor()), runtime(rt), lruTick(lruTick) {}
 
-uint32_t Assembler::doEmit(uint16_t word)
+__attribute__((always_inline)) inline uint32_t Assembler::doEmit(uint16_t word)
 {
     uint32_t at = pc();
 
@@ -163,7 +163,7 @@ void Assembler::patchRawHalfword(uint32_t siteOffset, uint16_t value)
 
 // ── immediates ───────────────────────────────────────────────────────────
 
-void Assembler::parkPoolSite(uint32_t dstReg, uint32_t value)
+__attribute__((always_inline)) inline void Assembler::parkPoolSite(uint32_t dstReg, uint32_t value)
 {
     uint32_t site = emit(ArmV6M::fmtImm8(ArmV6M::Imm8Op::LDR, (uint16_t)dstReg, 0));
     pendingSites[pendingCount] = site;

@@ -31,7 +31,11 @@ struct Ctx
 
     ArmV6M::Condition handleComparisonEmission(const Instr &instr);
 
-    bool processUntilTerminator(uint32_t pc, BranchWidth width, bool isThisLoopCondBlock, DecodedInstr &out);
+    /* Out of line on purpose: its ExtSite would otherwise sit in
+     * GUARDED_processUntilTerminator's frame on every path through the switch. */
+    __attribute__((noinline)) void handleExt(const Instr &instr, uint32_t pc);
+
+    bool GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool isThisLoopCondBlock, DecodedInstr &out);
     uint32_t translateLoop(uint32_t pc, BranchWidth width);
     uint32_t translateIfThen(uint32_t pc, BranchWidth width);
     uint32_t translateIfThenElse(uint32_t pc, BranchWidth width);

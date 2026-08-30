@@ -31,6 +31,15 @@ function bareName(title: string): string
     return i < 0 ? title : title.slice(i + 1)
 }
 
+/* Itanium ABI emits one body per ctor/dtor and aliases the other variants
+ * onto it; only the body appears as a node. */
+function aliases(name: string): string[]
+{
+    const m = /([CD])([0-3])E/.exec(name)
+    if(!m) return [name]
+    return ['0', '1', '2', '3'].map(d => name.replace(/([CD])([0-3])E/, `${m[1]}${d}E`))
+}
+
 function parse(path: string): Map<string, Node>
 {
     const nodes = new Map<string, Node>()
@@ -166,7 +175,13 @@ function resolve(from: Node, edge: Edge): Node[]
     const local = files.get(from.file)?.get(edge.target)
     if(local?.defined) return [local]
 
-    const found = defs.get(bareName(edge.target))
+    let found: Node[] | undefined
+    for(const cand of aliases(bareName(edge.target)))
+    {
+        found = defs.get(cand)
+        if(found) break
+    }
+
     if(!found)
     {
         fail(`unresolved call to ${bareName(edge.target)}`, from, edge.loc)
@@ -189,17 +204,19 @@ function best(nodes: Node[], stack: Node[]): Result
 
 function walk(node: Node, stack: Node[]): Result
 {
+    /* A guarded callee re-checks the floor, so nothing below it belongs to
+     * this margin — but its own prologue runs before that check, so its frame
+     * does. Same rule for the root, which is why the root's frame is counted. */
     if(stack.length > 0 && guard !== null && guard.test(node.sig))
     {
-        const msg = `${node.sig} (establishes its own floor, below ${stack[stack.length - 1].sig})`
+        const msg = `${node.sig} (guarded, frame only, below ${stack[stack.length - 1].sig})`
         if(!cuts.includes(msg)) cuts.push(msg)
-        return { bytes: 0, path: [] }
+        return { bytes: node.frame, path: [node] }
     }
 
     if(stack.some(s => s.sig === node.sig))
     {
-        const msg = `${node.sig} (recursion, cut below ${stack[stack.length - 1].sig})`
-        if(!cuts.includes(msg)) cuts.push(msg)
+        fail(`unguarded recursion through ${node.sig}`, stack[stack.length - 1], node.loc)
         return { bytes: 0, path: [] }
     }
 
@@ -272,7 +289,11 @@ for(const sig of [...matches.keys()].sort())
         const over = r.bytes > max
         failed = failed || over
         console.log(`${sig}: ${r.bytes}${over ? ` — EXCEEDS --max ${max}` : ''}`)
-        for(const n of r.path) console.log(`    ${String(n.frame).padStart(5)}  ${n.sig}`)
+        r.path.forEach((n, i) =>
+        {
+            const note = i > 0 && guard !== null && guard.test(n.sig) ? '   [guarded: frame only]' : ''
+            console.log(`    ${String(n.frame).padStart(5)}  ${n.sig}${note}`)
+        })
     }
 
     for(const c of cuts) console.log(`    cut: ${c}`)
