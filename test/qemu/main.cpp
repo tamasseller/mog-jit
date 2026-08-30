@@ -184,10 +184,8 @@ static uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint
     static uint16_t scratch[128];
 
     alignas(8) uint8_t runtimeBytes[sizeof(Runtime) + (calleeCount + 1) * sizeof(ProcSlot)] = {};
-    Runtime &r = *reinterpret_cast<Runtime *>(runtimeBytes);
-    r.procCount = calleeCount;
-    r.arenaCursor = (uint32_t)(uintptr_t)scratch;
-    r.arenaEnd = r.arenaCursor + sizeof(scratch);
+    Runtime &r = *new(runtimeBytes) Runtime(calleeCount, (uint32_t)(uintptr_t)scratch, sizeof(scratch),
+        /*stackLimit=*/0, /*arenaOverlapsStack=*/0);
     for(uint32_t i = 0; i < calleeCount; i++)
     {
         r.slot(i).codePtr = trampolineAddr;
@@ -528,7 +526,7 @@ TEST(OnStackRejectsJustAboveComputedBudget)
 
 TEST(OnStackSucceedsWithBothArenaAndStackBudgetTight)
 {
-    // Runtime::liveStackFloor() (runtime.h): enterProgramOnStack
+    // Runtime::pushStackFloor() (runtime.cpp): enterProgramOnStack
     // anchors the code arena's own base at stackLimit itself, so
     // arenaCursor advances past stackLimit as soon as even one procedure
     // compiles — at that point the translator's own live-recursion floor

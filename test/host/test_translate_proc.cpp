@@ -91,14 +91,10 @@ class FakeRuntime
     LowMemory low{1u << 20}; // 1 MiB — comfortably covers every test's own arena + bodies
     uint32_t arenaBase;
 public:
-    explicit FakeRuntime(uint32_t arenaBytes = 64)
+    explicit FakeRuntime(uint32_t arenaBytes = 64, uint32_t stackLimit = 0)
     {
-        runtime().procCount = procCount;
         arenaBase = low.alloc(arenaBytes);
-        runtime().arenaCursor = arenaBase;
-        runtime().arenaEnd = arenaBase + arenaBytes;
-        runtime().stackLimit = 0;
-        runtime().arenaOverlapsStack = 0;
+        new(bytes) Runtime(procCount, arenaBase, arenaBytes, stackLimit, /*arenaOverlapsStack=*/0);
         // Every slot starts not-resident (Runtime::isResident() reads
         // codePtr against trampolineAddr) — left at its zero-init default
         // otherwise, growForAttached's own findEvictionVictim/evict loop
@@ -1199,9 +1195,8 @@ TEST(BlockNestingReportsOverflowWhenLiveStackFloorIsUnsatisfiable)
     // Pinning RESOURCE_EXHAUSTED_TRANSLATOR_STACK separates it from an
     // arena overflow, which reaches the same escape.
     const Instr body[] = {bare(Op::RETURN)};
-    FakeRuntime<1> rt(/*arenaBytes=*/32);
+    FakeRuntime<1> rt(/*arenaBytes=*/32, /*stackLimit=*/currentSp());
     rt.set(0, 0, /*savesLR=*/false, body, 1);
-    rt.runtime().stackLimit = currentSp();
 
     EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_TRANSLATOR_STACK, translateProc(0, rt.runtime(), LRU_TICK));
 }
@@ -1213,9 +1208,8 @@ TEST(FlatBodySucceedsWithSlackThatOnlyCoversTranslateBodysOwnDepthZeroCheck)
     // comfortable slack beyond one guard's margin lets a body with no nesting
     // at all — a single pass through processUntilTerminator — succeed.
     const Instr body[] = {bare(Op::RETURN)};
-    FakeRuntime<1> rt(/*arenaBytes=*/32);
+    FakeRuntime<1> rt(/*arenaBytes=*/32, /*stackLimit=*/currentSp() - 1536); // generous slack — see the paired test below
     rt.set(0, 0, /*savesLR=*/false, body, 1);
-    rt.runtime().stackLimit = currentSp() - 1536; // generous slack — see the paired test below for why 1024
     translateProc(0, rt.runtime(), LRU_TICK);
 }
 
@@ -1249,9 +1243,8 @@ TEST(NestedIfChainReportsOverflowWithTheSameSlackADepthZeroBodyTolerates)
     body[2 * kDepth] = CONST(0);
     body[2 * kDepth + 1] = bare(Op::RETURN);
 
-    FakeRuntime<1> rt(/*arenaBytes=*/1024);
+    FakeRuntime<1> rt(/*arenaBytes=*/1024, /*stackLimit=*/currentSp() - 1536);
     rt.set(0, 0, /*savesLR=*/false, body, 2 * kDepth + 2, /*cap=*/512);
-    rt.runtime().stackLimit = currentSp() - 1536;
 
     EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_TRANSLATOR_STACK, translateProc(0, rt.runtime(), LRU_TICK));
 }

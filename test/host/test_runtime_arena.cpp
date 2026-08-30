@@ -1,7 +1,10 @@
+#include "decode_instr.h"
+#include "abi_strategy.h"
 #include "Test.h"
 #include "ext.h"
 #include "ext_stub.h"
 #include "runtime.h"
+#include "runtime_probe.h"
 #include "encode_instr.h"
 
 #include <cassert>
@@ -48,7 +51,7 @@ public:
 template<typename Storage>
 static uint32_t place(Storage &runtime, uint32_t sizeBytes)
 {
-    uint32_t base = runtime->arenaCursor;
+    uint32_t base = runtime->getArenaCursor();
     runtime->commit(base + sizeBytes);
     return base;
 }
@@ -88,8 +91,8 @@ TEST(OccupiedSizeIsAlwaysAWholeNumberOfWords)
     {
         CHECK(runtime->isResident(i));
         CHECK((runtime->slot(i).codePtr & ~1u) % 4 == 0);
-        CHECK(runtime->occupiedSizeOf(i) % 4 == 0);
-        CHECK(runtime->occupiedSizeOf(i) >= sizes[i]);
+        CHECK(RuntimeProbe::occupiedSizeOf(*runtime.operator->(), i) % 4 == 0);
+        CHECK(RuntimeProbe::occupiedSizeOf(*runtime.operator->(), i) >= sizes[i]);
     }
 }
 
@@ -98,10 +101,10 @@ TEST(ASeparateArenaIsCappedWhereItWasPlacedNoMatterWhereTheStackIs)
     RuntimeStorage<1> runtime(ARENA_BASE, ARENA_SIZE, /*overlapsStack=*/0);
     const uint32_t end = ARENA_BASE + ARENA_SIZE;
 
-    CHECK(runtime->arenaCeiling() == end);
+    CHECK(RuntimeProbe::arenaCeiling(*runtime.operator->()) == end);
 
     Runtime::DynamicStackGuard guard(*runtime.operator->(), 64);
-    CHECK(runtime->arenaCeiling() == end); // the stack is somewhere else entirely
+    CHECK(RuntimeProbe::arenaCeiling(*runtime.operator->()) == end); // the stack is somewhere else entirely
 }
 
 static uint32_t currentSp()
@@ -119,10 +122,10 @@ TEST(ASharedArenaNeverGrowsPastWhatWasValidatedUpFront)
     RuntimeStorage<1> runtime(base, 2048, /*overlapsStack=*/1, /*interruptReserve=*/32);
     const uint32_t reserved = base + 2048;
 
-    CHECK(runtime->arenaCeiling() == reserved);
+    CHECK(RuntimeProbe::arenaCeiling(*runtime.operator->()) == reserved);
 
     Runtime::DynamicStackGuard guard(*runtime.operator->(), 1024); // floor lands above reserved
-    CHECK(runtime->arenaCeiling() == reserved);
+    CHECK(RuntimeProbe::arenaCeiling(*runtime.operator->()) == reserved);
 }
 
 TEST(ASharedArenaStopsShortWhenTheStackHasDescendedIntoIt)
@@ -137,21 +140,21 @@ TEST(ASharedArenaStopsShortWhenTheStackHasDescendedIntoIt)
 
     {
         Runtime::DynamicStackGuard deep(*runtime.operator->(), 3000); // floor lands below reserved
-        const uint32_t ceiling = runtime->arenaCeiling();
+        const uint32_t ceiling = RuntimeProbe::arenaCeiling(*runtime.operator->());
 
         CHECK(ceiling < reserved);
         CHECK(ceiling > base);                 // still above what the arena holds
         CHECK(ceiling + reserve <= currentSp() - 3000);
     }
 
-    CHECK(runtime->arenaCeiling() == reserved); // leaving gives the ground back
+    CHECK(RuntimeProbe::arenaCeiling(*runtime.operator->()) == reserved); // leaving gives the ground back
 }
 
 TEST(RoomCheckAccountsForThePaddingAllocateWillConsume)
 {
     RuntimeStorage<64> runtime;
     uint32_t allocations = 0;
-    while(runtime->arenaCeiling() - runtime->arenaCursor >= 8)
+    while(RuntimeProbe::arenaCeiling(*runtime.operator->()) - runtime->getArenaCursor() >= 8)
     {
         uint32_t dest = place(runtime, 6);
         CHECK(dest % 4 == 0);
@@ -168,10 +171,10 @@ TEST(AFreshlyCompiledProcedureIsTheYoungestNotTheOldest)
     runtime->markCompiled(0, place(runtime, 8), /*lruTick=*/10);
     runtime->markCompiled(1, place(runtime, 8), /*lruTick=*/20);
 
-    CHECK(runtime->findEvictionVictim(/*now=*/21) == 0); // slot 1 is younger
+    CHECK(RuntimeProbe::findEvictionVictim(*runtime.operator->(), /*now=*/21) == 0); // slot 1 is younger
 
     runtime->markCompiled(2, place(runtime, 8), /*lruTick=*/30);
-    CHECK(runtime->findEvictionVictim(/*now=*/31) == 0); // still the oldest, not the newest
+    CHECK(RuntimeProbe::findEvictionVictim(*runtime.operator->(), /*now=*/31) == 0); // still the oldest, not the newest
 }
 
 TEST(NoResidentProcedureLeavesNothingToEvict)
@@ -179,7 +182,7 @@ TEST(NoResidentProcedureLeavesNothingToEvict)
     // What Assembler::growForAttached reads as "the arena cannot be made
     // to fit this" — the -1 that turns into RESOURCE_EXHAUSTED_ARENA.
     RuntimeStorage<2> runtime;
-    CHECK(runtime->findEvictionVictim(/*now=*/5) < 0);
+    CHECK(RuntimeProbe::findEvictionVictim(*runtime.operator->(), /*now=*/5) < 0);
 }
 
 // TEST(ArenaEndIsAlignedSoAFullAllocationNeverOvershootsIt)

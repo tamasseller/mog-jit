@@ -5,10 +5,6 @@
 #include <stddef.h>
 #include <cassert>
 #include "runtime_host.h"
-#include "proc_scan.h"
-#include "ext.h"
-#include "decode_instr.h"
-#include "abi_strategy.h"
 
 class Runtime;
 
@@ -61,7 +57,10 @@ extern const uint32_t trampolineAddr;
 
 class Runtime
 {
-public:
+    /* test/host/runtime_probe.h — lets the arena tests assert on the internals
+     * below without those becoming part of anyone else's vocabulary. */
+    friend struct RuntimeProbe;
+
     uint32_t arenaEnd;
     uint32_t arenaCursor;
     uint32_t procCount;
@@ -115,47 +114,7 @@ public:
         slots[0].staticInfo = 0;
     }
 
-    uint32_t loadProgram(const uint8_t *programBytes, uint32_t programSize, uint32_t bodyOffset)
-    {
-        if(procCount > jitc::MAX_PROC_IDX + 1)
-        {
-            return RESOURCE_LIMIT_PROC_COUNT;
-        }
-
-        uint32_t pos = bodyOffset;
-        for(uint32_t i = 0; i < procCount; i++)
-        {
-            assert(pos < programSize); // GCOV_EXCL_LINE — malformed/truncated program, matching decode_instr.cpp's own convention
-            
-            uint32_t argCount = jitc::decodeLeb128(programBytes, pos, pos);
-            uint32_t bodyStart = pos;
-
-            jitc::BodyScanResult scan = jitc::scanProcBody(programBytes, programSize, bodyStart, stackLimit);
-
-            if(!scan.ok)
-            {
-                return scan.failCode; 
-            }
-            if(argCount > ProcSlot::MAX_ARG_COUNT)
-            {
-                return RESOURCE_LIMIT_ARG_COUNT;
-            }
-            if(scan.bodyBytes > ProcSlot::MAX_BODY_BYTES)
-            {
-                return RESOURCE_LIMIT_BODY_BYTES;
-            }
-
-            ProcSlot &s = slot(i);
-            s.setCodePtr(trampolineAddr);
-            s.lastUsed = 0;
-            s.bodyPtr = (uint32_t)(uintptr_t)(programBytes + bodyStart);
-            s.setStaticInfo(argCount, scan.bodyBytes, scan.needsLRSave);
-
-            pos = bodyStart + scan.bodyBytes;
-        }
-
-        return 0;
-    }
+    uint32_t loadProgram(const uint8_t *programBytes, uint32_t programSize, uint32_t bodyOffset);
 
     inline auto getArenaCursor() const 
     {
@@ -192,6 +151,19 @@ public:
         return slot(idx).codePtr != trampolineAddr;
     }
 
+    uint32_t commit(uint32_t newEnd)
+    {
+        assert(arenaCursor <= newEnd && newEnd <= arenaCeiling());
+
+        arenaCursor = (newEnd + 3u) & ~3u;
+
+        return arenaCursor;
+    }
+
+    void markCompiled(uint32_t idx, uint32_t dest, uint32_t lruTick);
+    uint16_t* ensureSpace(const uint16_t* end, uint32_t lruTick);
+
+private:
     uint32_t arenaCeiling() const
     {
         if(!arenaOverlapsStack)
@@ -203,16 +175,6 @@ public:
         return live < arenaEnd ? live : arenaEnd;
     }
 
-    uint32_t commit(uint32_t newEnd)
-    {
-        assert(arenaCursor <= newEnd && newEnd <= arenaCeiling());
-        
-        arenaCursor = (newEnd + 3u) & ~3u;
-        
-        return arenaCursor;
-    }
-
-    void markCompiled(uint32_t idx, uint32_t dest, uint32_t lruTick);
     int findEvictionVictim(uint32_t now) const;
     inline uint32_t occupiedSizeOf(uint32_t idx) const
     {
@@ -233,9 +195,6 @@ public:
         return gapEnd - addr;
     }
     void evict(uint32_t idx, const uint16_t *end);
-    uint16_t* ensureSpace(const uint16_t* end, uint32_t lruTick);
-
-private:
     uint32_t pushStackFloor(uint32_t margin);
     void popStackFloor(uint32_t outerFloor);
 };

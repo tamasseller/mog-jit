@@ -96,7 +96,7 @@ int main(int argc, char **argv)
             for(uint32_t i = 0; i < procCount; i++) if(rt.isResident(i)) resident++;
             printf("    arena %5u: compiles=%u resident=%u/%u cursorUsed=%u%s\n",
                 arenaSize, compiles, resident, procCount,
-                rt.arenaCursor - ARENA_BASE, bailed ? " BAILED" : (compiles > procCount ? " EVICTED" : ""));
+                rt.getArenaCursor() - ARENA_BASE, bailed ? " BAILED" : (compiles > procCount ? " EVICTED" : ""));
         }
     }
     return 0;

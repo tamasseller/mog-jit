@@ -1,3 +1,4 @@
+#include "decode_instr.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <cassert>

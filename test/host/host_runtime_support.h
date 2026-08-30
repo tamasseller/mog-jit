@@ -16,6 +16,7 @@
 
 #include "assembler.h"
 #include "runtime.h"
+#include "runtime_probe.h"
 
 #include <cstdint>
 #include <cassert>
@@ -73,12 +74,9 @@ class TestAssembler
 
     Runtime &setup(uint32_t capacityHalfwords)
     {
-        runtimeRef().procCount = 1;
         arenaBase = low.alloc(capacityHalfwords * 2);
-        runtimeRef().arenaCursor = arenaBase;
-        runtimeRef().arenaEnd = arenaBase + capacityHalfwords * 2;
-        runtimeRef().stackLimit = 0;
-        runtimeRef().arenaOverlapsStack = 0;
+        new(runtimeBytes) Runtime(1, arenaBase, capacityHalfwords * 2, /*stackLimit=*/0, /*arenaOverlapsStack=*/0);
+        RuntimeProbe::setArenaEnd(runtimeRef(), arenaBase + capacityHalfwords * 2);
         runtimeRef().slot(0).codePtr = trampolineAddr;
         return runtimeRef();
     }
