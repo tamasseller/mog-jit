@@ -68,6 +68,8 @@ public:
     inline Runtime(uint32_t procCount, CodeArena &memory): memory(memory), dispatch(procCount)
     { }
 
+    /* Runs before anything is compiled — the body scan checks itself against
+     * stackLimit alone, which is only a floor while the arena is still empty. */
     uint32_t loadProgram(const uint8_t *programBytes, uint32_t programSize, uint32_t bodyOffset);
 
     inline uint32_t getProcCount() const { return dispatch.getProcCount(); }

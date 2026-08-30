@@ -56,6 +56,8 @@ static void GUARDED_scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &
                 failCode = RESOURCE_PROGRAM_EXT_UNKNOWN;
                 return;
             }
+            /* Executor::run's budget rests on the first of these: a helper
+             * that could reach a dispatch would nest under the translator. */
             if(extDeclHas(decl, EXT_FLAG_CALL_SHAPED) || extDeclHas(decl, EXT_FLAG_TERMINATES)
                 || extDeclMaxTransient(decl) != 0 || extDeclTosDelta(decl) > 0)
             {

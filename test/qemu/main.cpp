@@ -541,8 +541,17 @@ TEST(OnStackSucceedsWithTheArenaTrimmedToWhatTheChainNeeds)
 static uint32_t g_extHelperStackBytes = 0;
 extern "C" uint32_t extHelperStackBytes() { return g_extHelperStackBytes; }
 
-TEST(AnExtensionsDeclaredHelperStackIsAddedToTheUpFrontBudget)
+TEST(AnExtensionsDeclaredHelperStackCountsOnlyPastTheTranslatorsOwnEntry)
 {
+    // Same program, same stackLimit — the only difference is what an extension
+    // declares. If that declaration doesn't reach requiredStackBytes the
+    // reservation stops being a bound at the one moment it matters: a helper
+    // runs at the deepest point of an excursion. And if it is simply added to
+    // the translator's entry cost rather than measured against it, programs
+    // that fit are refused — the two never share the stack.
+    //
+    // The program contains no extension opcodes, so decode is never called;
+    // helperStackBytes is consulted regardless.
     const Instr body[] = {CONST(37), bare(Op::RETURN)};
     ProcSource procs[] = {{0, body, 2}};
     uint8_t bytes[32];
@@ -559,10 +568,61 @@ TEST(AnExtensionsDeclaredHelperStackIsAddedToTheUpFrontBudget)
     CHECK(!without.trapped);
     CHECK(without.value == 37);
 
+    // Over the translator's entry cost, but only by less than the leftover:
+    // charged as a sum this is 924 bytes and would be refused, charged as the
+    // deeper of the two it is 412 and fits.
     g_extHelperStackBytes = ARENA_ALLOWANCE + BOUNDARY_SLACK;
-    ProgramResult with = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
+    ProgramResult absorbed = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
     g_extHelperStackBytes = 0;
-    CHECK(with.trapped);
+    if(absorbed.trapped)
+    {
+        writeHexTrap(absorbed.value);
+    }
+    CHECK(!absorbed.trapped);
+    CHECK(absorbed.value == 37);
+
+    // Far enough past it that the excess alone outgrows the leftover.
+    g_extHelperStackBytes = ARENA_ALLOWANCE + TRANSLATOR_ENTRY_WORST_CASE_BYTES + BOUNDARY_SLACK;
+    ProgramResult over = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
+    g_extHelperStackBytes = 0;
+    CHECK(over.trapped == LANDING_RESOURCE_ERROR);
+    CHECK(over.value == RESOURCE_EXHAUSTED_STACK_BUDGET);
+}
+
+TEST(TheInterruptReserveIsAddedToTheUpFrontBudget)
+{
+    // interruptReserve is the one budget term with no code path of its own —
+    // no instruction ever spends it, an exception does, whenever it likes. So
+    // nothing but this would notice it going missing from requiredStackBytes.
+    const Instr body[] = {CONST(37), bare(Op::RETURN)};
+    ProcSource procs[] = {{0, body, 2}};
+    uint8_t bytes[32];
+    uint32_t maxCallDepth = 0, totalDepth = 1, procCount = 1;
+    uint32_t len = makeProgram(maxCallDepth, totalDepth, procs, procCount, bytes, sizeof(bytes));
+
+    uint32_t stackLimit = currentSp() - requiredStackBytesFor(procCount, totalDepth, maxCallDepth) - ARENA_ALLOWANCE;
+
+    ProgramResult without = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
+    if(without.trapped)
+    {
+        writeHexTrap(without.value);
+    }
+    CHECK(!without.trapped);
+    CHECK(without.value == 37);
+
+    // A real exception frame still fits, and compiles through an arena ceiling
+    // that is now holding that much back from the live stack floor.
+    ProgramResult modest = Executor::onStack(stackLimit, ARMV6M_EXCEPTION_FRAME_BYTES).run(bytes, len, nullptr, 0);
+    if(modest.trapped)
+    {
+        writeHexTrap(modest.value);
+    }
+    CHECK(!modest.trapped);
+    CHECK(modest.value == 37);
+
+    // Past the leftover that made it fit, the code limit drops below stackLimit.
+    ProgramResult with = Executor::onStack(stackLimit, ARENA_ALLOWANCE + BOUNDARY_SLACK).run(bytes, len, nullptr, 0);
+    CHECK(with.trapped == LANDING_RESOURCE_ERROR);
     CHECK(with.value == RESOURCE_EXHAUSTED_STACK_BUDGET);
 }
 

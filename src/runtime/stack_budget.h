@@ -37,9 +37,13 @@
 /* enterDispatch's own frame, from runtime.S. */
 #define ENTER_DISPATCH_FIXED_BYTES 36
 
-/* Executor::run's frame, excluding the Runtime it places (that is sized
- * separately from procCount). Hand-checked against -fstack-usage: the VLA
- * makes the frame dynamic, which stack-margin.ts refuses to bound. */
+/* Slack, sized from Executor::run's own frame. The sp the budget is measured
+ * against is already below that frame, so this is not reserving it a second
+ * time — it covers what the measurement cannot see: the alignment padding
+ * under the Runtime's variable-length storage, and anything a future
+ * restructuring puts between the check and the deepest point. Hand-checked
+ * against -fstack-usage, since the VLA makes the frame dynamic and
+ * stack-margin.ts refuses to bound those. */
 #define EXECUTOR_RUN_FRAME_BYTES 88
 
 /* translatorTrampoline's push {r0, r1, r2, lr} plus REALIGN_ENTER's worst
@@ -55,7 +59,14 @@
 
 #define TRANSLATOR_ENTRY_WORST_CASE_BYTES (TRANSLATOR_ENTRY_ASM_BYTES + TRANSLATOR_ENTRY_CPP_BYTES)
 
-/* What extThunkHelper spends before it reaches an extension's C helper. */
+/* This and the extension helper below both sit on top of the deepest the
+ * compiled code itself reaches, and never at the same time — Executor::run
+ * reserves the deeper of the two, not their sum. */
+
+/* What extThunkHelper spends before it reaches an extension's C helper: 4 for
+ * the pushed lr, 8 for REALIGN_ENTER's worst case. Added by Executor::run on
+ * top of whatever extHelperStackBytes() declares, so an extension only ever
+ * has to account for its own code. */
 #define EXT_THUNK_STACK_BYTES 12
 
 /* --- checked per level --------------------------------------------------- */
