@@ -24,6 +24,8 @@ SOURCES += ../../src/compiler/translate_data_flow.cpp
 
 SOURCES += ../encode_instr.cpp
 SOURCES += program_tests.cpp
+SOURCES += eviction_tests.cpp
+SOURCES += stack_budget_tests.cpp
 SOURCES += smoke_test.cpp
 SOURCES += stack_paint.cpp
 SOURCES += semihosting_output.cpp

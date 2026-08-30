@@ -13,17 +13,9 @@
 // rediscovered the same way again.
 #include <cstdint>
 #include "stack_paint.h"
-#include "instr.h"
-#include "encode_instr.h"
-#include "translate_proc.h"
-#include "runtime.h"
-#include "executor.h"
-#include "Test.h"
 #include "semihosting_output.h"
 
-using namespace jitc;
-
-extern "C" uint8_t __bss_end; // vectors.S/linker.ld — see main.cpp's own extern for the same symbol
+extern "C" uint8_t __bss_end; // vectors.S/linker.ld — the TEST files declare the same symbol
 extern "C" uint8_t _stack_top; // linker.ld: _stack_top = ORIGIN(ram) + LENGTH(ram); vectors.S's own initial sp
 
 static constexpr uint8_t PAINT_BYTE = 0xAA;
@@ -34,8 +26,8 @@ static constexpr uint8_t PAINT_BYTE = 0xAA;
 // empirically observed headroom, not agreement with the constants this file
 // exists to double-check.
 //
-// The value is main.cpp's own GENEROUS_SLACK, the lowest stackLimit any TEST
-// in this image declares and therefore the floor every one of them promises
+// The value is the TEST files' own STACK_SLACK_ABOVE_BSS, the lowest stackLimit
+// any TEST in this image declares and therefore the floor every one of them promises
 // to stay above. An excursion's arena base sits exactly there, so a healthy
 // run lands on this number rather than over it; anything less means something
 // crossed a floor it had been checked against.
@@ -97,75 +89,6 @@ static uint32_t highWaterMarkBytesFromBssEnd()
         }
     }
     return (uint32_t)(hi - lo); // nothing touched at all — the whole region is still painted
-}
-
-static uint32_t currentSp()
-{
-    register uint32_t sp asm("sp");
-    return sp;
-}
-
-// Same "anchor above __bss_end, not below the measured sp" reasoning as
-// main.cpp's own stackLimitAboveBss() — duplicated locally rather than
-// shared via a header, matching this file set's existing convention of
-// each TEST file owning its own small helpers (main.cpp does the same).
-static uint32_t stackLimitAboveBss()
-{
-    static constexpr uint32_t GENEROUS_SLACK = 512;
-    return (uint32_t)(uintptr_t)&__bss_end + GENEROUS_SLACK;
-}
-
-TEST(DeepNestingStaysWithinStackBudget)
-{
-    // 8 levels of BR_TABLE(1) (if-then) nesting — the same depth and
-    // shape as test/host/test_translate_proc.cpp's own
-    // NestedIfChainReportsOverflowWithTheSameSlackADepthZeroBodyTolerates,
-    // here run through the real translator at real -Os on real hardware
-    // instead of an -O0 host build standing in for it. Each level is a
-    // real BR_TABLE(1) -> translateIfThen -> processUntilTerminator ->
-    // processNonTerminators chain (translateIfThen itself is confirmed
-    // inlined into processNonTerminators at this optimization level — so
-    // the per-level cost this measures is
-    // processNonTerminators + processUntilTerminator's real combined
-    // frame, not a hypothetical one — tools/stack-margin.ts reports the
-    // same inlining.)
-    constexpr int kDepth = 8;
-    Instr body[2 * kDepth + 2];
-    for(int i = 0; i < kDepth; i++)
-    {
-        body[i] = brTable(1);
-    }
-    for(int i = 0; i < kDepth; i++)
-    {
-        body[kDepth + i] = bare(Op::BLOCK_END);
-    }
-    body[2 * kDepth] = CONST(0);
-    body[2 * kDepth + 1] = bare(Op::RETURN);
-
-    ProcSource procs[] = {{0, body, (uint32_t)(2 * kDepth + 2)}};
-    uint8_t progBytes[256];
-    uint32_t progLen = encodeJitProgram(/*maxCallDepth=*/0, /*totalDepth=*/0, procs, 1, progBytes, sizeof(progBytes));
-
-    static uint8_t arena[512];
-    ProgramResult r = Executor::split((uint32_t)(uintptr_t)arena, sizeof(arena), stackLimitAboveBss(), /*interruptReserve=*/0)
-        .run(progBytes, progLen, nullptr, 0);
-
-    // Either outcome is healthy and worth distinguishing in the report:
-    // a clean RESOURCE_ERROR proves the live checks fired before anything
-    // dangerous happened; a real result proves this depth compiled and
-    // ran with the margin checked below intact. A hang or a wild jump
-    // (into .bss, into unmapped flash) is the only actual failure mode,
-    // and would show up as this whole TEST never reporting at all rather
-    // than as a clean CHECK() failure — the high-water-mark scan after
-    // runAllTests below is what actually confirms nothing got that close.
-    if(r.trapped)
-    {
-        writeHexTrap(r.value);
-    }
-    else
-    {
-        writeHexResult(r.value);
-    }
 }
 
 // Not a TEST — deliberately runs standalone from main(), after

@@ -28,9 +28,8 @@ static constexpr uint32_t PROGRAM_CAPACITY = 256;
 
 // max_call_depth 0 and total_depth = the entry procedure's own arg_count: so
 // slack an envelope that Executor::run's up-front budget check sees almost no
-// operand-stack or call-record cost and can never reject. main.cpp's own
-// Executor scenarios are what exercise that check against real, hand-derived
-// figures. Not zero, though: enterProgramCore refuses to push a multi-argument
+// operand-stack or call-record cost and can never reject. stack_budget_tests.cpp
+// is what exercises that check against real, hand-derived figures. Not zero, though: enterProgramCore refuses to push a multi-argument
 // entry procedure's out-of-window arguments past whatever total_depth claims,
 // and arg_count is the lower bound validateProgram itself guarantees.
 static ProgramResult runProgram(const ProcSource *procs, uint32_t procCount, uint32_t *args)
@@ -1299,3 +1298,24 @@ TEST(EntryWithSixArgumentsWhoseCalleeTraps)
 }
 
 #undef PACK_ARG
+
+// ---- Wire bytes validateProgram refuses outright, before anything is
+// translated or any budget is consulted.
+
+TEST(AProgramWithNoProceduresIsRejected)
+{
+    const uint8_t bytes[] = {0x00, 0x00, 0x00};
+    ProgramResult r = Executor::onStack(0, /*interruptReserve=*/0).run(bytes, sizeof(bytes), nullptr, 0);
+
+    CHECK(r.trapped);
+    CHECK(r.value == RESOURCE_PROGRAM_NO_PROCS);
+}
+
+TEST(AnExtensionRangeOpcodeIsRejectedOnHardware)
+{
+    const uint8_t bytes[] = {0x01, 0x01, 0x01, 0x00, 0x80};
+    ProgramResult r = Executor::onStack(0, /*interruptReserve=*/0).run(bytes, sizeof(bytes), nullptr, 0);
+
+    CHECK(r.trapped);
+    CHECK(r.value == RESOURCE_PROGRAM_EXT_UNKNOWN);
+}
