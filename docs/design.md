@@ -663,7 +663,7 @@ The static half (`body_ptr`/`static_info`) is what makes this table
 double as the whole-program procedure directory: `Executor::run`'s one-time
 wire-format walk
 (`Runtime::loadProgram`, `jit-armv6m/src/runtime/runtime.cpp`) fills it in for
-every procedure before `enter_dispatch` ever runs, and `compileProc` reads
+every procedure before `enter_dispatch` ever runs, and `translateProc` reads
 a procedure's own `arg_count`/body location/`needs_lr_save` straight out
 of its own slot instead of any fixture- or caller-supplied side channel.
 It has to live in the *same* table as the mutable dispatch half — not a
@@ -783,19 +783,19 @@ until link time:
 push {r0, r1, r2, lr}       ; lr holds the live record; bl clobbers it
 MOV  r3, r8                 ; low-mirror the dispatch base
 SUBS r0, r1, r3             ; r0 = slotAddr − base
-LSRS r0, r0, #3             ; r0 = idx (compileProc's 1st argument)
+LSRS r0, r0, #3             ; r0 = idx (translateProc's 1st argument)
 MOV  r1, r9                 ; runtime pointer (2nd argument)
 REALIGN_ENTER
-BL   compileProc
+BL   translateProc
 REALIGN_LEAVE
 POP  {r0, r1, r2}
 POP  {r3}                   ; POP can't target lr directly
 MOV  lr, r3
-LDR  r3, [r1, #0]           ; the code_ptr compileProc just wrote
+LDR  r3, [r1, #0]           ; the code_ptr translateProc just wrote
 BX   r3
 ```
 
-`r8`-`r11` need no saving: they are AAPCS callee-saved, and `compileProc` is
+`r8`-`r11` need no saving: they are AAPCS callee-saved, and `translateProc` is
 built with `-ffixed-r8/r9/r10/r11` so the compiler cannot touch them.
 
 `REALIGN_ENTER`/`REALIGN_LEAVE` round `sp` down to an 8-byte boundary before
@@ -1185,37 +1185,24 @@ code too and update the translator's own base pointer and cursor for it,
 mechanically identical to updating one more `code_ptr`. The block-nesting
 records need no equivalent update (§2's note on why).
 
-**Done**: `compiler/src/assembler.{h,cpp}`'s `Assembler::reserve(maxBytes,
-poolEntries)` is the one seam the otherwise Runtime-agnostic translator
-has into this — checked at `translateProc`'s existing per-instruction
-checkpoint (`blocks.h`'s `instrMaxBytes`, the same budget `maxSpanBytes`
-already used for a different reason), before the prologue stub, and (via
-the same call) before a literal-pool flush. `reserve` is a plain method on
-`Assembler` itself now, not a virtual call through a separate interface —
-the `ArenaRoom` abstraction this paragraph once described had only ever
-one implementor, hiding a `Runtime` the host build already instantiates
-directly, so it was retired. An *attached* `Assembler`
-(constructed over a real `Runtime*`) runs the ordinary
-`findEvictionVictim`/`evict` loop internally, best-effort: `neededBytes`
-is always a worst-case upper bound, so evicting everything resident and
-still coming up short is a normal outcome, not a failure — only a later
-real overflow at `emit()` is genuine, and *that* exits directly
-(`Assembler::fail(RESOURCE_EXHAUSTED_ARENA)` → `runtimeBail`,
-`runtime/dispatch_abi.cpp`) rather than propagating a flag, since the caller (`compileProc`,
-`runtime/compile_proc.cpp`) has nothing useful left to do once arena
-exhaustion is real. `Runtime::evict` (`src/runtime/runtime.cpp`) is
-unchanged: it still takes an `inProgressLenBytes` parameter (default 0,
-so every other caller's behavior is unchanged) that extends its own
-tail-relocation range from `arenaCursor` to
-`arenaCursor + inProgressLenBytes` — the in-progress procedure's own base
-is always exactly `arenaCursor`, since nothing has bumped it yet
-(`Runtime::allocate` only ever runs once, on success), so this one memmove
-keeps that invariant true on the other side: `Assembler` rereads
-`arenaCursor` afterward and rebases its own buffer pointer there.
-`compile_proc.cpp` itself needs no scratch buffer or final `memcpy` — it
-constructs its `Assembler` directly over `arenaCursor` and lets `reserve`
-grow it in place, then finalizes it (flush the pool, `Runtime::allocate`,
-`Runtime::markCompiled`) as `translateProc`'s own last step.
+**Done**: `Runtime::ensureSpace(end, lruTick)` is the one seam the otherwise
+Runtime-agnostic translator has into this, and `Assembler::doEmit` calls it
+for every halfword. At the arena ceiling it evicts a single victim
+(`findEvictionVictim`) and bails `RESOURCE_EXHAUSTED_ARENA` when there is
+none left to take. Per-halfword rather than a worst-case reservation up
+front: there is then no upper bound to over-estimate and no reserve/emit
+pair that can disagree about one.
+
+`Runtime::evict(idx, end)` takes the in-progress write end, so
+`CodeArena::closeGap` relocates the tail *including* the code being
+emitted. The growing procedure's own base is always exactly the arena
+cursor — nothing bumps it until `finalize` — so `ensureSpace` returning the
+new cursor for `doEmit` to rebase `buf` onto is the whole of the compaction
+extension above: the procedure invisible to §8 moves here instead.
+
+`Assembler` is constructed directly over `getArenaCursor()`, so no scratch
+buffer and no final `memcpy`; `finalize` is `translateProc`'s last step —
+flush the pool, `Runtime::commit`, `Runtime::markCompiled`.
 `markCompiled` stamps the live tick rather than zeroing `last_used`:
 `callHelper` already stamped this slot on the way to the trampoline, and
 zeroing would present a procedure that was just paid for as the oldest thing
@@ -1239,24 +1226,24 @@ unencodable at any size, this backend cannot compile it at all.
 | code | value | site | predicate |
 |---|---|---|---|
 | `RESOURCE_PROGRAM_NO_PROCS` | `0x52451100` | `executor.cpp` `Executor::run` | `proc_count == 0` |
-| `RESOURCE_PROGRAM_BODY_UNTERMINATED` | `0x52451200` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | ran off the blob with a block still open |
+| `RESOURCE_PROGRAM_BODY_UNTERMINATED` | `0x52451200` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | ran off the blob with a block still open |
 | `RESOURCE_PROGRAM_CALLEE_RANGE` | `0x52451300` | `translate_data_flow.cpp`'s `CALL` arm | `calleeIndex >= procCount` |
 | `RESOURCE_PROGRAM_FRAME` | `0x52451400` | `executor.cpp` `Executor::run` | §1.1's frame does not verify: truncated, corrupt, or another contract version |
 | `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` | `0x52451500` | `executor.cpp` `Executor::run` | `argCount != slot(0).argCount()` |
 | `RESOURCE_PROGRAM_ENTRY_DEPTH` | `0x52451600` | `executor.cpp` `Executor::run` | the entry procedure's out-of-window args exceed `total_depth` |
-| `RESOURCE_PROGRAM_EXT_UNKNOWN` | `0x52451700` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | a wire byte past `LAST_CORE_OPCODE`: the extension range (§11) or a reserved code (§5.3) |
-| `RESOURCE_PROGRAM_EXT_UNSUPPORTED` | `0x52451800` | `Runtime::init`, and `translate_proc.cpp`'s `EXT` arm | a declaration asking for a capability this core doesn't implement, or one the emitted code then contradicts (halfword overrun, `tosDelta` mismatch) |
-| `RESOURCE_PROGRAM_RESERVED_OPCODE` | `0x52451a00` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | one of the four core codes §5.3 reserves but hasn't assigned (124-127) |
+| `RESOURCE_PROGRAM_EXT_UNKNOWN` | `0x52451700` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | a wire byte past `LAST_CORE_OPCODE`: the extension range (§11) or a reserved code (§5.3) |
+| `RESOURCE_PROGRAM_EXT_UNSUPPORTED` | `0x52451800` | `Runtime::loadProgram`, and `translate_proc.cpp`'s `EXT` arm | a declaration asking for a capability this core doesn't implement, or one the emitted code then contradicts (halfword overrun, `tosDelta` mismatch) |
+| `RESOURCE_PROGRAM_RESERVED_OPCODE` | `0x52451a00` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | one of the four core codes §5.3 reserves but hasn't assigned (124-127) |
 | `RESOURCE_EXHAUSTED_ARENA` | `0x52452100` | `assembler.cpp` `emit` | buffer full and nothing left to evict (§8) |
 | `RESOURCE_EXHAUSTED_STACK_BUDGET` | `0x52452200` | `executor.cpp`, both variants | the up-front §2 check; nothing was touched |
 | `RESOURCE_EXHAUSTED_TRANSLATOR_STACK` | `0x52452300` | `translate_proc.cpp` `checkStackFloor` | translator recursion reached the live floor |
-| `RESOURCE_EXHAUSTED_SCAN_STACK` | `0x52452400` | `proc_scan.cpp` `scanBody` | ditto, in the directory pre-pass |
+| `RESOURCE_EXHAUSTED_SCAN_STACK` | `0x52452400` | `proc_scan.cpp`'s `GUARDED_scanBody` | ditto, in the directory pre-pass |
 | `RESOURCE_LIMIT_WINDOW_RECLAIM` | `0x52453100` | `window.cpp` `discardWindow`/`restoreWindow` | reclaim past `Uoff<2,7>` — TOS depth over 131 |
 | `RESOURCE_LIMIT_SPILL_OFFSET` | `0x52453200` | `translate_proc.cpp` `spillImm` | spill slot past `Uoff<2,8>` |
 | `RESOURCE_LIMIT_BRANCH_RANGE` | `0x52453300` | `assembler.cpp` `patchBranch` | fixup past `Ioff<1,8>`/`Ioff<1,11>` |
 | `RESOURCE_LIMIT_LOOP_BACK_EDGE` | `0x52453400` | `translate_proc.cpp` `translateLoop` | back-edge past `Ioff<1,11>` |
-| `RESOURCE_LIMIT_ARG_COUNT` | `0x52453500` | `Runtime::init` | `arg_count` over `ProcSlot`'s field width |
-| `RESOURCE_LIMIT_BODY_BYTES` | `0x52453600` | `Runtime::init` | body size over `ProcSlot`'s field width |
+| `RESOURCE_LIMIT_ARG_COUNT` | `0x52453500` | `Runtime::loadProgram` | `arg_count` over `ProcSlot`'s field width |
+| `RESOURCE_LIMIT_BODY_BYTES` | `0x52453600` | `Runtime::loadProgram` | body size over `ProcSlot`'s field width |
 
 Two things this deliberately does not cover. Stack overflow proper still
 shouldn't happen — §2's regions are sized from `validateProgram`'s own
@@ -1277,7 +1264,7 @@ program against an image built without that extension registered, so it is
 reported rather than asserted. With an extension registered it means that
 extension declined the byte; §18 has the rest of the seam. It is also the only place that byte is
 stopped. `decodeInstr` merely asserts, and both the QEMU suite and
-`fuzz/qemu_exec` build `-DNDEBUG`, so before `scanBody` gained its own
+`fuzz/qemu_exec` build `-DNDEBUG`, so before `GUARDED_scanBody` gained its own
 check a body byte of `0x80` decoded as `CONST 20` on real hardware and
 silently reinterpreted the rest of the instruction stream. The check sits
 in the pre-pass because that walk already decodes every instruction of
@@ -1535,7 +1522,7 @@ checks live SP at every one of those four entry points via a shared
 `checkStackFloor` (`translate_proc.cpp`) — not just once, at
 `translateBody`'s own depth 0 — closing the actual gap directly rather
 than trying to keep a separate static margin in sync with it.
-`proc_scan.cpp`'s own pre-compilation `scanBody` recursion keeps its own
+`proc_scan.cpp`'s own pre-compilation `GUARDED_scanBody` recursion keeps its own
 `SCAN_STACK_MARGIN`, now documented as bounding only its own (lighter)
 frame — it was never a valid proxy for the real translator's heavier one,
 and no longer needs to be, since `checkStackFloor` covers that directly.
@@ -1599,12 +1586,12 @@ is structurally blind to the other's.
 `fuzz/harness.cpp` runs the real translator on the host, under ASan/UBSan
 with asserts live, on whole programs a `validateProgram` gate has already
 approved (over a socket to `fuzz/oracle_server.ts`, so Node starts once
-rather than per test case). Each input is translated twice — once with a
-detached `Assembler`, then again with attached ones against a small real
-arena at a fixed low address, which is what reaches `Runtime::allocate`/
-`findEvictionVictim`/`evict`'s compaction memmove and `finalize`'s dispatch
-registration. It finds crashes, and nothing else: it never executes what it
-emitted.
+rather than per test case). Each procedure is translated once into a fresh
+`Runtime` and then the whole program is translated again over four rounds
+against one small arena, sized to the program so eviction actually bites —
+that second pass is what reaches `findEvictionVictim`/`evict`'s compaction
+memmove, `Runtime::commit` and `finalize`'s dispatch registration. It finds
+crashes, and nothing else: it never executes what it emitted.
 
 `fuzz/qemu_exec/` closes exactly that gap, and needs no new emulator —
 §16's own `qemu-system-arm` setup already runs this translator plus the

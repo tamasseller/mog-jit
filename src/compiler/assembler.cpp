@@ -226,11 +226,6 @@ void Assembler::materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoI
     parkPoolSite(dstReg, value);
 }
 
-uint32_t Assembler::poolDebt() const
-{
-    return pendingCount > 0 ? 4 * pendingCount + 4 : 0;
-}
-
 void Assembler::patchPoolSite(uint32_t siteOffset, uint32_t word)
 {
     uint32_t idx = siteOffset / 2;

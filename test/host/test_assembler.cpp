@@ -67,7 +67,7 @@ TEST(materializeImm32ParksAPlaceholderForAnEligibleValue)
     a.materializeImm32(0, 0x12345678u); // cost 7 -- pool-eligible
     CHECK(a.halfwordCount() == 1);      // just the placeholder LDR at the site
     CHECK(ArmV6M::isLiteralAccess(buf[0]));
-    CHECK(a.poolDebt() == 4 * 1 + 4);
+    CHECK(a.pendingPoolEntries() == 1);
 }
 
 // ── pool flush ───────────────────────────────────────────────────────────
@@ -139,10 +139,10 @@ TEST(PoolFlushesAutomaticallyOnceFull)
     {
         a.materializeImm32(0, 0x10000001u + i); // 16 distinct pool-eligible values
     }
-    CHECK(a.poolDebt() != 0); // still open, all 16 pending
+    CHECK(a.pendingPoolEntries() == 16); // still open, all 16 pending
 
     a.materializeImm32(0, 0x20000001u); // 17th -- must flush the first 16 before parking this one
-    CHECK(a.poolDebt() == 4 * 1 + 4);   // exactly the new site remains pending
+    CHECK(a.pendingPoolEntries() == 1); // exactly the new site remains pending
 }
 
 // ── Label / bind() ───────────────────────────────────────────────────────

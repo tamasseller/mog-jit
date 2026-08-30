@@ -85,7 +85,7 @@ public:
     void patchRawHalfword(uint32_t siteOffset, uint16_t value);
 
     void materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoIsnSeq = true);
-    uint32_t poolDebt() const;
+    uint32_t pendingPoolEntries() const { return pendingCount; }
 
     uint32_t finalize(uint32_t procIdx);
 
