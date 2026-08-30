@@ -1,19 +1,3 @@
-// Does enterDispatch's argument marshalling put the entry procedure's
-// arguments exactly where an ordinary CALL site would?
-//
-// It has to: procedure 0 gets the same compiled prologue and epilogue as any
-// callee, so the only thing that can make it read its arguments correctly is
-// arriving at the layout window.cpp's spillForCall + fillCalleeArgs produce.
-// Nothing else in the tree checks that — a CALL 0 can only appear in a
-// procedure unreachable from procedure 0 (any reachable path would be a
-// call-graph cycle), and unreachable procedures are never dispatched, so
-// never translated. enterDispatch is the only live producer of this layout,
-// and before entry_args.h there was no producer at all.
-//
-// So this does not restate buildEntryArgs's own formula back at it. It runs
-// the real emitter, interprets the PUSH/POP stream it produces against a
-// simulated register file and stack, and requires the descriptor to land on
-// a byte-identical machine image.
 #include "Test.h"
 #include "assembler.h"
 #include "window.h"
@@ -144,9 +128,9 @@ void viaEnterDispatch(Machine &m, const uint32_t *args, uint32_t n)
     EntryArgs ea;
     buildEntryArgs(&ea, args, n);
 
-    for(uint32_t i = 0; i < ea.spilledCount; i++)
+    for(uint32_t i = 0; i < ea.spilledEnd - ea.spilledStart; i++)
     {
-        m.regs[1] = ea.spilled[i];
+        m.regs[1] = ea.spilledStart[i];
         m.push(1u << 1); // push {r1}
     }
     for(uint32_t i = 0; i < WINDOW_SIZE; i++) m.regs[WINDOW_BASE + i] = ea.window[i];
@@ -206,8 +190,9 @@ TEST(entryArgsLeavesTheAccRegisterToThePrologue)
 
         CHECK(ea.window[physReg(n - 1) - WINDOW_BASE] == 0);
         CHECK(ea.acc == args[n - 1]);
-        CHECK(ea.spilledCount == (n > WINDOW_SIZE ? n - WINDOW_SIZE : 0));
-        CHECK(ea.spilled == (ea.spilledCount > 0 ? args : nullptr) || ea.spilledCount == 0);
+        CHECK(ea.spilledEnd - ea.spilledStart == (n > WINDOW_SIZE ? n - WINDOW_SIZE : 0));
+        const auto count = ea.spilledEnd - ea.spilledStart;
+        CHECK(ea.spilledStart == (count > 0 ? args : nullptr) || count == 0);
     }
 }
 
@@ -216,7 +201,7 @@ TEST(entryArgsForZeroArgumentsPlacesNothing)
     EntryArgs ea;
     buildEntryArgs(&ea, nullptr, 0); // args is legitimately null here
 
-    CHECK(ea.spilledCount == 0);
+    CHECK(ea.spilledEnd - ea.spilledStart == 0);
     CHECK(ea.acc == 0);
     for(uint32_t i = 0; i < WINDOW_SIZE; i++) CHECK(ea.window[i] == 0);
 }
@@ -231,9 +216,9 @@ TEST(entryArgsSpillsAscendingSoSlotZeroIsFurthestFromSp)
 
     EntryArgs ea;
     buildEntryArgs(&ea, args, 6);
-    CHECK(ea.spilledCount == 2);
-    CHECK(ea.spilled[0] == args[0]); // pushed first, so furthest from sp
-    CHECK(ea.spilled[1] == args[1]);
+    CHECK( ea.spilledEnd - ea.spilledStart == 2);
+    CHECK(ea.spilledStart[0] == args[0]); // pushed first, so furthest from sp
+    CHECK(ea.spilledStart[1] == args[1]);
 
     // Confirmed against the offsets the callee will actually use.
     Window w(6, /*savesLR=*/false);

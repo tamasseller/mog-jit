@@ -9,25 +9,24 @@
 
 struct EntryArgs
 {
-    const uint32_t *spilled;
-    uint32_t spilledCount;
-    uint32_t window[jitc::WINDOW_SIZE];
+    // !!! ORDER IS FIXED: asm depends on it. !!!
+    const uint32_t *spilledStart;
+    const uint32_t *spilledEnd;
     uint32_t acc;
+    uint32_t window[jitc::WINDOW_SIZE];
 };
 
 #if UINTPTR_MAX == 0xFFFFFFFFu
-static_assert(offsetof(EntryArgs, spilled) == ENTRY_ARGS_SPILLED_OFFSET,
-    "runtime.S's entry-argument block reads ea->spilled at ENTRY_ARGS_SPILLED_OFFSET");
-static_assert(offsetof(EntryArgs, spilledCount) == ENTRY_ARGS_SPILLED_COUNT_OFFSET,
-    "runtime.S's entry-argument block reads ea->spilledCount at ENTRY_ARGS_SPILLED_COUNT_OFFSET");
-static_assert(offsetof(EntryArgs, window) == ENTRY_ARGS_WINDOW_OFFSET,
-    "runtime.S's entry-argument block reads ea->window at ENTRY_ARGS_WINDOW_OFFSET");
-static_assert(offsetof(EntryArgs, acc) == ENTRY_ARGS_ACC_OFFSET,
-    "runtime.S's entry-argument block reads ea->acc at ENTRY_ARGS_ACC_OFFSET");
+static_assert(offsetof(EntryArgs, spilledStart) == 0);
+static_assert(sizeof(EntryArgs::spilledStart) == 4);
+static_assert(offsetof(EntryArgs, spilledEnd) == 4);
+static_assert(sizeof(EntryArgs::spilledEnd) == 4);
+static_assert(offsetof(EntryArgs, acc) == 8);
+static_assert(sizeof(EntryArgs::acc) == 4);
+static_assert(offsetof(EntryArgs, window) == 12);
+static_assert(sizeof(EntryArgs::window) == 16);
 #endif
 
-static_assert(jitc::WINDOW_SIZE == 4 && jitc::WINDOW_BASE == 4,
-    "runtime.S's entry-argument block unrolls the window fill as ldr r4-r7");
 
 inline void buildEntryArgs(EntryArgs *ea, const uint32_t *args, uint32_t declared)
 {
@@ -48,8 +47,8 @@ inline void buildEntryArgs(EntryArgs *ea, const uint32_t *args, uint32_t declare
         ea->window[jitc::physReg(k) - jitc::WINDOW_BASE] = args[k];
     }
 
-    ea->spilled = args;
-    ea->spilledCount = windowFloor;
+    ea->spilledStart = args;
+    ea->spilledEnd = args + windowFloor;
 }
 
 #endif /* JIT_ARMV6M_RUNTIME_ENTRY_ARGS_H_ */

@@ -104,26 +104,25 @@ brTableJumpHelper:
 .thumb_func
 .global trapHelper
 trapHelper:
-    mov   r1, r9                            @ r1 = runtime
-    ldr   r3, [r1, #(RUNTIME_DISPATCH_TABLE_OFFSET - DISPATCH_SENTINEL_OFFSET)] @ = slots[0].codePtr,
-                                            @ the sentinel landing enterDispatch parked below — reached from r9
-                                            @ directly rather than via r8, so this needs one live register, not two
-    ldr   r1, [r1, #0]                      @ r1 = runtime->savedSp (savedSp is Runtime's own first field)
-    movs  r2, #LANDING_TRAP                 @ the landing reads its own tag out of r2
+    mov   r1, r8
+    subs  r1, #DISPATCH_SENTINEL_OFFSET     @ r1 = &slots[0], the sentinel
+    ldr   r3, [r1, #0]                      @ this excursion's landing
+    ldr   r1, [r1, #8]                      @ ...and the sp it must land on
+    movs  r2, #LANDING_TRAP
     mov   sp, r1
     bx    r3
 
 .macro REALIGN_ENTER
     mov  r3, sp
-    lsrs r2, r3, #3
-    lsls r2, r2, #3                         @ r2 = old sp rounded down to 8 (Rd!=Rn shifts have no 3-bit-imm limit)
-    subs r2, r2, #8                         @ Rd==Rn here, so the 8-bit-immediate SUBS form applies (unlike Rd!=Rn, which caps at 3 bits)
+    subs r2, r3, #4
+    lsrs r2, r2, #3
+    lsls r2, r2, #3
     mov  sp, r2
-    str  r3, [sp, #4]
+    str  r3, [sp, #0]
 .endm
 
 .macro REALIGN_LEAVE
-    ldr  r3, [sp, #4]
+    ldr  r3, [sp, #0]
     mov  sp, r3
 .endm
 
@@ -142,73 +141,85 @@ translatorTrampoline:
     push {r0, r1, r2, lr}
     mov  r3, r8                             @ low-mirror the dispatch table base
     subs r0, r1, r3                         @ r0 = slotAddr - dispatchBase
-    lsrs r0, r0, #4                         @ r0 = idx — compileProc's 1st argument (/16, sizeof(ProcSlot))
-    mov  r1, r9                             @ r1 = runtime pointer — compileProc's 2nd argument
-    REALIGN_ENTER                           @ compileProc is real, independently-compiled C — see above
-    bl   compileProc    
+    lsrs r0, r0, #4                         @ r0 = idx — translateProc's 1st argument (/16, sizeof(ProcSlot))
+    mov  r1, r9                             @ r1 = runtime pointer — translateProc's 2nd argument
+    REALIGN_ENTER                           @ translateProc is real, independently-compiled C — see above
+    mov  r2, r11                            @ r2 = lruTick — 3rd argument, after REALIGN_ENTER's own use of r2
+    bl   translateProc    
     REALIGN_LEAVE   
     pop  {r0, r1, r2}                       @ restore acc, slotAddr, offset+1
     pop  {r3}                               @ r3 = the saved record; POP can't target lr directly
     mov  lr, r3 
-    ldr  r3, [r1, #0]                       @ r3 = the codePtr compileProc just wrote
+    ldr  r3, [r1, #0]                       @ r3 = the codePtr translateProc just wrote
     bx   r3
 
 .thumb_func
-.global enterDispatch
+.global enterDispatch   
 enterDispatch:
-    push  {r2, r4, r5, r6, r7, lr}          
+    // r0: dispatch table
+    // r1: runtime state
+    // r2: argument block
+
+    // Spill all callee saved regs and lr
+    push  {r4, r5, r6, r7, lr}          
     mov   r4, r8                            
     mov   r5, r9                            
     mov   r6, r10                           
     mov   r7, r11                           
-    push  {r4, r5, r6, r7}                  
+    push  {r4, r5, r6, r7} 
+
+    // Setup dispatch table hi-reg
+    mov   r8, r0
+
+    // Setup return from entry and trap/failure
+    // Landing in codePtr, so that returnHelperTail finds it.
+    // SP goes in the slot's tail, which no dispatch path writes.
+    mov   r4, r0
+    subs  r4, r4, #DISPATCH_SENTINEL_OFFSET 
+    ldr   r5, =.Lresume+1                   
+    str   r5, [r4, #0]                      
+    mov   r5, sp
+    str   r5, [r4, #8]
+
+    // Setup runtime hireg
     mov   r9, r1
-    movs  r2, r1
-    adds  r2, #RUNTIME_DISPATCH_TABLE_OFFSET
-    mov   r8, r2                            @ dispatch table base = runtime + RUNTIME_DISPATCH_TABLE_OFFSET
-    ldr   r3, =helperVec
-    mov   r10, r3                           @ static helper vector base
-    movs  r3, #0
-    mov   r11, r3                           @ LRU tick starts at 0
-    mov   r3, sp
-    str   r3, [r1, #0]                      @ runtime->savedSp = sp (savedSp is runtime's own first
-                                            @ field — bailOut's own restore point)
-    subs  r2, r2, #DISPATCH_SENTINEL_OFFSET @ r2 = &dispatchTable[-1].codePtr (still
-                                            @ dispatchBase from above)
-    ldr   r3, =.Lresume+1                   @ the +1 is this file's own hand-written analog of
-                                            @ setCodePtr — .Lresume is a bare local label, not
-                                            @ .thumb_func-tagged, so nothing else supplies the
-                                            @ Thumb bit here
-    str   r3, [r2, #0]                      @ ...gets this function's own landing address
 
-    ldr   r2, [r0, #ENTRY_ARGS_SPILLED_OFFSET]       @ &args[0]
-    ldr   r3, [r0, #ENTRY_ARGS_SPILLED_COUNT_OFFSET] @ max(0, arg_count - WINDOW_SIZE)
-    cmp   r3, #0                            @ no CBZ on ARMv6-M, so this guard is real work
+    // Setup helper vector
+    ldr   r4, =helperVec
+    mov   r10, r4
+
+    // Initialize LRU tick counter
+    movs  r4, #0
+    mov   r11, r4
+
+    // Copy spilled args
+    ldmia r2!, {r4} //  EntryArgs::spilledStart
+    ldmia r2!, {r5} //  EntryArgs::spilledEnd
+
+.LentrySpill:
+    cmp   r4, r5
     beq   .LentryWindow
-.LentrySpill:                               @ ascending slot order, so slot 0 ends up
-    ldr   r1, [r2, #0]                      @ furthest from sp — what rawSpillOffset expects
+    ldmia r4!, {r1}
     push  {r1}
-    adds  r2, #4
-    subs  r3, #1
-    bne   .LentrySpill
-.LentryWindow:                              @ the rotation by arg_count mod WINDOW_SIZE already
-    ldr   r4, [r0, #(ENTRY_ARGS_WINDOW_OFFSET + 0)]  @ happened in C — window[i] is
-    ldr   r5, [r0, #(ENTRY_ARGS_WINDOW_OFFSET + 4)]  @ addressed to WINDOW_BASE + i, so
-    ldr   r6, [r0, #(ENTRY_ARGS_WINDOW_OFFSET + 8)]  @ these four are a straight copy
-    ldr   r7, [r0, #(ENTRY_ARGS_WINDOW_OFFSET + 12)]
-    ldr   r0, [r0, #ENTRY_ARGS_ACC_OFFSET] @ acc last: it overwrites the descriptor pointer
+    b     .LentrySpill
+.LentryWindow:                            
 
-    ldr   r1, =0xffff                       @ boot record: procIdx=-1, tag=0 (LANDING_SUCCESS)
-    movs  r2, #0                            @ Q_idx = entry procedure (index 0)
-    b     callHelper                        @ tail-branch — callHelper never returns via bx lr
+    // Load entry window
+    ldmia r2!, {r0, r4, r5, r6, r7} // EntryArgs::acc, EntryArgs::window
+
+    // Parameters for call helper, callee: #0, return to #-1 @ offset 0
+    ldr   r1, =0xffff
+    movs  r2, #0
+    b     callHelper
+
+    // Resumption after bailout or regular return.
 .Lresume:
-    mov   r1, r2                            @ trapped = whichever LANDING_* tag came back (runtime_host.h):
-                                            @ 0 from the boot record's own zero resume-offset field on an
-                                            @ ordinary return, 1 from trapHelper, 2 from runtimeBail
-    pop   {r4, r5, r6, r7}                  @ the caller's own r8-r11, still mirrored through low registers
+    mov   r1, r2
+
+    // Fill all callee_saved regs and load the stored lr into pc for return
+    pop   {r4, r5, r6, r7}                  
     mov   r8, r4
     mov   r9, r5
     mov   r10, r6
     mov   r11, r7
-    pop   {r2, r4, r5, r6, r7, pc}          @ the caller's own real r4-r7, plus r2 discarded (padding)
-                                            @ and pc <- lr
+    pop   {r4, r5, r6, r7, pc}

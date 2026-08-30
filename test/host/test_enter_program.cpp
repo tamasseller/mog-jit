@@ -64,7 +64,7 @@ ProgramResult enterWithExtension(const ExtHooks *ext, const uint8_t *bytes, uint
         (uint32_t)(uintptr_t)arena, sizeof(arena), /*stackLimit=*/0, /*interruptReserve=*/0);
 }
 
-ProgramResult enter(const uint32_t *args, uint32_t argCount, const uint8_t *bytes, uint32_t len)
+ProgramResult enter(uint32_t *args, uint32_t argCount, const uint8_t *bytes, uint32_t len)
 {
     static uint8_t arena[512];
     g_captured = Captured{};
@@ -80,15 +80,18 @@ ProgramResult enter(const uint32_t *args, uint32_t argCount, const uint8_t *byte
 /* Stands in for runtime.S. Returns LANDING_SUCCESS with a recognisable
  * value, so a TEST can tell "the guard let this through" from "the guard
  * rejected it" without depending on anything the entry procedure computes. */
-extern "C" uint64_t enterDispatch(const EntryArgs *entryArgs, Runtime *runtime)
+extern "C" uint64_t enterDispatch(void*, Runtime *runtime, const EntryArgs *entryArgs)
 {
     (void)runtime;
     g_captured.called = true;
-    g_captured.spilledCount = entryArgs->spilledCount;
-    for(uint32_t i = 0; i < entryArgs->spilledCount && i < 16; i++)
+
+    const auto count = entryArgs->spilledEnd - entryArgs->spilledStart;
+    g_captured.spilledCount = count;
+    for(uint32_t i = 0; i < count && i < 16; i++)
     {
-        g_captured.spilled[i] = entryArgs->spilled[i];
+        g_captured.spilled[i] = entryArgs->spilledStart[i];
     }
+    
     for(uint32_t i = 0; i < WINDOW_SIZE; i++) g_captured.window[i] = entryArgs->window[i];
     g_captured.acc = entryArgs->acc;
 
@@ -113,7 +116,7 @@ TEST(enterProgramPlacesASingleArgumentInAcc)
 {
     uint8_t bytes[32];
     uint32_t len = buildProgram(/*entryArgCount=*/1, /*totalDepth=*/1, bytes, sizeof(bytes));
-    const uint32_t args[] = {0xFEEDu};
+    uint32_t args[] = {0xFEEDu};
 
     ProgramResult r = enter(args, 1, bytes, len);
 
@@ -161,7 +164,7 @@ TEST(enterProgramRejectsAnArgumentCountTheEntryProcedureDoesNotDeclare)
 {
     uint8_t bytes[32];
     uint32_t len = buildProgram(/*entryArgCount=*/1, /*totalDepth=*/1, bytes, sizeof(bytes));
-    const uint32_t args[] = {1, 2};
+    uint32_t args[] = {1, 2};
 
     // Too many...
     ProgramResult over = enter(args, 2, bytes, len);

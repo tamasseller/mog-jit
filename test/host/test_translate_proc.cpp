@@ -1535,26 +1535,6 @@ void cHelperEmit(jitc::Assembler &a, const ExtSite &site)
     jitc::extEmitCHelperCall(a, site, FAKE_HELPER_ADDR);
 }
 
-uint32_t stateDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
-{
-    *decl = jitc::extDecl(0x80, jitc::EXT_FLAG_WRITES_ACC, /*tosDelta=*/-2, 0, /*halfwords=*/8);
-    return 1;
-}
-
-// Bumps scratch word 1 and leaves it in acc — the shape any real extension
-// keeping a cursor would use.
-void stateEmit(jitc::Assembler &a, const ExtSite &site)
-{
-    jitc::extEmitStateBase(a, site.in[0]);
-    a.emit(ArmV6M::ldr(ArmV6M::LoReg(site.out), ArmV6M::LoReg(site.in[0]),
-        ArmV6M::Uoff<2, 5>((uint16_t)jitc::extStateOffset(1))));
-    a.emit(ArmV6M::adds(ArmV6M::LoReg(site.out), ArmV6M::Imm<8>(1)));
-    a.emit(ArmV6M::str(ArmV6M::LoReg(site.out), ArmV6M::LoReg(site.in[0]),
-        ArmV6M::Uoff<2, 5>((uint16_t)jitc::extStateOffset(1))));
-}
-
-const ExtHooks EXT_STATE = {jitc::EXT_ABI_VERSION, stateDecode, stateEmit, 0};
-
 const ExtHooks EXT_RAW_HELPER = {jitc::EXT_ABI_VERSION, helperDecode, rawHelperEmit, 0};
 const ExtHooks EXT_C_HELPER = {jitc::EXT_ABI_VERSION, helperDecode, cHelperEmit, EXT_THUNK_STACK_BYTES};
 
@@ -1668,21 +1648,3 @@ TEST(ACHelperReachGoesThroughTheThunkWithTheTargetInR12)
     CHECK(containsSeq(rt.code(), n, seq, 4));
 }
 
-TEST(ExtensionScratchIsReachedWithOneMovOffTheRuntimePointer)
-{
-    FakeRuntime<1> rt(/*arenaBytes=*/256);
-    uint8_t *raw = rt.bodyBuf(0, 32);
-    rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/false);
-    rt.setExtension(&EXT_STATE);
-    uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
-
-    // One instruction to get the base — a whole-register MOV out of r9,
-    // which pays no hi-register mirror tax — then ordinary loads and stores
-    // at the scratch's own absolute offsets.
-    const uint16_t seq[] = {
-        ArmV6M::mov(ArmV6M::AnyReg(ENTRY_IDX_REG), ArmV6M::AnyReg(RUNTIME_PTR_REG)),
-        ArmV6M::ldr(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ENTRY_IDX_REG),
-            ArmV6M::Uoff<2, 5>((uint16_t)jitc::extStateOffset(1))),
-    };
-    CHECK(containsSeq(rt.code(), n, seq, 2));
-}

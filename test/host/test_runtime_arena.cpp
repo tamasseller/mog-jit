@@ -106,20 +106,6 @@ TEST(RoomCheckAccountsForThePaddingAllocateWillConsume)
     CHECK(allocations > 0);
 }
 
-TEST(TheExtensionScratchIsClearOfTheWordReturnHelperTailStamps)
-{
-    const uint32_t sentinel = RUNTIME_DISPATCH_TABLE_OFFSET - DISPATCH_SENTINEL_OFFSET;
-    const uint32_t stamped = sentinel + offsetof(ProcSlot, lastUsed);
-    for(uint32_t w = 0; w < RUNTIME_EXT_STATE_WORDS; w++)
-    {
-        CHECK(extStateOffset(w) > stamped);
-    }
-    // ...and still covers the sentinel slot's whole remaining tail, so no
-    // storage was quietly lost on the way.
-    CHECK(extStateOffset(0) == stamped + 4);
-    CHECK(extStateOffset(RUNTIME_EXT_STATE_WORDS - 1) + 4 == sentinel + sizeof(ProcSlot));
-}
-
 TEST(AFreshlyCompiledProcedureIsTheYoungestNotTheOldest)
 {
     RuntimeStorage<3> runtime;

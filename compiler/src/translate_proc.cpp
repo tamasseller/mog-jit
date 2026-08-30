@@ -17,7 +17,7 @@ Ctx::Ctx(Runtime& r, uint32_t procIdx, uint32_t lruTick): a(r, lruTick)
     this->initialSpilledCount = procSlot.argCount() > WINDOW_SIZE ? procSlot.argCount() - WINDOW_SIZE : 0;
 }
 
-uint32_t jitc::translateProc(uint32_t procIdx, Runtime& r, uint32_t lruTick)
+extern "C" uint32_t translateProc(uint32_t procIdx, Runtime& r, uint32_t lruTick)
 {
     if(Ctx ctx(r, procIdx, lruTick); ctx.translateBody(emitNarrowBranch))
     {

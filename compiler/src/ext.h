@@ -3,8 +3,6 @@
 
 #include <cstdint>
 
-#include "runtime_host.h"
-
 namespace jitc
 {
 
@@ -86,13 +84,6 @@ namespace jitc
 void extEmitHelperCall(Assembler &a, const ExtSite &site, uint32_t helperAddr);
 
 void extEmitCHelperCall(Assembler &a, const ExtSite &site, uint32_t helperAddr);
-
-void extEmitStateBase(Assembler &a, uint32_t dstLowReg);
-
-constexpr uint32_t extStateOffset(uint32_t word)
-{
-    return RUNTIME_EXT_STATE_OFFSET + word * 4;
-}
 
 } // namespace jitc
 

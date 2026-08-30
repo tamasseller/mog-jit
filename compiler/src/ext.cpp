@@ -39,9 +39,4 @@ void extEmitCHelperCall(Assembler &a, const ExtSite &site, uint32_t helperAddr)
     blxVia(a, ENTRY_JUMP_REG);
 }
 
-void extEmitStateBase(Assembler &a, uint32_t dstLowReg)
-{
-    a.emit(ArmV6M::mov(ArmV6M::AnyReg((uint16_t)dstLowReg), ArmV6M::AnyReg(RUNTIME_PTR_REG)));
-}
-
 } // namespace jitc

@@ -62,7 +62,6 @@ extern const uint32_t trampolineAddr;
 class Runtime
 {
 public:
-    uint32_t savedSp;               /* written by enterDispatch's own asm, never by C++ */
     uint32_t arenaEnd;
     uint32_t arenaCursor;
     uint32_t procCount;
@@ -80,13 +79,6 @@ public:
     inline void* operator new(std::size_t count, void* ptr) noexcept 
     { 
         static_assert(UINTPTR_MAX == 0xFFFFFFFFu, "must compile for 32bit arch");
-        static_assert(offsetof(Runtime, slots) + sizeof(ProcSlot) == RUNTIME_DISPATCH_TABLE_OFFSET,
-            "runtime.S's own RUNTIME_DISPATCH_TABLE_OFFSET must match Runtime's real layout");
-        static_assert(offsetof(Runtime, slots) + offsetof(ProcSlot, bodyPtr) == RUNTIME_EXT_STATE_OFFSET,
-            "RUNTIME_EXT_STATE_OFFSET must be the sentinel slot's first unused word");
-        static_assert(RUNTIME_EXT_STATE_WORDS * 4 + offsetof(ProcSlot, bodyPtr) == sizeof(ProcSlot),
-            "the extension scratch must be exactly the sentinel slot's unused tail");
-
         return ptr; 
     }
 
@@ -162,6 +154,14 @@ public:
     uint32_t sentinelLandingAddress() const
     {
         return slots[0].codePtr;
+    }
+
+    /* Parked in the sentinel slot's tail by enterDispatch, never by C++:
+     * callHelper and returnHelperTail write only codePtr and lastUsed, so
+     * these words are the one place the dispatch ABI cannot disturb. */
+    uint32_t savedSp() const
+    {
+        return slots[0].bodyPtr;
     }
 
     bool isResident(uint32_t idx) const

@@ -31,7 +31,7 @@ static ProgramHeader parseProgramHeader(const uint8_t *bytes, uint32_t size)
 }
 
 static ProgramResult enterProgramCore(
-    const uint32_t *args, uint32_t argCount,
+    uint32_t *args, uint32_t argCount,
     const ExtHooks *extension,
     Runtime *runtime,
     const uint8_t *programBytes, uint32_t programSize, const ProgramHeader &hdr,
@@ -61,12 +61,12 @@ static ProgramResult enterProgramCore(
     EntryArgs entryArgs;
     buildEntryArgs(&entryArgs, args, declared);
 
-    uint64_t packed = enterDispatch(&entryArgs, runtime);
+    uint64_t packed = enterDispatch(&runtime->slot(0), runtime, &entryArgs);
     return ProgramResult{ (uint32_t)packed, (uint32_t)(packed >> 32) };
 }
 
 static ProgramResult enterProgramWithHeader(
-    const uint32_t *args, uint32_t argCount,
+    uint32_t *args, uint32_t argCount,
     const ExtHooks *extension,
     const uint8_t *programBytes, uint32_t programSize, const ProgramHeader &hdr,
     uint32_t codeArenaBase, uint32_t codeArenaSize,
@@ -116,7 +116,7 @@ static bool stackHasRoom(uint32_t needed, uint32_t stackLimit)
 }
 
 extern "C" ProgramResult enterProgramOnStack(
-    const uint32_t *args, uint32_t argCount,
+    uint32_t *args, uint32_t argCount,
     const uint8_t *programBytes, uint32_t programSize,
     const ExtHooks *extension,
     uint32_t codeArenaSize, uint32_t stackLimit, uint32_t interruptReserve)
@@ -136,7 +136,7 @@ extern "C" ProgramResult enterProgramOnStack(
 }
 
 extern "C" ProgramResult enterProgramSplit(
-    const uint32_t *args, uint32_t argCount,
+    uint32_t *args, uint32_t argCount,
     const uint8_t *programBytes, uint32_t programSize,
     const ExtHooks *extension,
     uint32_t codeArenaBase, uint32_t codeArenaSize,

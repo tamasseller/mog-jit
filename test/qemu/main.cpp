@@ -1,16 +1,3 @@
-// End-to-end proof: the real translator (translate_proc.h), reached
-// through the real dispatch/eviction runtime (enter_program.cpp/
-// dispatch_abi.cpp, unmodified), actually compiles and runs every fixture
-// (fixtures.cpp)
-// correctly on real QEMU — including LOOP/BR_TABLE/comparisons/unary ops,
-// terminator-closed blocks, a forced-long-branch case, actual
-// eviction+compaction under a small arena, both RESOURCE_ERROR sides (a
-// too-small code arena, and enterProgramOnStack's own stack-usage
-// pre-check), and literal pooling. Structured as 1test TEST cases
-// (vendor/1test, the same framework test/host runs) rather than a
-// hand-rolled bool-and/return-code aggregate, reported over semihosting
-// (semihosting_output.h) since this target has no <iostream> — smoke_test.cpp
-// in this same binary is the harness-only "did it even boot" canary.
 #include <stdint.h>
 #include <cassert>
 #include "fixtures.h"
@@ -18,33 +5,17 @@
 #include "instr.h"
 #include "encode_instr.h"
 #include "translate_proc.h"
-#include "runtime.h" // pulls in runtime_host.h itself (ProgramResult/enterProgram*) — it has no include guard, so it can't also be included directly here
-#include "dispatch_abi.h" // CALL_RECORD_BYTES/ENTER_DISPATCH_FIXED_BYTES/TRANSLATOR_ENTRY_WORST_CASE_BYTES, for the stack-budget boundary TESTs below to compute the exact same requiredStackBytes enter_program.cpp does
+#include "runtime.h" 
+#include "dispatch_abi.h"
 #include "Test.h"
 #include "semihosting_output.h"
 #include "stack_paint.h"
 
 using namespace jitc;
 
-// Shared helpers: every TEST below that doesn't anchor its own arena on
-// the C stack (enterProgramOnStack) needs somewhere to put compiled code,
-// and a real, checked stack-limit bound to pass alongside it — declared
-// once, up front, the way any caller of enterProgramSplit would, rather
-// than each call site inventing its own. maxCallDepth/totalDepth below
-// (encoded straight into each program's own envelope, runtime_host.h's
-// own doc comment) are hand-derived from each small program's own known
-// shape rather than computed here — this file has no whole-program static
-// analyzer of its own to call.
-extern "C" uint8_t __bss_end; /* vectors.S/linker.ld's own symbol — the one genuinely safe floor for anything placed on the C stack */
+extern "C" uint8_t __bss_end; 
 
 static constexpr uint32_t GENEROUS_ARENA = 400;
-// A small, non-negative margin above __bss_end — not a raw subtraction
-// from the measured sp at the call site: this fixture corpus has a real
-// .bss footprint (scratch et al.), so "sp minus some generous-looking
-// constant" can land below __bss_end (inside .bss/.data instead of
-// genuinely free stack space) depending on how big that footprint is.
-// Anchoring above __bss_end instead is the one bound that's actually safe
-// regardless.
 static constexpr uint32_t GENEROUS_SLACK = 512;
 
 static uint32_t currentSp()
@@ -58,15 +29,11 @@ static uint32_t stackLimitAboveBss()
     return (uint32_t)(uintptr_t)&__bss_end + GENEROUS_SLACK;
 }
 
-// The plain global arena every fixture (400 bytes, the default) and every
-// eviction/resource-error scenario below (all comfortably smaller) shares
-// — sequential TEST cases never run concurrently, so one buffer, sized
-// generously once, serves every enterProgramSplit call site in this file.
 static constexpr uint32_t SHARED_ARENA_CAPACITY = 512;
 static uint8_t sharedArena[SHARED_ARENA_CAPACITY];
 
 static ProgramResult enterProgramWithSharedArena(
-    const uint32_t *args, uint32_t argCount,
+    uint32_t *args, uint32_t argCount,
     const uint8_t *programBytes, uint32_t programSize, uint32_t arenaSize)
 {
     return enterProgramSplit(args, argCount, programBytes, programSize,
@@ -78,10 +45,6 @@ static uint32_t makeProgram(uint32_t maxCallDepth, uint32_t totalDepth, const Pr
     return encodeJitProgram(maxCallDepth, totalDepth, procs, procCount, out, outCap);
 }
 
-// One procedure's own raw body bytes (no whole-program envelope) — what
-// the eviction scenarios below feed straight to translateProc for their
-// own pre-measurement pass, unrelated to what they later feed
-// enterProgramWithSharedArena (makeProgram, above).
 static Proc makeProc(uint32_t argCount, const Instr *body, uint32_t count, uint8_t *bytesOut, uint32_t bytesCap)
 {
     uint32_t len = encodeBody(body, count, bytesOut, bytesCap);
@@ -96,22 +59,22 @@ TEST(HandTranscribedFixturesMatchExpectedResults)
     {
         const Fixture &fx = fixtures[f];
 
-        // The count comes from the program, never from the row: enterProgram*
-        // requires it to equal procs[0].argCount exactly. A row supplies only
-        // the value(s) — &argIn for the one-argument case (and harmlessly for
-        // the zero-argument one, where nothing reads it), or its own vector.
-        const uint32_t *argv = fx.args != nullptr ? fx.args : &fx.argIn;
+        uint32_t argv[fx.program->entryArgCount];
+        if(fx.args != nullptr)
+        {
+            memcpy(argv, fx.args, sizeof(argv));
+        }
+        else if(fx.program->entryArgCount != 0)
+        {
+            argv[0] = fx.argIn; // the one-argument case (fixtures.h): args is for two or more
+        }
+
         ProgramResult r = enterProgramWithSharedArena(argv, fx.program->entryArgCount,
             fx.program->bytes, fx.program->size, fx.arenaSize);
 
         bool ok = r.trapped == fx.expectLanding && r.value == fx.expectValue;
         allOk = allOk && ok;
 
-        // Every fixture runs regardless of an earlier one's own result —
-        // CHECK() below would longjmp out of this loop on the first
-        // mismatch, so the per-fixture name/value is printed inline
-        // instead, right where it's still known, and the aggregate is
-        // checked only once at the end.
         if(!ok)
         {
             semihostingWrite0(fx.name);
@@ -130,15 +93,8 @@ TEST(HandTranscribedFixturesMatchExpectedResults)
     CHECK(allOk);
 }
 
-// enterProgramOnStack/enterProgramSplit — the layout-agnostic entry
-// points. Both reach compileProc through the exact same lazy dispatch path
-// the fixture loop above does — only the work area's own placement, and
-// the up-front stack-usage check ahead of it, differ.
-
 TEST(OnStackGenerousSucceeds)
 {
-    // A calls B — one live call record while B executes; B's own peak tos
-    // is 1 (argCount=1, no further pushes).
     const Instr proc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
     const Instr proc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
     ProcSource procs[] = {{0, proc0Body, 3}, {1, proc1Body, 3}};
@@ -158,8 +114,6 @@ TEST(OnStackGenerousSucceeds)
 
 TEST(SplitThreeDeepCallChainSucceeds)
 {
-    // A->B->C — two live records while C executes; each procedure's own
-    // peak tos is 1 (argCount=1, no further pushes).
     const Instr proc0Body[] = {CONST(5), call(1), bare(Op::RETURN)};
     const Instr proc1Body[] = {LOAD(0), call(2), opImm(Op::ADD, 1), bare(Op::RETURN)};
     const Instr proc2Body[] = {LOAD(0), opImm(Op::ADD, 100), bare(Op::RETURN)};
@@ -177,19 +131,11 @@ TEST(SplitThreeDeepCallChainSucceeds)
         writeHexTrap(r.value);
     }
     CHECK(!r.trapped);
-    // C: 5 + 100 = 105; B: 105 + 1 = 106; A returns B's result unchanged.
     CHECK(r.value == 106);
 }
 
 TEST(OnStackRejectsBeforeTouchingAnything)
 {
-    // stackLimit == (about) the entry sp itself — any nonzero requirement
-    // fails the check immediately, before enterDispatch (or compileProc)
-    // ever runs; OnStackGenerousSucceeds already proved these programs
-    // compile fine given room. The code checked below is what pins that
-    // down rather than leaving it argued: the pre-check reports
-    // RESOURCE_EXHAUSTED_STACK_BUDGET, a translator/runtime problem could
-    // not.
     const Instr proc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
     const Instr proc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
     ProcSource procs[] = {{0, proc0Body, 3}, {1, proc1Body, 3}};
@@ -213,12 +159,6 @@ TEST(OnStackRejectsBeforeTouchingAnything)
 
 TEST(AProgramWithNoProceduresIsRejected)
 {
-    // Hand-encoded rather than built with makeProgram: the whole point is
-    // a proc_count of zero, which no real ProcSource array produces.
-    // max_call_depth:0 total_depth:0 proc_count:0, one LEB128 byte each.
-    // Entering procedure 0 would read one ProcSlot past what
-    // storageBytesFor(0) sizes, so this is rejected before that storage is
-    // even measured — well before any stack budget or arena is involved.
     const uint8_t bytes[] = {0x00, 0x00, 0x00};
     ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, sizeof(bytes), /*extension=*/nullptr, GENEROUS_ARENA, 0, /*interruptReserve=*/0);
 
@@ -228,11 +168,6 @@ TEST(AProgramWithNoProceduresIsRejected)
 
 TEST(AnExtensionRangeOpcodeIsRejectedOnHardware)
 {
-    // Runs HERE because this image is -DNDEBUG, so decode_instr.cpp's
-    // assert is compiled out and only Runtime::init's walk can catch byte
-    // 0x80 — otherwise it decodes as CONST 20 and silently reinterprets the
-    // rest of the stream. Hand-encoded: no ProcSource can express it.
-    // max_call_depth=1 total_depth=1 proc_count=1 arg_count=0 body=[0x80]
     const uint8_t bytes[] = {0x01, 0x01, 0x01, 0x00, 0x80};
     ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, sizeof(bytes), /*extension=*/nullptr, GENEROUS_ARENA, 0, /*interruptReserve=*/0);
 
@@ -240,25 +175,10 @@ TEST(AnExtensionRangeOpcodeIsRejectedOnHardware)
     CHECK(r.value == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
 
-// Eviction + compaction. This measures each procedure's own compiled size
-// by calling the real translateProc() once per procedure up front (a
-// throwaway measurement, discarded immediately) purely to size the arena
-// — the actual exercise then goes through the ordinary lazy
-// enterProgramSplit/compileProc path exactly like every fixture above, reading
-// each procedure's own body straight out of the real program bytes
-// (runtime.h's ProcSlot), so compile_proc.cpp genuinely
-// retranslates from the same wire bytes whenever a procedure is evicted and
-// needed again — the same blob must reproduce the same layout, or a saved
-// resume offset stops pointing at the right place.
 static uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint32_t *calleeArgCounts, uint32_t calleeCount, bool savesLR)
 {
     static uint16_t scratch[128];
 
-    // translateProc always compiles through an Assembler attached to a
-    // Runtime's arena, so a throwaway Runtime stands in here: scratch is its
-    // whole arena, and proc's wire bytes are registered as procIdx's slot
-    // the way Runtime::init() would. This target is genuinely 32-bit, so the
-    // pointer casts lose nothing the way they would on the host.
     alignas(8) uint8_t runtimeBytes[sizeof(Runtime) + (calleeCount + 1) * sizeof(ProcSlot)] = {};
     Runtime &r = *reinterpret_cast<Runtime *>(runtimeBytes);
     r.procCount = calleeCount;
@@ -266,11 +186,6 @@ static uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint
     r.arenaEnd = r.arenaCursor + sizeof(scratch);
     for(uint32_t i = 0; i < calleeCount; i++)
     {
-        // Not resident: Runtime::isResident() compares codePtr against
-        // trampolineAddr, never zero — left at its zero-init default,
-        // growForAttached's own findEvictionVictim/evict loop would see a
-        // bogus resident procedure and evict it, corrupting whichever one
-        // is actually mid-translation.
         r.slot(i).codePtr = trampolineAddr;
         r.slot(i).setStaticInfo(calleeArgCounts[i], /*bodyBytes=*/0, i == procIdx && savesLR);
     }
@@ -282,11 +197,6 @@ static uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint
 
 TEST(EvictionThreeDeepCallChain)
 {
-    // Same chain as SplitThreeDeepCallChainSucceeds — here the point is
-    // that it cannot all be resident together, so compiling the deepest
-    // call forces evicting an ancestor (possibly the entry procedure
-    // itself, still suspended on the control stack), which then has to be
-    // recompiled from scratch when its own RETURN eventually fires.
     const Instr proc0Body[] = {CONST(5), call(1), bare(Op::RETURN)};
     const Instr proc1Body[] = {LOAD(0), call(2), opImm(Op::ADD, 1), bare(Op::RETURN)};
     const Instr proc2Body[] = {LOAD(0), opImm(Op::ADD, 100), bare(Op::RETURN)};
@@ -514,7 +424,7 @@ TEST(EvictionChurnUnderLoopedCallChain)
     // Every procedure here declares argCount 1 (argCounts above), the entry
     // one included, so L travels as a one-element vector rather than a bare
     // word.
-    static const uint32_t entryArgs[] = {L};
+    uint32_t entryArgs[] = {L};
     ProgramResult r = enterProgramWithSharedArena(entryArgs, 1, progBytes, progLen, arenaSize);
 
     if(r.trapped)

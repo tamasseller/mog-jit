@@ -191,6 +191,10 @@ static uint32_t arenaSizeFor(const uint8_t *data, size_t size, uint32_t bodyOffs
     return chosen & ~3u;
 }
 
+// oracle_server.ts's own REALISTIC_MAX_PROC_COUNT — the storage buffer in
+// LLVMFuzzerTestOneInput is sized off it.
+static constexpr uint32_t ORACLE_MAX_PROC_COUNT = 16;
+
 static bool g_lastWasValid = false;
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)

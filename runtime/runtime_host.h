@@ -21,7 +21,7 @@ typedef struct
 #define ARMV6M_EXCEPTION_FRAME_BYTES 32
 
 ProgramResult enterProgramOnStack(
-    const uint32_t *args,
+    uint32_t *args,
     uint32_t argCount,
     const uint8_t *programBytes,
     uint32_t programSize,
@@ -31,7 +31,7 @@ ProgramResult enterProgramOnStack(
     uint32_t interruptReserve);
 
 ProgramResult enterProgramSplit(
-    const uint32_t *args,
+    uint32_t *args,
     uint32_t argCount,
     const uint8_t *programBytes,
     uint32_t programSize,
@@ -47,16 +47,7 @@ ProgramResult enterProgramSplit(
 
 #endif /* __ASSEMBLER__ */
 
-#define RUNTIME_DISPATCH_TABLE_OFFSET 44 /* &runtime + this = dispatchBase (== &slots[1]) */
 #define DISPATCH_SENTINEL_OFFSET 16      /* dispatchBase - this = &slots[0] (the sentinel) */
-
-#define RUNTIME_EXT_STATE_OFFSET 36
-#define RUNTIME_EXT_STATE_WORDS 2
-
-#define ENTRY_ARGS_SPILLED_OFFSET 0       /* const uint32_t *spilled */
-#define ENTRY_ARGS_SPILLED_COUNT_OFFSET 4 /* uint32_t spilledCount */
-#define ENTRY_ARGS_WINDOW_OFFSET 8        /* uint32_t window[WINDOW_SIZE] */
-#define ENTRY_ARGS_ACC_OFFSET 24          /* uint32_t acc */
 
 #define LANDING_SUCCESS 0u        /* value = the entry procedure's own result */
 #define LANDING_TRAP 1u           /* value = the bytecode TRAP's own code, at any call depth */
