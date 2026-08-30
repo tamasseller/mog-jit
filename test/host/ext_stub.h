@@ -8,7 +8,7 @@
 struct ExtStub
 {
     uint32_t (*decode)(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t *decl);
-    void (*emit)(jitc::Assembler &a, const ExtSite &site);
+    void (*emit)(ExtSite &site);
     uint32_t helperStackBytes;
 };
 

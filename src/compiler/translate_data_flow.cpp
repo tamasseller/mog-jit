@@ -40,15 +40,6 @@ static FoldResult peekStoreFold(const uint8_t *bytes, uint32_t bytesLen, uint32_
     return {-1, 0};
 }
 
-static ArmV6M::Uoff<2, 8> spillImm(Assembler &a, uint32_t byteOffset)
-{
-    if(!ArmV6M::Uoff<2, 8>::isInRange(byteOffset))
-    {
-        runtimeBail(&a.runtime, RESOURCE_LIMIT_SPILL_OFFSET);
-    }
-    return ArmV6M::Uoff<2, 8>((uint16_t)byteOffset);
-}
-
 ArmV6M::Condition Ctx::handleComparisonEmission(const Instr &instr)
 {
     Combo combo = instr.combo;
@@ -82,61 +73,42 @@ ArmV6M::Condition Ctx::handleComparisonEmission(const Instr &instr)
     }
 }
 
-void Ctx::handleExt(const Instr &instr, uint32_t pc)
+/* The declared halfword count is what the span walk already sized every
+ * enclosing branch's reach from, so an overrun is a wrong branch offset. */
+static void emitExtSite(Assembler &a, ExtSite &site, uint32_t budget)
 {
-    const uint32_t decl = instr.extDecl;
-    const uint32_t pops = (uint32_t)(-extDeclTosDelta(decl));
-    const bool readsAcc = extDeclHas(decl, EXT_FLAG_READS_ACC);
-    const bool writesAcc = extDeclHas(decl, EXT_FLAG_WRITES_ACC);
-
-    ExtSite site;
-    site.inCount = 0;
-    site.bytes = this->bytes;
-    site.bytesLen = this->bytesLen;
-    site.pc = pc;
-    site.decl = decl;
-    site.out = (uint8_t)ACC_REG;
-    site.scratch = (1u << ENTRY_JUMP_REG) | (1u << 12);
-
-    if(readsAcc)
-    {
-        this->accState.flush(a, ACC_REG);
-        site.in[site.inCount++] = (uint8_t)ACC_REG;
-    }
-    else if(pops > 0 || writesAcc)
-    {
-        // Staging clobbers r1/r2, and a deferred acc must not be
-        // left depending on either. flushLive, not flush: a
-        // poisoned acc is legitimate here and stays poisoned.
-        this->accState.flushLive(a, ACC_REG);
-    }
-
-    // Top first, into r1 then r2 — never r0, which is acc's, and
-    // never r3, which is the only register a helper reach can use.
-    static const uint8_t STACK_STAGE[EXT_MAX_STACK_INPUTS] = {ENTRY_IDX_REG, SCRATCH_REG};
-    for(uint32_t i = 0; i < pops; i++)
-    {
-        uint32_t src = this->window.topReg();
-        uint8_t dst = STACK_STAGE[i];
-        if(src != dst)
-        {
-            a.emit(ArmV6M::mov(ArmV6M::AnyReg(dst), ArmV6M::AnyReg(src)));
-        }
-        site.in[site.inCount++] = dst;
-        this->window.finishPop(a);
-    }
-
     const uint32_t before = a.pc();
-    extEmit(a, site);
+    extEmit(site);
 
-    if(a.pc() - before > extDeclHalfwords(decl) * 2)
+    if(a.pc() - before > budget)
     {
         runtimeBail(&a.runtime, RESOURCE_PROGRAM_EXT_UNSUPPORTED);
     }
+}
 
-    if(writesAcc)
+void Ctx::handleExt(const Instr &instr, uint32_t pc)
+{
+    const uint32_t decl = instr.extDecl;
+    const uint32_t budget = extDeclHalfwords(decl) * 2;
+    const uint32_t tosBefore = this->window.tos;
+
+    ExtSite site(this->a, this->window, this->accState, this->bytes + pc, decl);
+
+    if(extDeclHas(decl, EXT_FLAG_ATOMIC))
     {
-        this->accState.setClean(ACC_REG);
+        Assembler::AtomicBlock atomic(this->a, extDeclPoolWords(decl), budget);
+        emitExtSite(this->a, site, budget);
+    }
+    else
+    {
+        emitExtSite(this->a, site, budget);
+    }
+
+    /* The wire's total_depth was validated against this delta, and nothing
+     * re-derives it here. */
+    if(this->window.tos != tosBefore + (uint32_t)extDeclTosDelta(decl))
+    {
+        runtimeBail(&a.runtime, RESOURCE_PROGRAM_EXT_UNSUPPORTED);
     }
 }
 

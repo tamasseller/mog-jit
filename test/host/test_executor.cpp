@@ -51,7 +51,7 @@ uint32_t decliningDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *)
 
 uint32_t acceptingDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
 {
-    *decl = extDecl(0x80, 0, /*tosDelta=*/0, /*maxTransient=*/0, /*halfwords=*/2);
+    *decl = extDecl(0, /*tosDelta=*/0, /*halfwords=*/2);
     return 1;
 }
 

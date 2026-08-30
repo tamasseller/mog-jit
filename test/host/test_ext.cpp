@@ -1,9 +1,7 @@
-// jit-armv6m/compiler/test — the extension seam (compiler/src/ext.h).
-//
-// M1 is the decode/declaration half: the core learns an extension
-// instruction's byte length and its declared effect, and rejects every
-// declaration asking for something it doesn't implement. Codegen is M2, so
-// a well-formed op is accepted by the walk and bails at emit.
+// jit-armv6m/compiler/test — the extension seam's decode/declaration half
+// (compiler/src/ext.h): the core learns an extension instruction's byte
+// length and its declared effect, and rejects every declaration asking for
+// something it doesn't implement. Codegen lives in test_translate_proc.cpp.
 #include "Test.h"
 #include "ext.h"
 #include "ext_stub.h"
@@ -21,8 +19,6 @@ namespace
 constexpr uint8_t EXT_INLINE = 0x80;      // one LEB128 operand, 2 halfwords, no lr
 constexpr uint8_t EXT_HELPER = 0x81;      // no operand, clobbers lr, pops one
 constexpr uint8_t EXT_CALL_SHAPED = 0x82; // rejected: call-shaped
-constexpr uint8_t EXT_TERMINATES = 0x83;  // rejected: terminates
-constexpr uint8_t EXT_TRANSIENT = 0x84;   // rejected: transient push
 constexpr uint8_t EXT_NET_PUSH = 0x85;    // rejected: net TOS push
 constexpr uint8_t EXT_DECLINED = 0x86;    // decode declines outright
 
@@ -39,23 +35,17 @@ uint32_t fakeDecode(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, ui
             {
                 return 0;
             }
-            *decl = extDecl(EXT_INLINE, 0, /*tosDelta=*/0, /*maxTransient=*/0, /*halfwords=*/2);
+            *decl = extDecl(0, /*tosDelta=*/0, /*halfwords=*/2);
             return next - offset;
         }
         case EXT_HELPER:
-            *decl = extDecl(EXT_HELPER, EXT_FLAG_NEEDS_LR | EXT_FLAG_WRITES_ACC, -1, 0, 6);
+            *decl = extDecl(EXT_FLAG_NEEDS_LR, -1, 6);
             return 1;
         case EXT_CALL_SHAPED:
-            *decl = extDecl(EXT_CALL_SHAPED, EXT_FLAG_CALL_SHAPED, 0, 0, 4);
-            return 1;
-        case EXT_TERMINATES:
-            *decl = extDecl(EXT_TERMINATES, EXT_FLAG_TERMINATES, 0, 0, 2);
-            return 1;
-        case EXT_TRANSIENT:
-            *decl = extDecl(EXT_TRANSIENT, 0, 0, /*maxTransient=*/1, 2);
+            *decl = extDecl(EXT_FLAG_CALL_SHAPED, 0, 4);
             return 1;
         case EXT_NET_PUSH:
-            *decl = extDecl(EXT_NET_PUSH, 0, /*tosDelta=*/1, 0, 2);
+            *decl = extDecl(0, /*tosDelta=*/1, 2);
             return 1;
         default:
             return 0; // EXT_DECLINED and anything else
@@ -65,20 +55,20 @@ uint32_t fakeDecode(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, ui
 // Claims a length running past the buffer — the core must not trust it.
 uint32_t overrunDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
 {
-    *decl = extDecl(EXT_INLINE, 0, 0, 0, 2);
+    *decl = extDecl(0, 0, 2);
     return 999;
 }
 
 // Claims no forward progress — would hang every walk if trusted.
 uint32_t zeroLengthDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
 {
-    *decl = extDecl(EXT_INLINE, 0, 0, 0, 2);
+    *decl = extDecl(0, 0, 2);
     return 0;
 }
 
 uint32_t greedyDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
 {
-    *decl = extDecl(EXT_INLINE, 0, 0, 0, 2);
+    *decl = extDecl(0, 0, 2);
     return 1; // claims every byte it is shown
 }
 
@@ -91,22 +81,21 @@ const ExtStub ZERO_LENGTH = {zeroLengthDecode};
 
 TEST(ExtDeclRoundTripsEveryField)
 {
-    uint32_t w = extDecl(0x9a, EXT_FLAG_NEEDS_LR | EXT_FLAG_ATOMIC, -3, 5, 63);
-    CHECK(extDeclOpcode(w) == 0x9a);
+    uint32_t w = extDecl(EXT_FLAG_NEEDS_LR | EXT_FLAG_ATOMIC, -3, EXT_MAX_HALFWORDS, EXT_MAX_POOL_WORDS);
     CHECK(extDeclHas(w, EXT_FLAG_NEEDS_LR));
     CHECK(extDeclHas(w, EXT_FLAG_ATOMIC));
     CHECK(!extDeclHas(w, EXT_FLAG_CALL_SHAPED));
     CHECK(extDeclTosDelta(w) == -3); // sign-extended back out of 4 bits
-    CHECK(extDeclMaxTransient(w) == 5);
-    CHECK(extDeclHalfwords(w) == 63);
+    CHECK(extDeclHalfwords(w) == EXT_MAX_HALFWORDS);
+    CHECK(extDeclPoolWords(w) == EXT_MAX_POOL_WORDS);
 }
 
 TEST(ExtDeclHandlesTheExtremesOfTheSignedTosDeltaField)
 {
-    CHECK(extDeclTosDelta(extDecl(0x80, 0, 0, 0, 0)) == 0);
-    CHECK(extDeclTosDelta(extDecl(0x80, 0, -1, 0, 0)) == -1);
-    CHECK(extDeclTosDelta(extDecl(0x80, 0, EXT_TOS_DELTA_MIN, 0, 0)) == EXT_TOS_DELTA_MIN);
-    CHECK(extDeclTosDelta(extDecl(0x80, 0, 7, 0, 0)) == 7);
+    CHECK(extDeclTosDelta(extDecl(0, 0, 0)) == 0);
+    CHECK(extDeclTosDelta(extDecl(0, -1, 0)) == -1);
+    CHECK(extDeclTosDelta(extDecl(0, EXT_TOS_DELTA_MIN, 0)) == EXT_TOS_DELTA_MIN);
+    CHECK(extDeclTosDelta(extDecl(0, 7, 0)) == 7);
 }
 
 TEST(DecodeLeb128CheckedRefusesToReadPastTheBuffer)
@@ -137,7 +126,6 @@ TEST(DecodeInstrYieldsOpExtWithTheDeclarationAndLength)
 
     DecodedInstr d = decodeInstr(bytes, sizeof(bytes), 0);
     CHECK(d.instr.op == Op::EXT);
-    CHECK(extDeclOpcode(d.instr.extDecl) == EXT_INLINE);
     CHECK(extDeclHalfwords(d.instr.extDecl) == 2);
     CHECK(d.next == 4); // opcode + its own three operand bytes
 }
@@ -208,7 +196,7 @@ TEST(ScanProcBodyTakesNeedsLRSaveFromTheDeclaration)
 TEST(ScanProcBodyRejectsEachCapabilityV1DoesNotImplement)
 {
     ExtScope ext(&FAKE);
-    const uint8_t rejected[] = {EXT_CALL_SHAPED, EXT_TERMINATES, EXT_TRANSIENT, EXT_NET_PUSH};
+    const uint8_t rejected[] = {EXT_CALL_SHAPED, EXT_NET_PUSH};
     for(uint32_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++)
     {
         uint8_t bytes[4];

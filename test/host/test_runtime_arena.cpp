@@ -299,13 +299,13 @@ namespace
 {
 uint32_t extInlineDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
 {
-    *decl = jitc::extDecl(0x80, 0, /*tosDelta=*/0, /*maxTransient=*/0, /*halfwords=*/2);
+    *decl = jitc::extDecl(0, /*tosDelta=*/0, /*halfwords=*/2);
     return 1;
 }
 
 uint32_t extCallShapedDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
 {
-    *decl = jitc::extDecl(0x80, jitc::EXT_FLAG_CALL_SHAPED, 0, 0, 2);
+    *decl = jitc::extDecl(jitc::EXT_FLAG_CALL_SHAPED, 0, 2);
     return 1;
 }
 

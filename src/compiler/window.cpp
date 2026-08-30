@@ -3,6 +3,7 @@
 #include "accstate.h"
 #include "shape.h"
 #include "armv6.h"
+#include "runtime.h"
 
 #include <algorithm>
 
@@ -128,6 +129,15 @@ static uint32_t rawSpillOffset(uint32_t tos, uint32_t k)
     return 4 * (spilledCount(tos) - 1 - k);
 }
 
+ArmV6M::Uoff<2, 8> spillImm(Assembler &a, uint32_t byteOffset)
+{
+    if(!ArmV6M::Uoff<2, 8>::isInRange(byteOffset))
+    {
+        runtimeBail(&a.runtime, RESOURCE_LIMIT_SPILL_OFFSET);
+    }
+    return ArmV6M::Uoff<2, 8>((uint16_t)byteOffset);
+}
+
 uint32_t Window::spillOffset(uint32_t k) const
 {
     uint32_t raw = rawSpillOffset(tos, k);
@@ -159,6 +169,23 @@ void Window::pushValue(Assembler &e, AccState &accState)
         e.emit(ArmV6M::push(oneReg(physReg(evictedByPush))));
     }
     accState.flush(e, physReg(tos));
+    tos += 1;
+}
+
+void Window::pushFrom(Assembler &e, AccState &accState, uint32_t srcReg)
+{
+    if(tos >= WINDOW_SIZE)
+    {
+        e.emit(ArmV6M::push(oneReg(physReg(tos - WINDOW_SIZE))));
+    }
+
+    uint32_t dst = physReg(tos);
+    accState.resolveIfLiveIn(e, dst);
+
+    if(dst != srcReg)
+    {
+        e.emit(ArmV6M::mov(ArmV6M::AnyReg((uint16_t)dst), ArmV6M::AnyReg((uint16_t)srcReg)));
+    }
     tos += 1;
 }
 
