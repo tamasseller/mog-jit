@@ -83,7 +83,7 @@ static ProgramResult enterProgramCore(
     }
 
     alignas(Runtime) unsigned char runtimeStorage[Runtime::storageBytesFor(hdr.procCount)];
-    auto runtime = new(runtimeStorage) Runtime(hdr.procCount, codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack);
+    auto runtime = new(runtimeStorage) Runtime(hdr.procCount, codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack, interruptReserve);
 
     if(uint32_t code = runtime->loadProgram(programBytes, programSize, hdr.bodyOffset))
     {

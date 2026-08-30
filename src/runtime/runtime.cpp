@@ -1,27 +1,26 @@
 #include "runtime.h"
 
-void Runtime::addStackMargin(uint32_t margin)
+uint32_t Runtime::pushStackFloor(uint32_t margin)
 {
     register uint32_t sp asm("sp");
 
-    // TODO track floor actively instead
-    const auto floor = (arenaOverlapsStack && arenaCursor > stackLimit) ? arenaCursor : stackLimit;
+    /* Where the arena has actually reached, not where it was allowed to: the
+     * two sides check each other, and whichever got there first wins. */
+    const uint32_t floor = (arenaOverlapsStack && stackLimit < arenaCursor) ? arenaCursor : stackLimit;
 
-    if(sp <= floor + margin)
+    if(sp <= floor + margin + interruptReserve)
     {
         runtimeBail(this, RESOURCE_EXHAUSTED_TRANSLATOR_STACK);
     }
 
-    // TODO add sentinel at edge for non NDEBUG
+    const uint32_t outerFloor = liveStackFloor;
+    liveStackFloor = sp - margin;
+    return outerFloor;
 }
 
-void Runtime::removeStackMargin()
+void Runtime::popStackFloor(uint32_t outerFloor)
 {
-    register uint32_t sp asm("sp");
-
-    // TODO check sentinel at edge for non NDEBUG
-
-    // TODO store current sp as current floor
+    liveStackFloor = outerFloor;
 }
 
 void Runtime::markCompiled(uint32_t idx, uint32_t dest, uint32_t lruTick)
@@ -84,9 +83,11 @@ void Runtime::evict(uint32_t idx, const uint16_t *end)
 
 uint16_t* Runtime::ensureSpace(const uint16_t* end, uint32_t lruTick)
 {
-    assert((uint32_t)end <= arenaEnd);
+    const uint32_t ceiling = arenaCeiling();
 
-    if((uint32_t)end == arenaEnd)
+    assert((uint32_t)end <= ceiling);
+
+    if((uint32_t)end == ceiling)
     {
         int victim = findEvictionVictim(lruTick);
         if(victim < 0)

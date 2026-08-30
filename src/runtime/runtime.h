@@ -67,6 +67,9 @@ public:
     uint32_t procCount;
     uint32_t stackLimit;
     uint32_t arenaOverlapsStack;   /* 0/1, not bool, so this struct's layout is trivial */
+    uint32_t interruptReserve;
+    uint32_t liveStackFloor;
+
     ProcSlot slots[];
 
 public:
@@ -79,16 +82,14 @@ public:
         void operator =(DynamicStackGuard&&) = delete;
 
         Runtime& r;
+        uint32_t outerFloor;
 
     public:
-        inline DynamicStackGuard(Runtime& r, uint32_t margin): r(r)
-        {
-            r.addStackMargin(margin);
-        }
+        inline DynamicStackGuard(Runtime& r, uint32_t margin): r(r), outerFloor(r.pushStackFloor(margin)) { }
 
         inline ~DynamicStackGuard()
         {
-            r.removeStackMargin();
+            r.popStackFloor(outerFloor);
         }
     };
 
@@ -103,8 +104,9 @@ public:
         return ptr; 
     }
 
-    inline Runtime(uint32_t procCount, uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit, uint32_t arenaOverlapsStack):
-        arenaEnd((codeArenaBase + codeArenaSize) & ~3u), arenaCursor((codeArenaBase + 3u) & ~3u), procCount(procCount), stackLimit(stackLimit), arenaOverlapsStack(arenaOverlapsStack)
+    inline Runtime(uint32_t procCount, uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit, uint32_t arenaOverlapsStack, uint32_t interruptReserve = 0):
+        arenaEnd((codeArenaBase + codeArenaSize) & ~3u), arenaCursor((codeArenaBase + 3u) & ~3u), procCount(procCount), stackLimit(stackLimit),
+        arenaOverlapsStack(arenaOverlapsStack), interruptReserve(interruptReserve), liveStackFloor(UINT32_MAX)
     {
         assert(arenaCursor <= arenaEnd); // GCOV_EXCL_LINE
 
@@ -190,14 +192,20 @@ public:
         return slot(idx).codePtr != trampolineAddr;
     }
 
-    bool hasRoomFor(uint32_t need) const
+    uint32_t arenaCeiling() const
     {
-        return arenaEnd - arenaCursor >= need;
+        if(!arenaOverlapsStack)
+        {
+            return arenaEnd;
+        }
+
+        const uint32_t live = interruptReserve < liveStackFloor ? liveStackFloor - interruptReserve : 0;
+        return live < arenaEnd ? live : arenaEnd;
     }
 
     uint32_t commit(uint32_t newEnd)
     {
-        assert(arenaCursor <= newEnd && newEnd <= arenaEnd);
+        assert(arenaCursor <= newEnd && newEnd <= arenaCeiling());
         
         arenaCursor = (newEnd + 3u) & ~3u;
         
@@ -228,8 +236,8 @@ public:
     uint16_t* ensureSpace(const uint16_t* end, uint32_t lruTick);
 
 private:
-    void addStackMargin(uint32_t margin);
-    void removeStackMargin();
+    uint32_t pushStackFloor(uint32_t margin);
+    void popStackFloor(uint32_t outerFloor);
 };
 
 static_assert(sizeof(ProcSlot) == DISPATCH_SENTINEL_OFFSET,

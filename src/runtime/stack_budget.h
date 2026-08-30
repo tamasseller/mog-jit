@@ -7,13 +7,19 @@
  * corruption. Two mechanisms keep it bounded, and each number below belongs to
  * exactly one of them:
  *
- *  - Reserved up front. enterProgram sums these once and refuses the program
- *    if the measured sp cannot cover them. They bound the regions no runtime
- *    check ever sees.
+ *  - Reserved up front, for everything before enterDispatch: runtime init,
+ *    program loading, the body scan. enterProgram sums these once and refuses
+ *    the program if the measured sp cannot cover them. Nothing is dynamic yet
+ *    — the arena is empty — so stackLimit is the only floor.
  *
- *  - Checked per level. A recursion that cannot be bounded statically carries
- *    a guard at the single function every one of its cycles passes through;
- *    the guard demands the margin below is still free and bails if it is not.
+ *  - Checked per level, after enterDispatch. The stack and the code arena
+ *    share one region, and the traffic is one-way: the arena never grows past
+ *    the line enterProgram validated up front, while the stack may descend
+ *    into whatever of that line's ground the arena has not actually taken. A
+ *    guard checks itself against the arena's real top and publishes the lowest
+ *    sp it will reach, so the arena can stop short of it for as long as the
+ *    stack is down there. A recursion carries its guard at the single function
+ *    every one of its cycles passes through.
  *
  * The C++ numbers are measured from GCC's own call graph by
  * tools/stack-margin.ts, not traced by hand, and test/qemu's
@@ -51,7 +57,8 @@
 /* One level of the translator's recursion: from the guard in
  * GUARDED_processUntilTerminator down to the next guard, or to a leaf.
  * Includes that function's own frame, which is already spent when its check
- * runs — the slack that buys a rule with no prologue-placement assumption. */
+ * runs — the slack that buys a rule with no prologue-placement assumption.
+ * Doubles as what that guard publishes as the arena's ceiling. */
 #define TRANSLATE_LEVEL_STACK_MARGIN 416
 
 /* The same, for the pre-pass that walks a procedure body before translation.

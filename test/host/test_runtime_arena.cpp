@@ -27,7 +27,8 @@ public:
         return reinterpret_cast<Runtime *>(bytes);
     }
 
-    RuntimeStorage(uint32_t base = ARENA_BASE, uint32_t size = ARENA_SIZE)
+    RuntimeStorage(uint32_t base = ARENA_BASE, uint32_t size = ARENA_SIZE,
+        uint32_t overlapsStack = 0, uint32_t interruptReserve = 0)
     {
         ProcSource procs[procCount];
         for(uint32_t i = 0; i < procCount; i++)
@@ -37,7 +38,7 @@ public:
         uint32_t len = encodeProgram(procs, procCount, programBytes, sizeof(programBytes));
         uint32_t bodyOffset;
         decodeLeb128(programBytes, 0, bodyOffset); // past proc_count's own LEB128
-        new(bytes) Runtime(procCount, base, size, 0, 0);
+        new(bytes) Runtime(procCount, base, size, 0, overlapsStack, interruptReserve);
         uint32_t code = (*this)->loadProgram(programBytes, len, bodyOffset);
         assert(code == 0); // GCOV_EXCL_LINE — this file's own encoding setup, not the thing under test
         (void)code;
@@ -92,11 +93,65 @@ TEST(OccupiedSizeIsAlwaysAWholeNumberOfWords)
     }
 }
 
+TEST(ASeparateArenaIsCappedWhereItWasPlacedNoMatterWhereTheStackIs)
+{
+    RuntimeStorage<1> runtime(ARENA_BASE, ARENA_SIZE, /*overlapsStack=*/0);
+    const uint32_t end = ARENA_BASE + ARENA_SIZE;
+
+    CHECK(runtime->arenaCeiling() == end);
+
+    Runtime::DynamicStackGuard guard(*runtime.operator->(), 64);
+    CHECK(runtime->arenaCeiling() == end); // the stack is somewhere else entirely
+}
+
+static uint32_t currentSp()
+{
+    register uint32_t sp asm("sp");
+    return sp;
+}
+
+TEST(ASharedArenaNeverGrowsPastWhatWasValidatedUpFront)
+{
+    // Only the stack is allowed into the other's ground. The arena's ceiling
+    // is the line enterProgram checked before any of this ran, and a guard
+    // promising to stop well above that line does not raise it.
+    const uint32_t base = (currentSp() - 4096) & ~3u;
+    RuntimeStorage<1> runtime(base, 2048, /*overlapsStack=*/1, /*interruptReserve=*/32);
+    const uint32_t reserved = base + 2048;
+
+    CHECK(runtime->arenaCeiling() == reserved);
+
+    Runtime::DynamicStackGuard guard(*runtime.operator->(), 1024); // floor lands above reserved
+    CHECK(runtime->arenaCeiling() == reserved);
+}
+
+TEST(ASharedArenaStopsShortWhenTheStackHasDescendedIntoIt)
+{
+    // The other half: the stack may sit inside the reserved-but-unoccupied
+    // part, and while it does the arena has to stop above it — with room for
+    // the exception frame that can land there without warning.
+    const uint32_t reserve = 32;
+    const uint32_t base = (currentSp() - 4096) & ~3u;
+    RuntimeStorage<1> runtime(base, 2048, /*overlapsStack=*/1, reserve);
+    const uint32_t reserved = base + 2048;
+
+    {
+        Runtime::DynamicStackGuard deep(*runtime.operator->(), 3000); // floor lands below reserved
+        const uint32_t ceiling = runtime->arenaCeiling();
+
+        CHECK(ceiling < reserved);
+        CHECK(ceiling > base);                 // still above what the arena holds
+        CHECK(ceiling + reserve <= currentSp() - 3000);
+    }
+
+    CHECK(runtime->arenaCeiling() == reserved); // leaving gives the ground back
+}
+
 TEST(RoomCheckAccountsForThePaddingAllocateWillConsume)
 {
     RuntimeStorage<64> runtime;
     uint32_t allocations = 0;
-    while(runtime->hasRoomFor(8))
+    while(runtime->arenaCeiling() - runtime->arenaCursor >= 8)
     {
         uint32_t dest = place(runtime, 6);
         CHECK(dest % 4 == 0);
