@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include "instr.h"
+#include "program_frame.h"
 
 namespace jitc
 {
@@ -24,6 +25,20 @@ struct ProcSource
 
 uint32_t encodeProgram(const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCapacity);
 uint32_t encodeJitProgram(uint32_t maxCallDepth, uint32_t totalDepth, const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCapacity);
+
+/* For the handful of TESTs that spell a program out byte by byte rather than
+ * going through encodeJitProgram: returns the framed length. */
+uint32_t appendProgramFrame(uint8_t *out, uint32_t len, uint32_t outCapacity);
+
+/* Those literals are deliberately malformed, so no encoder would produce them
+ * — this is what puts a valid frame on one anyway. */
+struct FramedProgram
+{
+    uint8_t bytes[16];
+    uint32_t len;
+};
+
+FramedProgram framedProgram(const uint8_t *literal, uint32_t len);
 
 } // namespace jitc
 

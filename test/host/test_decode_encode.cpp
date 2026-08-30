@@ -170,7 +170,7 @@ TEST(EncodeProgramBodyDecodesBackToTheSameInstructions)
     CHECK(pos == len);
 }
 
-TEST(EncodeJitProgramPrependsMaxCallDepthAndTotalDepth)
+TEST(EncodeJitProgramPrependsTheStatsAndAppendsTheFrame)
 {
     const Instr body0[] = {bare(Op::RETURN)};
     ProcSource procs[] = {{0, body0, 1}};
@@ -186,8 +186,12 @@ TEST(EncodeJitProgramPrependsMaxCallDepthAndTotalDepth)
     CHECK(maxCallDepth == 3);
     uint32_t totalDepth = decodeLeb128(jit, pos, pos);
     CHECK(totalDepth == 300); // multi-byte LEB128 — proves the chain, not just a single byte
-    CHECK(jitLen - pos == plainLen);
+    CHECK(jitLen - pos == plainLen + PROGRAM_FRAME_BYTES);
     CHECK(memcmp(jit + pos, plain, plainLen) == 0);
+
+    const uint32_t payload = jitLen - PROGRAM_FRAME_BYTES;
+    CHECK(programFrameHash(jit, payload) == (uint16_t)(jit[payload] | (jit[payload + 1] << 8)));
+    CHECK(programFrameOk(jit, jitLen));
 }
 
 // ── The decode table against isa-core.md §5.2 itself ────────────────────

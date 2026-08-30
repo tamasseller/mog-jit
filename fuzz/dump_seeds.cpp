@@ -5,7 +5,7 @@
 //
 // Staging, not seeds: harness.cpp takes whole programs now (the
 // max_call_depth/total_depth/proc_count envelope of bytecode.ts's
-// encodeJitProgram), and the two envelope stats come out of
+// encodeJitEnvelope), and the two envelope stats come out of
 // validateProgram's own whole-program DFS, which exists only on the TS
 // side. So this file produces the bodies and make_seeds.ts wraps them;
 // seeds/ has exactly one owner, and nothing writes a format the harness

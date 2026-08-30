@@ -31,7 +31,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { spawnSync } from "child_process"
-import { decodeJitProgram, encodeJitProgram, validateProgram, run, StepLimitExceeded } from "../../../packages/machine/src/index"
+import { decodeJitEnvelope, encodeJitProgram, validateProgram, run, StepLimitExceeded } from "../../../packages/machine/src/index"
 import type { RtlProgram } from "../../../packages/machine/src/index"
 import { entryArgsFor } from "../entry_args"
 
@@ -149,7 +149,7 @@ const inFile = args[0]
 const outFile = args[1] ?? (inFile ?? "").replace(/\.bin$/, "") + ".min.bin"
 if(!inFile) { console.error("usage: minimize_exec.ts [--hang] <file> [out]"); process.exit(1) }
 
-let best = prepare(decodeJitProgram(fs.readFileSync(inFile)).program)
+let best = prepare(decodeJitEnvelope(fs.readFileSync(inFile)).program)
 if(!best) { console.error("input is not a runnable, comparable program"); process.exit(1) }
 if(!reproduces([best])[0])
 {

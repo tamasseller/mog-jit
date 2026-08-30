@@ -190,13 +190,39 @@ uint32_t encodeProgram(const ProcSource *procs, uint32_t procCount, uint8_t *out
     return outLen;
 }
 
+uint32_t appendProgramFrame(uint8_t *out, uint32_t len, uint32_t outCapacity)
+{
+    assert(len + PROGRAM_FRAME_BYTES <= outCapacity); // GCOV_EXCL_LINE
+    (void)outCapacity;
+
+    const uint16_t frame = programFrameHash(out, len);
+    out[len] = (uint8_t)frame;
+    out[len + 1] = (uint8_t)(frame >> 8);
+
+    return len + PROGRAM_FRAME_BYTES;
+}
+
+FramedProgram framedProgram(const uint8_t *literal, uint32_t len)
+{
+    FramedProgram f{};
+    assert(len + PROGRAM_FRAME_BYTES <= sizeof(f.bytes)); // GCOV_EXCL_LINE
+
+    for(uint32_t i = 0; i < len; i++)
+    {
+        f.bytes[i] = literal[i];
+    }
+    f.len = appendProgramFrame(f.bytes, len, (uint32_t)sizeof(f.bytes));
+
+    return f;
+}
+
 uint32_t encodeJitProgram(uint32_t maxCallDepth, uint32_t totalDepth, const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCapacity)
 {
     uint32_t outLen = 0;
     encodeLeb128(maxCallDepth, out, outLen, outCapacity);
     encodeLeb128(totalDepth, out, outLen, outCapacity);
     outLen += encodeProgram(procs, procCount, out + outLen, outCapacity - outLen);
-    return outLen;
+    return appendProgramFrame(out, outLen, outCapacity);
 }
 
 } // namespace jitc

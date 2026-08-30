@@ -30,7 +30,7 @@ supposed to see anything else. The other acceptable outcome is
 `Assembler::fail()`'s bail, which the harness treats as a pass (it ignores
 the `RESOURCE_*` code — only whether control escaped matters here).
 
-Input is one whole program envelope — `encodeJitProgram`'s
+Input is one whole program envelope — `encodeJitEnvelope`'s
 `max_call_depth`/`total_depth`/`proc_count` header, then each procedure.
 Whole programs, not one procedure, because a lone procedure cannot legally
 contain a `CALL` at all (§8.2 rejects self-recursion), which used to leave

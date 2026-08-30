@@ -227,9 +227,10 @@ TEST(executorRunRejectsAProgramWithNoProcedures)
     // Runtime storage is sized, since entering procedure 0 would read one
     // ProcSlot past what storageBytesFor(0) allocates. Covered on the
     // emulated side too, but free here.
-    const uint8_t bytes[] = {0x00, 0x00, 0x00};
+    const uint8_t literal[] = {0x00, 0x00, 0x00};
+    const FramedProgram p = framedProgram(literal, sizeof(literal));
 
-    ProgramResult r = enter(nullptr, 0, bytes, sizeof(bytes));
+    ProgramResult r = enter(nullptr, 0, p.bytes, p.len);
 
     CHECK(r.trapped == LANDING_RESOURCE_ERROR);
     CHECK(r.value == RESOURCE_PROGRAM_NO_PROCS);
@@ -237,12 +238,56 @@ TEST(executorRunRejectsAProgramWithNoProcedures)
 }
 
 /* max_call_depth=0 total_depth=0 proc_count=1 arg_count=0 body=[0x80, RETURN] */
-static const uint8_t kExtProgram[] = {0x00, 0x00, 0x01, 0x00, 0x80, 100};
+static const uint8_t kExtLiteral[] = {0x00, 0x00, 0x01, 0x00, 0x80, 100};
+
+/* The frame is checked before anything else looks at the bytes, so every one
+ * of these must come back with nothing entered. The expected hash is spelled
+ * out rather than computed: it is the one value the TypeScript producer has to
+ * agree with, and a divergence otherwise shows up only as every program being
+ * refused. packages/machine/test/jit-armv6m.test.ts asserts the same number. */
+TEST(TheFrameRefusesWhatTheProducerDidNotFrame)
+{
+    uint8_t bytes[32];
+    const uint32_t len = buildProgram(/*entryArgCount=*/0, /*totalDepth=*/1, bytes, sizeof(bytes));
+
+    CHECK(!enter(nullptr, 0, bytes, len).trapped); // the framed original still runs
+
+    // A flipped payload byte.
+    uint8_t flipped[32];
+    for(uint32_t i = 0; i < len; i++) flipped[i] = bytes[i];
+    flipped[len - PROGRAM_FRAME_BYTES - 1] ^= 0x01u;
+    ProgramResult corrupt = enter(nullptr, 0, flipped, len);
+    CHECK(corrupt.trapped == LANDING_RESOURCE_ERROR);
+    CHECK(corrupt.value == RESOURCE_PROGRAM_FRAME);
+    CHECK(!g_captured.called);
+
+    // One byte short, and one byte long: the caller's own size is what the
+    // hash is taken over, so neither can agree with what was stored.
+    CHECK(enter(nullptr, 0, bytes, len - 1).value == RESOURCE_PROGRAM_FRAME);
+    CHECK(enter(nullptr, 0, bytes, len + 1).value == RESOURCE_PROGRAM_FRAME);
+
+    // Nothing at all, and a buffer nobody filled in.
+    CHECK(enter(nullptr, 0, bytes, PROGRAM_FRAME_BYTES).value == RESOURCE_PROGRAM_FRAME);
+    uint8_t zeros[8] = {};
+    CHECK(enter(nullptr, 0, zeros, sizeof(zeros)).value == RESOURCE_PROGRAM_FRAME);
+    CHECK(!g_captured.called);
+}
+
+TEST(TheFrameHashIsTheNumberTheProducerMustReproduce)
+{
+    // 0x80 rather than a core opcode, so a byte with its high bit set goes
+    // through the mixer: nothing else here would catch one side widening it
+    // as signed.
+    const uint8_t vector[] = {0x00, 0x00, 0x01, 0x00, 0x80, 100};
+    CHECK(programFrameHash(vector, sizeof(vector)) == 0xA482u);
+}
 
 TEST(TheExtensionArgumentIsWhatInstallsTheExtension)
 {
+    const FramedProgram ext = framedProgram(kExtLiteral, sizeof(kExtLiteral));
+
     // With none passed, an extension byte has nothing to claim it.
-    ProgramResult none = enterWithExtension(nullptr, kExtProgram, sizeof(kExtProgram));
+    ProgramResult none = enterWithExtension(nullptr, ext.bytes, ext.len);
     CHECK(none.trapped == LANDING_RESOURCE_ERROR);
     CHECK(none.value == RESOURCE_PROGRAM_EXT_UNKNOWN);
 
@@ -250,12 +295,12 @@ TEST(TheExtensionArgumentIsWhatInstallsTheExtension)
     // directory walk and into dispatch. (Nothing is translated here — this
     // file's own enterDispatch stands in for runtime.S — so the codegen
     // bail M1 stops at belongs to test_translate_proc.cpp, not here.)
-    ProgramResult ok = enterWithExtension(&ACCEPTING, kExtProgram, sizeof(kExtProgram));
+    ProgramResult ok = enterWithExtension(&ACCEPTING, ext.bytes, ext.len);
     CHECK(ok.trapped == LANDING_SUCCESS);
     CHECK(g_captured.called);
 
     // And one that declines is reported as such.
-    ProgramResult declined = enterWithExtension(&DECLINING, kExtProgram, sizeof(kExtProgram));
+    ProgramResult declined = enterWithExtension(&DECLINING, ext.bytes, ext.len);
     CHECK(declined.value == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
 
@@ -267,6 +312,7 @@ TEST(AModestDeclaredHelperStackDoesNotDisturbTheBudget)
     // so the check reduces to `sp < needed` and the host's own sp is
     // whatever ASLR chose — the same reason this file's other budget cases
     // live over there.
+    const FramedProgram ext = framedProgram(kExtLiteral, sizeof(kExtLiteral));
     static const ExtStub MODEST = {acceptingDecode, nullptr, EXT_THUNK_STACK_BYTES};
-    CHECK(enterWithExtension(&MODEST, kExtProgram, sizeof(kExtProgram)).trapped == LANDING_SUCCESS);
+    CHECK(enterWithExtension(&MODEST, ext.bytes, ext.len).trapped == LANDING_SUCCESS);
 }

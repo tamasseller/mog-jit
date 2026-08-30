@@ -8,7 +8,7 @@
 // Wire format, one request/response per fuzz input:
 //   request:  u32LE length, then that many raw bytes — one whole
 //             jit-armv6m program envelope, byte for byte what
-//             bytecode.ts's `encodeJitProgram` emits and what
+//             jit-armv6m.ts's `encodeJitEnvelope` emits and what
 //             runtime/enter_program.cpp's own `parseProgramHeader` +
 //             `Runtime::init()` consume:
 //                 LEB128 max_call_depth
@@ -30,7 +30,7 @@
 
 import * as net from "net"
 import * as fs from "fs"
-import { decodeJitProgram, encodeLeb128, encodeProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "../../packages/machine/src/index"
+import { decodeJitEnvelope, encodeLeb128, encodeProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "../../packages/machine/src/index"
 import type { RtlProgram } from "../../packages/machine/src/index"
 // One generator for the entry procedure's arguments, shared with the
 // execution oracle: if the two differed, this server's reference result
@@ -115,7 +115,7 @@ function handleRequest(payload: Buffer): Buffer
     let headerTotalDepth: number
     try
     {
-        const decoded = decodeJitProgram(payload)
+        const decoded = decodeJitEnvelope(payload)
         program = decoded.program
         headerMaxCallDepth = decoded.maxCallDepth
         headerTotalDepth = decoded.totalDepth
@@ -171,7 +171,7 @@ function handleRequest(payload: Buffer): Buffer
     }
 
     // Deliberately NOT gated on the envelope's two stats agreeing with what
-    // validateProgram just recomputed, even though encodeJitProgram only
+    // validateProgram just recomputed, even though encodeJitEnvelope only
     // ever writes exactly those. The harness ignores both fields entirely
     // — they exist for enterProgram*'s own stack reservation, which a host
     // build never performs — so a forged header cannot produce a finding

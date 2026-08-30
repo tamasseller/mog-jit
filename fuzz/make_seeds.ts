@@ -1,6 +1,7 @@
 // jit-armv6m/fuzz — writes the whole seeds/ corpus in the whole-program
 // envelope format harness.cpp/oracle_server.ts speak (bytecode.ts's
-// encodeJitProgram).
+// encodeJitEnvelope) — unframed: the fuzzer mutates these bytes, and
+// harness.cpp reaches Runtime::loadProgram without passing the frame check.
 //
 // Every seed goes through validateProgram here, so one that doesn't
 // validate fails this script instead of silently becoming a seed the
@@ -18,7 +19,7 @@
 
 import * as fs from "fs"
 import * as path from "path"
-import { decodeLeb128, decodeBody, encodeJitProgram, validateProgram } from "../../packages/machine/src/index"
+import { decodeLeb128, decodeBody, encodeJitEnvelope, validateProgram } from "../../packages/machine/src/index"
 import type { RtlInstr, RtlProc, RtlProgram } from "../../packages/machine/src/index"
 
 const SEED_DIR = path.join(__dirname, "seeds")
@@ -36,7 +37,7 @@ const STAGING_DIR = path.join(__dirname, "seeds_raw")
 function write(name: string, program: RtlProgram): void
 {
     const stats = validateProgram(program) // throws rather than emit a seed the harness would discard
-    const bytes = encodeJitProgram(program)
+    const bytes = encodeJitEnvelope(program)
     fs.writeFileSync(path.join(SEED_DIR, name), bytes)
     console.log(`wrote seeds/${name} (${bytes.length} bytes, ${program.procedures.length} proc, `
         + `totalDepth ${stats.totalDepth}, maxCallDepth ${stats.maxCallDepth})`)

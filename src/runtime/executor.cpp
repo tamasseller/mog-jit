@@ -8,6 +8,7 @@
 #include "ext.h"
 #include "dispatch_abi.h"
 #include "entry_args.h"
+#include "program_frame.h"
 
 struct ProgramHeader
 {
@@ -83,7 +84,14 @@ static uint32_t codeLimitFor(uint32_t needed, uint32_t stackLimit)
 
 ProgramResult Executor::run(const uint8_t *programBytes, uint32_t programSize, uint32_t *args, uint32_t argCount)
 {
-    ProgramHeader hdr = parseProgramHeader(programBytes, programSize);
+    if(!programFrameOk(programBytes, programSize))
+    {
+        return ProgramResult{ RESOURCE_PROGRAM_FRAME, LANDING_RESOURCE_ERROR };
+    }
+
+    const uint32_t payloadSize = programSize - PROGRAM_FRAME_BYTES;
+
+    ProgramHeader hdr = parseProgramHeader(programBytes, payloadSize);
     uint32_t operandStackBytes = hdr.totalDepth * 4;
 
     const uint32_t codeLimit = codeLimitFor(
@@ -105,7 +113,7 @@ ProgramResult Executor::run(const uint8_t *programBytes, uint32_t programSize, u
     alignas(Runtime) unsigned char runtimeStorage[Runtime::storageBytesFor(hdr.procCount)];
     auto runtime = new(runtimeStorage) Runtime(hdr.procCount, arena);
 
-    if(uint32_t code = runtime->loadProgram(programBytes, programSize, hdr.bodyOffset))
+    if(uint32_t code = runtime->loadProgram(programBytes, payloadSize, hdr.bodyOffset))
     {
         return ProgramResult{ code, LANDING_RESOURCE_ERROR };
     }

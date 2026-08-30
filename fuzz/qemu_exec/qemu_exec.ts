@@ -18,7 +18,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { spawnSync } from "child_process"
-import { decodeJitProgram, encodeJitProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "../../../packages/machine/src/index"
+import { decodeJitEnvelope, encodeJitProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "../../../packages/machine/src/index"
 import type { RtlProgram } from "../../../packages/machine/src/index"
 import { entryArgsFor } from "../entry_args"
 
@@ -72,7 +72,7 @@ function classify(file: string): Candidate | null
     let program: RtlProgram
     try
     {
-        const decoded = decodeJitProgram(raw)
+        const decoded = decodeJitEnvelope(raw)
         if(decoded.next !== raw.length) { skip("trailing bytes"); return null }
         program = decoded.program
     }

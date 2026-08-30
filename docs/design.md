@@ -54,18 +54,55 @@ are checked against it up front. A caller that just wants a plain global
 arena declares one itself (one line, sized to what it actually needs) and
 uses `Executor::split`.
 
-`programBytes`/`programSize` is one whole serialized program: a
-jit-armv6m-specific envelope (`max_call_depth:LEB128 total_depth:LEB128` —
-`packages/machine/src/bytecode.ts`'s `encodeJitProgram`) prepended to an
-ordinary isa-core.md §5.5 program (`proc_count:LEB128`, then each
-procedure's own `arg_count:LEB128` immediately followed by its own body).
-`proc_count` and both whole-program stats come out of that envelope, not a
-caller-supplied parameter — isa-core.md §5.5/§11.4's own extension point
-("a procedure header's extension fields... added when a real need
-appears"): a bare-metal JIT needs `max_call_depth`/`total_depth` before it
-can compile a single instruction (§2's static stack reservation, below),
-and `validateProgram` already computes both, once, before the program is
-ever serialized.
+### 1.1 Wire envelope and frame
+
+`programBytes`/`programSize` is one whole serialized program:
+
+```
+jit program := max_call_depth:LEB128 total_depth:LEB128
+               proc_count:LEB128 procedure{proc_count}     -- isa-core.md §5.5
+               frame:u16le
+```
+
+The envelope is jit-armv6m's own
+(`packages/machine/src/jit-armv6m.ts`'s `encodeJitEnvelope`), prepended to an
+ordinary isa-core.md §5.5 program (`proc_count:LEB128`, then each procedure's
+own `arg_count:LEB128` immediately followed by its own body). `proc_count` and
+both whole-program stats come out of that envelope, not a caller-supplied
+parameter — isa-core.md §5.5/§11.4's own extension point ("a procedure
+header's extension fields... added when a real need appears"): a bare-metal
+JIT needs `max_call_depth`/`total_depth` before it can compile a single
+instruction (§2's static stack reservation, below), and `validateProgram`
+already computes both, once, before the program is ever serialized.
+
+`frame` is FNV-1a-32 over everything preceding it, XOR-folded to 16 bits, with
+the contract version folded into the seed
+(`0x811C9DC5 ^ PROGRAM_CONTRACT_VERSION`); `encodeJitProgram` appends it and
+`Executor::run` verifies it before anything else reads a byte
+(`src/runtime/program_frame.h`). Its job is the binding between the validator
+and the JIT: the JIT relies on the validator to hand it only programs it can
+deal with, and nothing else on the wire records that the two ever agreed.
+
+It is deliberately not a signature and not error correction. Adversarial
+substitution and transmission errors are an application's problem, and an
+application that has them should solve them properly rather than have every
+other deployment carry the weight. What this catches is accident: an
+off-by-one length, a buffer nobody filled in, a stale pointer, a producer
+built against a different contract. Those are exactly the cases that would
+otherwise reach a walk that trusts its input — `parseProgramHeader` and
+`loadProgram` bound themselves with `assert`, which `-DNDEBUG` strips from
+every real image.
+
+Three consequences of the shape. There is no length field: the hash is taken
+over exactly `programSize - 2` bytes, so a wrong `programSize` reads the
+stored value from the wrong place and fails — which is also why nothing here
+ever reads past the caller's buffer. There is no version byte: skew surfaces
+as a mismatch, and truncation, corruption and skew all report
+`RESOURCE_PROGRAM_FRAME` because all three mean the same thing. And the hash
+is folded, not truncated: FNV's prime is odd, so bit 0 survives every
+multiply and the raw low half is little more than a parity of the input.
+
+Cost on `-mcpu=cortex-m0 -Os`: 68 bytes, inlined into `Executor::run`.
 
 `trapped` is 0 for a normal return, nonzero for a `TRAP` code (isa-core.md
 §4.5) propagated out or a resource error, whose own `value` names which one
@@ -1204,6 +1241,7 @@ unencodable at any size, this backend cannot compile it at all.
 | `RESOURCE_PROGRAM_NO_PROCS` | `0x52451100` | `executor.cpp` `Executor::run` | `proc_count == 0` |
 | `RESOURCE_PROGRAM_BODY_UNTERMINATED` | `0x52451200` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | ran off the blob with a block still open |
 | `RESOURCE_PROGRAM_CALLEE_RANGE` | `0x52451300` | `translate_proc.cpp` `processNonControl` | `calleeIndex >= procCount` |
+| `RESOURCE_PROGRAM_FRAME` | `0x52451400` | `executor.cpp` `Executor::run` | §1.1's frame does not verify: truncated, corrupt, or another contract version |
 | `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` | `0x52451500` | `executor.cpp` `Executor::run` | `argCount != slot(0).argCount()` |
 | `RESOURCE_PROGRAM_ENTRY_DEPTH` | `0x52451600` | `executor.cpp` `Executor::run` | the entry procedure's out-of-window args exceed `total_depth` |
 | `RESOURCE_PROGRAM_EXT_UNKNOWN` | `0x52451700` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | a wire byte past `LAST_CORE_OPCODE`: the extension range (§11) or a reserved code (§5.3) |
@@ -1229,10 +1267,10 @@ program's operand stack. And malformed wire bytes stay asserted rather
 than reported, the convention `decode_instr.h` and `proc_scan.h` already
 document: `PROGRAM_BODY_UNTERMINATED`, `PROGRAM_CALLEE_RANGE` and
 `PROGRAM_EXT_UNKNOWN` are the three checks that exist because the walk
-needs them anyway, not the start of a validating decoder. `0x52451400` is
-reserved for a truncated program envelope, which `parseProgramHeader`
-cannot currently report at all — it runs before there is anywhere to
-report to.
+needs them anyway, not the start of a validating decoder. What used to be
+unreportable here is the truncated envelope: `parseProgramHeader` runs
+before there is anywhere to report to, so §1.1's frame is checked ahead of
+it and `PROGRAM_FRAME` is what a short or wrong buffer comes back as.
 
 `PROGRAM_EXT_UNKNOWN` is the one of those three that is not really about
 malformedness: a byte in the extension range is plausibly the *right*

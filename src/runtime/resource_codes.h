@@ -15,6 +15,7 @@
 #define RESOURCE_PROGRAM_NO_PROCS 0x52451100u          /* proc_count is zero */
 #define RESOURCE_PROGRAM_BODY_UNTERMINATED 0x52451200u /* a body ran off the blob with a block still open */
 #define RESOURCE_PROGRAM_CALLEE_RANGE 0x52451300u      /* CALL names a procedure index the program doesn't have */
+#define RESOURCE_PROGRAM_FRAME 0x52451400u             /* truncated, corrupt, or built against another contract version */
 #define RESOURCE_PROGRAM_ENTRY_ARG_COUNT 0x52451500u /* argCount != the entry procedure's own declared arg_count */
 #define RESOURCE_PROGRAM_ENTRY_DEPTH 0x52451600u     /* entry procedure's out-of-window args over the envelope's own total_depth */
 #define RESOURCE_PROGRAM_EXT_UNKNOWN 0x52451700u
@@ -43,7 +44,8 @@ namespace
 {
 constexpr uint32_t RESOURCE_CODES[] = {
     RESOURCE_PROGRAM_NO_PROCS, RESOURCE_PROGRAM_BODY_UNTERMINATED,
-    RESOURCE_PROGRAM_CALLEE_RANGE, RESOURCE_PROGRAM_ENTRY_ARG_COUNT,
+    RESOURCE_PROGRAM_CALLEE_RANGE, RESOURCE_PROGRAM_FRAME,
+    RESOURCE_PROGRAM_ENTRY_ARG_COUNT,
     RESOURCE_PROGRAM_ENTRY_DEPTH, RESOURCE_PROGRAM_EXT_UNKNOWN,
     RESOURCE_PROGRAM_EXT_UNSUPPORTED,
     RESOURCE_PROGRAM_RESERVED_OPCODE,
