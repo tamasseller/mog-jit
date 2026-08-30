@@ -18,6 +18,7 @@ SOURCES += test_enter_program.cpp
 # Test support
 SOURCES += main.cpp
 SOURCES += host_runtime_support.cpp
+SOURCES += ext_stub.cpp
 SOURCES += ../encode_instr.cpp
 
 # The compiler itself (armv6.h is header-only — test_armv6_encoding.cpp

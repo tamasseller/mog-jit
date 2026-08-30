@@ -30,7 +30,14 @@ static_assert(sizeof(EntryArgs::window) == 16);
 
 inline void buildEntryArgs(EntryArgs *ea, const uint32_t *args, uint32_t declared)
 {
-    *ea = EntryArgs{}; /* zeroes window[], including physReg(declared-1)'s own slot */
+    ea->spilledStart = nullptr;
+    ea->spilledEnd = nullptr;
+    ea->acc = 0;
+
+    for(uint32_t i = 0; i < jitc::WINDOW_SIZE; i++) /* including physReg(declared-1)'s own slot */
+    {
+        ea->window[i] = 0;
+    }
 
     if(declared == 0)
     {

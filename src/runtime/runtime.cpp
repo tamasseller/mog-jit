@@ -77,7 +77,14 @@ void Runtime::evict(uint32_t idx, const uint16_t *end)
     uint32_t gapEnd = victimAddr + victimSize;
     uint32_t tailLen = (uint32_t)end - gapEnd;
 
-    memmove((void *)(uintptr_t)victimAddr, (void *)(uintptr_t)gapEnd, tailLen);
+    uint16_t *dst = (uint16_t *)(uintptr_t)victimAddr;
+    const uint16_t *src = (const uint16_t *)(uintptr_t)gapEnd;
+
+    for(uint32_t i = 0; i < tailLen / 2; i++) 
+    {
+        dst[i] = src[i];
+    }
+
     arenaCursor -= victimSize;
 
     ProcSlot &victimEntry = slot(idx);

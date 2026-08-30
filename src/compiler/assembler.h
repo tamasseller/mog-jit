@@ -27,6 +27,8 @@ class Assembler
     uint32_t pendingValues[POOL_MAX_PENDING];
     uint32_t pendingCount = 0;
 
+    uint32_t doEmit(uint16_t word);
+
     bool linkIntoChain(Label &label, uint32_t site);
     void parkPoolSite(uint32_t dstReg, uint32_t value);
     void patchPoolSite(uint32_t siteOffset, uint32_t word);

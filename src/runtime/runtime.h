@@ -3,7 +3,6 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <string.h>
 #include <cassert>
 #include "runtime_host.h"
 #include "proc_scan.h"
@@ -66,7 +65,6 @@ public:
     uint32_t arenaEnd;
     uint32_t arenaCursor;
     uint32_t procCount;
-    const ExtHooks *ext;
     uint32_t stackLimit;
     uint32_t arenaOverlapsStack;   /* 0/1, not bool, so this struct's layout is trivial */
     ProcSlot slots[];
@@ -105,8 +103,8 @@ public:
         return ptr; 
     }
 
-    inline Runtime(uint32_t procCount, uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit, uint32_t arenaOverlapsStack, const ExtHooks *extension = nullptr):
-        arenaEnd((codeArenaBase + codeArenaSize) & ~3u), arenaCursor((codeArenaBase + 3u) & ~3u), procCount(procCount), ext(extension), stackLimit(stackLimit), arenaOverlapsStack(arenaOverlapsStack)
+    inline Runtime(uint32_t procCount, uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit, uint32_t arenaOverlapsStack):
+        arenaEnd((codeArenaBase + codeArenaSize) & ~3u), arenaCursor((codeArenaBase + 3u) & ~3u), procCount(procCount), stackLimit(stackLimit), arenaOverlapsStack(arenaOverlapsStack)
     {
         assert(arenaCursor <= arenaEnd); // GCOV_EXCL_LINE
 
@@ -117,11 +115,6 @@ public:
 
     uint32_t loadProgram(const uint8_t *programBytes, uint32_t programSize, uint32_t bodyOffset)
     {
-        if(this->ext != nullptr && this->ext->abiVersion != jitc::EXT_ABI_VERSION)
-        {
-            return RESOURCE_PROGRAM_EXT_ABI;
-        }
-
         if(procCount > jitc::MAX_PROC_IDX + 1)
         {
             return RESOURCE_LIMIT_PROC_COUNT;
@@ -135,7 +128,7 @@ public:
             uint32_t argCount = jitc::decodeLeb128(programBytes, pos, pos);
             uint32_t bodyStart = pos;
 
-            jitc::BodyScanResult scan = jitc::scanProcBody(programBytes, programSize, bodyStart, this->ext, stackLimit);
+            jitc::BodyScanResult scan = jitc::scanProcBody(programBytes, programSize, bodyStart, stackLimit);
 
             if(!scan.ok)
             {
@@ -170,11 +163,6 @@ public:
     inline auto getProcCount() const 
     {
         return procCount;
-    }
-
-    const ExtHooks *extension() const
-    {
-        return ext;
     }
 
     ProcSlot &slot(uint32_t idx)
@@ -236,7 +224,7 @@ constexpr uint32_t RESOURCE_CODES[] = {
     RESOURCE_PROGRAM_NO_PROCS, RESOURCE_PROGRAM_BODY_UNTERMINATED,
     RESOURCE_PROGRAM_CALLEE_RANGE, RESOURCE_PROGRAM_ENTRY_ARG_COUNT,
     RESOURCE_PROGRAM_ENTRY_DEPTH, RESOURCE_PROGRAM_EXT_UNKNOWN,
-    RESOURCE_PROGRAM_EXT_UNSUPPORTED, RESOURCE_PROGRAM_EXT_ABI,
+    RESOURCE_PROGRAM_EXT_UNSUPPORTED,
     RESOURCE_PROGRAM_RESERVED_OPCODE,
     RESOURCE_EXHAUSTED_ARENA, RESOURCE_EXHAUSTED_STACK_BUDGET,
     RESOURCE_EXHAUSTED_TRANSLATOR_STACK, RESOURCE_EXHAUSTED_SCAN_STACK,

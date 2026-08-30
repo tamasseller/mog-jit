@@ -6,6 +6,7 @@
 // a well-formed op is accepted by the walk and bails at emit.
 #include "Test.h"
 #include "ext.h"
+#include "ext_stub.h"
 #include "decode_instr.h"
 #include "proc_scan.h"
 #include "encode_instr.h"
@@ -81,10 +82,10 @@ uint32_t greedyDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
     return 1; // claims every byte it is shown
 }
 
-const ExtHooks FAKE = {EXT_ABI_VERSION, fakeDecode};
-const ExtHooks GREEDY = {EXT_ABI_VERSION, greedyDecode};
-const ExtHooks OVERRUN = {EXT_ABI_VERSION, overrunDecode};
-const ExtHooks ZERO_LENGTH = {EXT_ABI_VERSION, zeroLengthDecode};
+const ExtStub FAKE = {fakeDecode};
+const ExtStub GREEDY = {greedyDecode};
+const ExtStub OVERRUN = {overrunDecode};
+const ExtStub ZERO_LENGTH = {zeroLengthDecode};
 
 } // namespace
 
@@ -131,10 +132,10 @@ TEST(DecodeLeb128CheckedRefusesToReadPastTheBuffer)
 
 TEST(DecodeInstrYieldsOpExtWithTheDeclarationAndLength)
 {
-    const ExtHooks *ext = &FAKE;
+    ExtScope ext(&FAKE);
     const uint8_t bytes[] = {EXT_INLINE, 0xe5, 0x8e, 0x26}; // operand 624485, 3 LEB128 bytes
 
-    DecodedInstr d = decodeInstr(bytes, sizeof(bytes), 0, ext);
+    DecodedInstr d = decodeInstr(bytes, sizeof(bytes), 0);
     CHECK(d.instr.op == Op::EXT);
     CHECK(extDeclOpcode(d.instr.extDecl) == EXT_INLINE);
     CHECK(extDeclHalfwords(d.instr.extDecl) == 2);
@@ -145,33 +146,33 @@ TEST(ExtDecodeLengthRejectsALengthPastTheBuffer)
 {
     // The core checks the claimed length rather than trusting it: an
     // extension that overruns must produce a rejection, not an overrun.
-    const ExtHooks *ext = &OVERRUN;
+    ExtScope ext(&OVERRUN);
     const uint8_t bytes[] = {EXT_INLINE, 0x00};
     uint32_t decl = 0;
-    CHECK(extDecodeLength(bytes, sizeof(bytes), 0, decl, ext) == 0);
+    CHECK(extDecodeLength(bytes, sizeof(bytes), 0, decl) == 0);
 }
 
 TEST(ExtDecodeLengthRejectsNoForwardProgress)
 {
     // A zero length would hang every walk that steps by it.
-    const ExtHooks *ext = &ZERO_LENGTH;
+    ExtScope ext(&ZERO_LENGTH);
     const uint8_t bytes[] = {EXT_INLINE, 0x00};
     uint32_t decl = 0;
-    CHECK(extDecodeLength(bytes, sizeof(bytes), 0, decl, ext) == 0);
+    CHECK(extDecodeLength(bytes, sizeof(bytes), 0, decl) == 0);
 }
 
 TEST(ExtDecodeLengthRejectsWhenNoExtensionWasPassed)
 {
     const uint8_t bytes[] = {EXT_INLINE, 0x00};
     uint32_t decl = 0;
-    CHECK(extDecodeLength(bytes, sizeof(bytes), 0, decl, /*ext=*/nullptr) == 0);
+    CHECK(extDecodeLength(bytes, sizeof(bytes), 0, decl) == 0);
 }
 
 TEST(ScanProcBodyStepsOverAnExtensionOpUsingItsDeclaredLength)
 {
     // The whole point of hooking the decoder: this walk finds the body
     // boundary without knowing anything about the extension.
-    const ExtHooks *ext = &FAKE;
+    ExtScope ext(&FAKE);
     uint8_t bytes[16];
     uint32_t n = 0;
     bytes[n++] = EXT_INLINE;
@@ -181,7 +182,7 @@ TEST(ScanProcBodyStepsOverAnExtensionOpUsingItsDeclaredLength)
     const Instr tail[] = {bare(Op::RETURN)};
     n += encodeBody(tail, 1, bytes + n, sizeof(bytes) - n);
 
-    BodyScanResult r = scanProcBody(bytes, n, 0, ext);
+    BodyScanResult r = scanProcBody(bytes, n, 0);
     CHECK(r.ok);
     CHECK(r.failCode == 0);
     CHECK(r.bodyBytes == n);
@@ -192,21 +193,21 @@ TEST(ScanProcBodyTakesNeedsLRSaveFromTheDeclaration)
 {
     // The prologue is emitted from ProcSlot's needsLRSave long before
     // codegen sees the op, so the declaration has to settle it here.
-    const ExtHooks *ext = &FAKE;
+    ExtScope ext(&FAKE);
     uint8_t bytes[8];
     uint32_t n = 0;
     bytes[n++] = EXT_HELPER;
     const Instr tail[] = {bare(Op::RETURN)};
     n += encodeBody(tail, 1, bytes + n, sizeof(bytes) - n);
 
-    BodyScanResult r = scanProcBody(bytes, n, 0, ext);
+    BodyScanResult r = scanProcBody(bytes, n, 0);
     CHECK(r.ok);
     CHECK(r.needsLRSave);
 }
 
 TEST(ScanProcBodyRejectsEachCapabilityV1DoesNotImplement)
 {
-    const ExtHooks *ext = &FAKE;
+    ExtScope ext(&FAKE);
     const uint8_t rejected[] = {EXT_CALL_SHAPED, EXT_TERMINATES, EXT_TRANSIENT, EXT_NET_PUSH};
     for(uint32_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++)
     {
@@ -216,7 +217,7 @@ TEST(ScanProcBodyRejectsEachCapabilityV1DoesNotImplement)
         const Instr tail[] = {bare(Op::RETURN)};
         n += encodeBody(tail, 1, bytes + n, sizeof(bytes) - n);
 
-        BodyScanResult r = scanProcBody(bytes, n, 0, ext);
+        BodyScanResult r = scanProcBody(bytes, n, 0);
         CHECK(!r.ok);
         CHECK(r.failCode == RESOURCE_PROGRAM_EXT_UNSUPPORTED); // a newer core, not a different image
     }
@@ -224,10 +225,10 @@ TEST(ScanProcBodyRejectsEachCapabilityV1DoesNotImplement)
 
 TEST(ScanProcBodyReportsAnOpcodeTheExtensionDeclines)
 {
-    const ExtHooks *ext = &FAKE;
+    ExtScope ext(&FAKE);
     const uint8_t bytes[] = {EXT_DECLINED};
 
-    BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0, ext);
+    BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
     CHECK(!r.ok);
     CHECK(r.failCode == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
@@ -240,18 +241,18 @@ TEST(TheCoreReservedOpcodesAreNeverOfferedToAnExtension)
     // every byte it is shown, so if the gate used "> LAST_CORE_OPCODE"
     // instead of ">= EXT_OPCODE_BASE" these would scan clean and let an
     // extension squat on core opcode space.
-    const ExtHooks *ext = &GREEDY;
+    ExtScope ext(&GREEDY);
     for(uint8_t code = 124; code < 128; code++)
     {
         const uint8_t bytes[] = {code};
-        BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0, ext);
+        BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
         CHECK(!r.ok);
         CHECK(r.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE);
     }
 
     // ...and 128 is the first byte it legitimately does get.
     const uint8_t first[] = {0x80, 100 /* RETURN */};
-    BodyScanResult r = scanProcBody(first, sizeof(first), 0, ext);
+    BodyScanResult r = scanProcBody(first, sizeof(first), 0);
     CHECK(r.ok);
     CHECK(r.failCode == 0);
 }

@@ -67,16 +67,12 @@ struct ExtSite
     uint32_t scratch;
 };
 
-struct ExtHooks
-{
-    uint32_t abiVersion;
-
-    uint32_t (*decode)(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t *decl);
-
-    void (*emit)(jitc::Assembler &a, const ExtSite &site);
-
-    uint32_t helperStackBytes;
-};
+/* Bound at link time, not through a table: an extension replaces the weak
+ * defaults in ext_default.cpp. Direct calls keep the translator's stack
+ * bound derivable from the call graph. */
+extern "C" uint32_t extDecode(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t *decl);
+extern "C" void extEmit(jitc::Assembler &a, const ExtSite &site);
+extern "C" uint32_t extHelperStackBytes();
 
 namespace jitc
 {

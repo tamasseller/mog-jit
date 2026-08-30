@@ -9,8 +9,6 @@
 extern "C" {
 #endif
 
-struct ExtHooks;
-
 typedef struct
 {
     uint32_t value;
@@ -24,7 +22,6 @@ ProgramResult enterProgramOnStack(
     uint32_t argCount,
     const uint8_t *programBytes,
     uint32_t programSize,
-    const struct ExtHooks *extension,
     uint32_t codeArenaSize,
     uint32_t stackLimit,
     uint32_t interruptReserve);
@@ -34,7 +31,6 @@ ProgramResult enterProgramSplit(
     uint32_t argCount,
     const uint8_t *programBytes,
     uint32_t programSize,
-    const struct ExtHooks *extension,
     uint32_t codeArenaBase,
     uint32_t codeArenaSize,
     uint32_t stackLimit,
@@ -67,7 +63,6 @@ ProgramResult enterProgramSplit(
 #define RESOURCE_PROGRAM_ENTRY_DEPTH 0x52451600u     /* entry procedure's out-of-window args over the envelope's own total_depth */
 #define RESOURCE_PROGRAM_EXT_UNKNOWN 0x52451700u
 #define RESOURCE_PROGRAM_EXT_UNSUPPORTED 0x52451800u
-#define RESOURCE_PROGRAM_EXT_ABI 0x52451900u
 #define RESOURCE_PROGRAM_RESERVED_OPCODE 0x52451a00u
 
 #define RESOURCE_EXHAUSTED_ARENA 0x52452100u            /* code arena full with nothing left to evict */

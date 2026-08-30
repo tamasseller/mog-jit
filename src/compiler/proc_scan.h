@@ -18,7 +18,7 @@ struct BodyScanResult
 };
 
 BodyScanResult scanProcBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t startOffset,
-    const ExtHooks *ext = nullptr, uint32_t stackFloor = 0);
+    uint32_t stackFloor = 0);
 
 } // namespace jitc
 

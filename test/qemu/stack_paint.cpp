@@ -142,7 +142,7 @@ TEST(DeepNestingStaysWithinStackBudget)
 
     static uint8_t arena[512];
     ProgramResult r = enterProgramSplit(nullptr, 0, progBytes, progLen,
-        /*extension=*/nullptr, (uint32_t)(uintptr_t)arena, sizeof(arena), stackLimitAboveBss(), /*interruptReserve=*/0);
+        (uint32_t)(uintptr_t)arena, sizeof(arena), stackLimitAboveBss(), /*interruptReserve=*/0);
 
     // Either outcome is healthy and worth distinguishing in the report:
     // a clean RESOURCE_ERROR proves the live checks fired before anything

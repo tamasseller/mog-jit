@@ -16,8 +16,7 @@ bool decodeLeb128Checked(const uint8_t *bytes, uint32_t bytesLen, uint32_t offse
 constexpr uint32_t LAST_CORE_OPCODE = 123;
 constexpr uint32_t EXT_OPCODE_BASE = 128;
 
-uint32_t extDecodeLength(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t &decl,
-    const ExtHooks *ext);
+uint32_t extDecodeLength(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t &decl);
 
 struct DecodedInstr
 {
@@ -25,8 +24,7 @@ struct DecodedInstr
     uint32_t next; // byte offset just past this instruction
 };
 
-DecodedInstr decodeInstr(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset,
-    const ExtHooks *ext = nullptr);
+DecodedInstr decodeInstr(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset);
 
 } // namespace jitc
 

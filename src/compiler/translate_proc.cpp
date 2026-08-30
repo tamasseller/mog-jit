@@ -19,12 +19,12 @@ Ctx::Ctx(Runtime& r, uint32_t procIdx, uint32_t lruTick): a(r, lruTick)
 
 extern "C" uint32_t translateProc(uint32_t procIdx, Runtime& r, uint32_t lruTick)
 {
-    if(Ctx ctx(r, procIdx, lruTick); ctx.translateBody(emitNarrowBranch))
+    if(Ctx ctx(r, procIdx, lruTick); ctx.translateBody(BranchWidth::Narrow))
     {
         return ctx.a.finalize(procIdx);
     }
 
-    if(Ctx ctx(r, procIdx, lruTick); ctx.translateBody(emitWideBranch))
+    if(Ctx ctx(r, procIdx, lruTick); ctx.translateBody(BranchWidth::Wide))
     {
         return ctx.a.finalize(procIdx);
     }

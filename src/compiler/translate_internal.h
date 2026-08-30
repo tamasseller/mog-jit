@@ -7,10 +7,7 @@
 namespace jitc
 {
 
-using EmitBranch = bool (*)(Assembler &a, Label &label, ArmV6M::Condition condition);
-
-bool emitNarrowBranch(Assembler &a, Label &label, ArmV6M::Condition condition);
-bool emitWideBranch(Assembler &a, Label &label, ArmV6M::Condition condition);
+enum class BranchWidth { Narrow, Wide };
 
 struct Ctx
 {
@@ -34,12 +31,12 @@ struct Ctx
 
     ArmV6M::Condition handleComparisonEmission(const Instr &instr);
 
-    bool processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThisLoopCondBlock, DecodedInstr &out);
-    uint32_t translateLoop(uint32_t pc, EmitBranch emitBranch);
-    uint32_t translateIfThen(uint32_t pc, EmitBranch emitBranch);
-    uint32_t translateIfThenElse(uint32_t pc, EmitBranch emitBranch);
-    uint32_t translateSwitch(uint32_t pc, EmitBranch emitBranch, uint32_t n);
-    bool translateBody(EmitBranch emitBranch);
+    bool processUntilTerminator(uint32_t pc, BranchWidth width, bool isThisLoopCondBlock, DecodedInstr &out);
+    uint32_t translateLoop(uint32_t pc, BranchWidth width);
+    uint32_t translateIfThen(uint32_t pc, BranchWidth width);
+    uint32_t translateIfThenElse(uint32_t pc, BranchWidth width);
+    uint32_t translateSwitch(uint32_t pc, BranchWidth width, uint32_t n);
+    bool translateBody(BranchWidth width);
 };
 
 }

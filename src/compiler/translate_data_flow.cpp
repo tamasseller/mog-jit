@@ -23,14 +23,14 @@ struct FoldResult
     }
 };
 
-static FoldResult peekStoreFold(const uint8_t *bytes, uint32_t bytesLen, uint32_t afterPc, uint32_t tos, const ExtHooks *ext)
+static FoldResult peekStoreFold(const uint8_t *bytes, uint32_t bytesLen, uint32_t afterPc, uint32_t tos)
 {
     if(afterPc >= bytesLen)
     {
         return {-1, 0};
     }
 
-    DecodedInstr d = decodeInstr(bytes, bytesLen, afterPc, ext);
+    DecodedInstr d = decodeInstr(bytes, bytesLen, afterPc);
 
     if(d.instr.op == Op::STORE && inWindow(tos, d.instr.target))
     {
@@ -81,11 +81,11 @@ ArmV6M::Condition Ctx::handleComparisonEmission(const Instr &instr)
     }
 }
 
-bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThisLoopCondBlock, DecodedInstr& out)
+bool Ctx::processUntilTerminator(uint32_t pc, BranchWidth width, bool isThisLoopCondBlock, DecodedInstr& out)
 {
     while(pc < this->bytesLen)
     {
-        DecodedInstr decoded = decodeInstr(this->bytes, this->bytesLen, pc, this->a.runtime.extension());
+        DecodedInstr decoded = decodeInstr(this->bytes, this->bytesLen, pc);
         const Instr &instr = decoded.instr;
         uint32_t afterInstr = decoded.next;
 
@@ -93,20 +93,13 @@ bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThis
         {
             case Op::EXT:
             {
-                const ExtHooks *hooks = this->a.runtime.extension();
-                if(hooks == nullptr || hooks->emit == nullptr)
-                {
-                    runtimeBail(&a.runtime, RESOURCE_PROGRAM_EXT_UNKNOWN);
-                    pc = afterInstr; // per fail()'s own contract
-                    break;
-                }
-
                 const uint32_t decl = instr.extDecl;
                 const uint32_t pops = (uint32_t)(-extDeclTosDelta(decl));
                 const bool readsAcc = extDeclHas(decl, EXT_FLAG_READS_ACC);
                 const bool writesAcc = extDeclHas(decl, EXT_FLAG_WRITES_ACC);
 
-                ExtSite site{};
+                ExtSite site;
+                site.inCount = 0;
                 site.bytes = this->bytes;
                 site.bytesLen = this->bytesLen;
                 site.pc = pc;
@@ -143,7 +136,7 @@ bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThis
                 }
 
                 const uint32_t before = a.pc();
-                hooks->emit(a, site);
+                extEmit(a, site);
 
                 if(a.pc() - before > extDeclHalfwords(decl) * 2)
                 {
@@ -208,7 +201,7 @@ bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThis
             case Op::NEG:
             case Op::NOT:
             {
-                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.runtime.extension());
+                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
                 uint32_t dest = fold.redirectReg(ACC_REG);
                 uint32_t src = this->accState.peek().peek(a, dest);
 
@@ -222,7 +215,7 @@ bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThis
             case Op::REVBITS:
             {
                 this->accState.flush(a, ACC_REG);
-                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.runtime.extension());
+                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
                 uint32_t dest = fold.redirectReg(ACC_REG);
 
                 emitUnary(a, instr.op, dest, ACC_REG);
@@ -242,7 +235,7 @@ bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThis
                     break;
                 }
 
-                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.runtime.extension());
+                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
                 
                 this->accState.producer(Shape::ofReg(physReg(instr.target)));
 
@@ -286,7 +279,7 @@ bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThis
                 }
                 else
                 {
-                    FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.runtime.extension());
+                    FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
                     uint32_t target = fold.redirectReg(ACC_REG);
                     a.materializeImm32(target, (uint32_t)instr.imm);
                     this->accState.setClean(target);
@@ -356,7 +349,7 @@ bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThis
                 }
                 else
                 {
-                    FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.runtime.extension());
+                    FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
 
                     const auto dest = fold.redirectReg(ACC_REG);
                     emitBinaryOp(a, instr.op, instr.combo, this->accState.peek(), operandStorage, dest);
@@ -386,7 +379,7 @@ bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThis
 
                 if(afterInstr < this->bytesLen)
                 {
-                    DecodedInstr lookahead = decodeInstr(this->bytes, this->bytesLen, afterInstr, this->a.runtime.extension());
+                    DecodedInstr lookahead = decodeInstr(this->bytes, this->bytesLen, afterInstr);
                     
                     bool fusesIntoBrTable = lookahead.instr.op == Op::BR_TABLE && (lookahead.instr.imm == 1 || lookahead.instr.imm == 2);
                     bool fusesIntoLoopExit = isThisLoopCondBlock && lookahead.instr.op == Op::BLOCK_END;
@@ -402,7 +395,7 @@ bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThis
                     }
                 }
 
-                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos, this->a.runtime.extension());
+                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
                 uint32_t dest = fold.redirectReg(ACC_REG);
 
                 Label falseLabel;
@@ -429,7 +422,7 @@ bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThis
             }
             
             case Op::LOOP: 
-                pc = this->translateLoop(afterInstr, emitBranch); 
+                pc = this->translateLoop(afterInstr, width); 
 
                 if(pc == -1) 
                 {
@@ -441,9 +434,9 @@ bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThis
             case Op::BR_TABLE:
                 switch(instr.imm)
                 {
-                    case 1: pc = this->translateIfThen(afterInstr, emitBranch); break;
-                    case 2: pc = this->translateIfThenElse(afterInstr, emitBranch); break;
-                    default: pc = this->translateSwitch(afterInstr, emitBranch, instr.imm);break;
+                    case 1: pc = this->translateIfThen(afterInstr, width); break;
+                    case 2: pc = this->translateIfThenElse(afterInstr, width); break;
+                    default: pc = this->translateSwitch(afterInstr, width, instr.imm);break;
                 }
 
                 if(pc == -1) 

@@ -7,6 +7,7 @@
 #include "dispatch_abi.h"
 #include "entry_args.h"
 #include "ext.h"
+#include "ext_stub.h"
 #include "encode_instr.h"
 #include "instr.h"
 #include "host_runtime_support.h"
@@ -53,14 +54,15 @@ uint32_t acceptingDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
     return 1;
 }
 
-const ExtHooks DECLINING = {EXT_ABI_VERSION, decliningDecode};
-const ExtHooks ACCEPTING = {EXT_ABI_VERSION, acceptingDecode};
+const ExtStub DECLINING = {decliningDecode};
+const ExtStub ACCEPTING = {acceptingDecode};
 
-ProgramResult enterWithExtension(const ExtHooks *ext, const uint8_t *bytes, uint32_t len)
+ProgramResult enterWithExtension(const ExtStub *ext, const uint8_t *bytes, uint32_t len)
 {
     static uint8_t arena[512];
+    ExtScope scope(ext);
     g_captured = Captured{};
-    return enterProgramSplit(nullptr, 0, bytes, len, ext,
+    return enterProgramSplit(nullptr, 0, bytes, len,
         (uint32_t)(uintptr_t)arena, sizeof(arena), /*stackLimit=*/0, /*interruptReserve=*/0);
 }
 
@@ -72,7 +74,7 @@ ProgramResult enter(uint32_t *args, uint32_t argCount, const uint8_t *bytes, uin
      * not what these TESTs are about — the two boundary cases for that
      * check live in test/qemu/main.cpp, against a real measured sp. */
     return enterProgramSplit(args, argCount, bytes, len,
-        /*extension=*/nullptr, (uint32_t)(uintptr_t)arena, sizeof(arena), /*stackLimit=*/0, /*interruptReserve=*/0);
+        (uint32_t)(uintptr_t)arena, sizeof(arena), /*stackLimit=*/0, /*interruptReserve=*/0);
 }
 
 } // namespace
@@ -256,19 +258,6 @@ TEST(TheExtensionArgumentIsWhatInstallsTheExtension)
     CHECK(declined.value == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
 
-TEST(TwoProgramsInOneImageCanUseDifferentExtensions)
-{
-    // The property that made this an argument rather than a registration:
-    // the extension is per-Runtime, so the same bytes get a different answer
-    // depending only on which extension was handed in. A file-static would
-    // let one program's extension silently service the next one's bytes.
-    CHECK(enterWithExtension(&ACCEPTING, kExtProgram, sizeof(kExtProgram)).trapped == LANDING_SUCCESS);
-    CHECK(enterWithExtension(&DECLINING, kExtProgram, sizeof(kExtProgram)).value
-        == RESOURCE_PROGRAM_EXT_UNKNOWN);
-    CHECK(enterWithExtension(&ACCEPTING, kExtProgram, sizeof(kExtProgram)).trapped == LANDING_SUCCESS);
-    CHECK(enterWithExtension(nullptr, kExtProgram, sizeof(kExtProgram)).value
-        == RESOURCE_PROGRAM_EXT_UNKNOWN);
-}
 
 TEST(AModestDeclaredHelperStackDoesNotDisturbTheBudget)
 {
@@ -277,6 +266,6 @@ TEST(AModestDeclaredHelperStackDoesNotDisturbTheBudget)
     // so the check reduces to `sp < needed` and the host's own sp is
     // whatever ASLR chose — the same reason this file's other budget cases
     // live over there.
-    static const ExtHooks MODEST = {EXT_ABI_VERSION, acceptingDecode, nullptr, EXT_THUNK_STACK_BYTES};
+    static const ExtStub MODEST = {acceptingDecode, nullptr, EXT_THUNK_STACK_BYTES};
     CHECK(enterWithExtension(&MODEST, kExtProgram, sizeof(kExtProgram)).trapped == LANDING_SUCCESS);
 }

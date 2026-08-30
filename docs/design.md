@@ -1478,7 +1478,10 @@ over GCC's `-fcallgraph-info` output: it takes a signature filter, walks the
 subgraph below every matching function, cuts recursion back-edges to give the
 per-level cost, and computes the margin from the measured frames. It rejects
 anything it cannot bound exactly — dynamic frames, dynamic objects, indirect
-calls, calls with no definition in the graph. A per-file
+calls, calls with no definition in the graph. `--guard` names the functions
+that re-establish the floor themselves, so a margin is measured guard site to
+guard site; `--max` turns the report into a gate, and the Makefile feeds it
+`TRANSLATE_BODY_STACK_MARGIN` read straight out of the source. A per-file
 `-Werror=stack-usage=512` backstops the one thing a static byte-count
 comparison can't catch on its own: an accidental unbounded `alloca`/VLA
 in a tracked function.

@@ -10,6 +10,7 @@ SOURCES += ../../src/runtime/dispatch_abi.cpp
 # The compiler itself
 SOURCES += ../../src/compiler/window.cpp
 SOURCES += ../../src/compiler/ext.cpp
+SOURCES += ../../src/compiler/ext_default.cpp
 SOURCES += ../../src/compiler/accstate.cpp
 SOURCES += ../../src/compiler/arithmetic.cpp
 SOURCES += ../../src/compiler/assembler.cpp
@@ -47,6 +48,7 @@ OBJSIZE = arm-none-eabi-size
 ASMFLAGS += -mcpu=cortex-m0 -mthumb
 
 CXXFLAGS += -mcpu=cortex-m0 -mthumb -Os -DNDEBUG
+CXXFLAGS += -fno-tree-loop-distribute-patterns
 CXXFLAGS += -std=gnu++17 -fno-exceptions -fno-rtti
 
 CXXFLAGS += -fstack-usage
@@ -84,9 +86,10 @@ qemu-debug: $(OUTPUT)
 	qemu-system-arm -M lm3s811evb -m 8k -nographic -monitor none -s -S \
 	    -semihosting-config enable=on,target=native -kernel $(OUTPUT)
 
-STACK_MARGIN_FILTER ?= jitc::Ctx::translate
+TRANSLATE_MARGIN := $(shell sed -n 's/.*TRANSLATE_BODY_STACK_MARGIN = \([0-9]*\).*/\1/p' ../../src/compiler/translate_control_flow.cpp)
 
 stack-usage-check: $(OUTPUT)
-	../../tools/stack-margin.ts '$(STACK_MARGIN_FILTER)' $(OBJDIR)
+	../../tools/stack-margin.ts --guard 'jitc::Ctx::translate' --max $(TRANSLATE_MARGIN) \
+	    'jitc::Ctx::translate' $(OBJDIR)
 
 .PHONY: qemu-test qemu-debug stack-usage-check

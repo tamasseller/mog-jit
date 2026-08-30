@@ -67,31 +67,41 @@ static ArmV6M::LoRegs toLoRegs(const RegRun &run)
 
 static RegRuns windowRuns(uint32_t bottom, uint32_t count)
 {
-    RegRuns result{};
+    RegRuns result;
+    result.runCount = 0;
+    result.runs[0].count = 0;
+    result.runs[1].count = 0;
+
     if(count == 0)
     {
-        result.runCount = 0;
         return result;
     }
+
     uint32_t phase = bottom % WINDOW_SIZE;
     uint32_t preWrapLen = std::min(count, WINDOW_SIZE - phase);
+
     for(uint32_t i = 0; i < preWrapLen; i++)
     {
         result.runs[0].regs[i] = physReg(bottom + i);
     }
+
     result.runs[0].count = preWrapLen;
     uint32_t postWrapLen = count - preWrapLen;
+
     if(postWrapLen == 0)
     {
         result.runCount = 1;
         return result;
     }
+
     for(uint32_t i = 0; i < postWrapLen; i++)
     {
         result.runs[1].regs[i] = physReg(bottom + preWrapLen + i);
     }
+
     result.runs[1].count = postWrapLen;
     result.runCount = 2;
+    
     return result;
 }
 

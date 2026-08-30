@@ -11,7 +11,7 @@ cd "$(dirname "$0")"
 
 g++ -std=c++17 -O1 -g -m32 -I ../src/compiler -I ../src/runtime \
     probe_arena.cpp \
-    ../src/compiler/{ext,window,accstate,assembler,arithmetic,shape,abi_strategy,decode_instr,proc_scan,translate_proc,translate_data_flow,translate_control_flow}.cpp \
+    ../src/compiler/{ext,ext_default,window,accstate,assembler,arithmetic,shape,abi_strategy,decode_instr,proc_scan,translate_proc,translate_data_flow,translate_control_flow}.cpp \
     ../src/runtime/runtime.cpp \
     -o probe_arena
 

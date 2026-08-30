@@ -32,9 +32,9 @@ static ProgramHeader parseProgramHeader(const uint8_t *bytes, uint32_t size)
 
 static uint32_t requiredStackBytes(
     uint32_t procCount, uint32_t operandStackBytes, uint32_t maxCallDepth,
-    uint32_t interruptReserve, const ExtHooks *extension)
+    uint32_t interruptReserve)
 {
-    uint32_t extHelperBytes = extension != nullptr ? extension->helperStackBytes : 0;
+    uint32_t extHelperBytes = extHelperStackBytes();
 
     return Runtime::storageBytesFor(procCount)
          + operandStackBytes
@@ -64,7 +64,6 @@ static bool stackHasRoom(uint32_t needed, uint32_t stackLimit)
 
 static ProgramResult enterProgramCore(
     uint32_t *args, uint32_t argCount,
-    const ExtHooks *extension,
     const uint8_t *programBytes, uint32_t programSize,
     uint32_t codeArenaBase, uint32_t codeArenaSize,
     uint32_t stackLimit, uint32_t arenaOverlapsStack, uint32_t interruptReserve)
@@ -72,7 +71,7 @@ static ProgramResult enterProgramCore(
     ProgramHeader hdr = parseProgramHeader(programBytes, programSize);
     uint32_t operandStackBytes = hdr.totalDepth * 4;
 
-    uint32_t needed = requiredStackBytes(hdr.procCount, operandStackBytes, hdr.maxCallDepth, interruptReserve, extension) + codeArenaSize;
+    uint32_t needed = requiredStackBytes(hdr.procCount, operandStackBytes, hdr.maxCallDepth, interruptReserve) + codeArenaSize;
     if(!stackHasRoom(needed, stackLimit))
     {
         return ProgramResult{ RESOURCE_EXHAUSTED_STACK_BUDGET, LANDING_RESOURCE_ERROR };
@@ -84,7 +83,7 @@ static ProgramResult enterProgramCore(
     }
 
     alignas(Runtime) unsigned char runtimeStorage[Runtime::storageBytesFor(hdr.procCount)];
-    auto runtime = new(runtimeStorage) Runtime(hdr.procCount, codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack, extension);
+    auto runtime = new(runtimeStorage) Runtime(hdr.procCount, codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack);
 
     if(uint32_t code = runtime->loadProgram(programBytes, programSize, hdr.bodyOffset))
     {
@@ -114,20 +113,18 @@ static ProgramResult enterProgramCore(
 extern "C" ProgramResult enterProgramOnStack(
     uint32_t *args, uint32_t argCount,
     const uint8_t *programBytes, uint32_t programSize,
-    const ExtHooks *extension,
     uint32_t codeArenaSize, uint32_t stackLimit, uint32_t interruptReserve)
 {
-    return enterProgramCore(args, argCount, extension, programBytes, programSize, 
+    return enterProgramCore(args, argCount, programBytes, programSize, 
         stackLimit, codeArenaSize, stackLimit, /*arenaOverlapsStack=*/1, interruptReserve);
 }
 
 extern "C" ProgramResult enterProgramSplit(
     uint32_t *args, uint32_t argCount,
     const uint8_t *programBytes, uint32_t programSize,
-    const ExtHooks *extension,
     uint32_t codeArenaBase, uint32_t codeArenaSize,
     uint32_t stackLimit, uint32_t interruptReserve)
 {
-    return enterProgramCore(args, argCount, extension, programBytes, programSize, 
+    return enterProgramCore(args, argCount, programBytes, programSize, 
         codeArenaBase, codeArenaSize, stackLimit, /*arenaOverlapsStack=*/0, interruptReserve);
 }

@@ -103,15 +103,34 @@ function collect(paths: string[]): string[]
     return out
 }
 
-const [pattern, ...roots] = process.argv.slice(2)
+const argv = process.argv.slice(2)
+let guardPattern: string | null = null
+let max = Infinity
 
-if(!pattern || roots.length === 0)
+const g = argv.indexOf('--guard')
+if(g >= 0)
 {
-    console.error('usage: stack-margin.ts <signature-regex> <file-or-dir>...')
+    guardPattern = argv[g + 1] ?? null
+    argv.splice(g, 2)
+}
+
+const m = argv.indexOf('--max')
+if(m >= 0)
+{
+    max = Number(argv[m + 1])
+    argv.splice(m, 2)
+}
+
+const [pattern, ...roots] = argv
+
+if(!pattern || roots.length === 0 || (g >= 0 && guardPattern === null) || !(max > 0))
+{
+    console.error('usage: stack-margin.ts [--guard <signature-regex>] [--max <bytes>] <signature-regex> <file-or-dir>...')
     process.exit(2)
 }
 
 const filter = new RegExp(pattern)
+const guard = guardPattern === null ? null : new RegExp(guardPattern)
 const files = new Map<string, Map<string, Node>>()
 const defs = new Map<string, Node[]>()
 
@@ -170,6 +189,13 @@ function best(nodes: Node[], stack: Node[]): Result
 
 function walk(node: Node, stack: Node[]): Result
 {
+    if(stack.length > 0 && guard !== null && guard.test(node.sig))
+    {
+        const msg = `${node.sig} (establishes its own floor, below ${stack[stack.length - 1].sig})`
+        if(!cuts.includes(msg)) cuts.push(msg)
+        return { bytes: 0, path: [] }
+    }
+
     if(stack.some(s => s.sig === node.sig))
     {
         const msg = `${node.sig} (recursion, cut below ${stack[stack.length - 1].sig})`
@@ -243,7 +269,9 @@ for(const sig of [...matches.keys()].sort())
     }
     else
     {
-        console.log(`${sig}: ${r.bytes}`)
+        const over = r.bytes > max
+        failed = failed || over
+        console.log(`${sig}: ${r.bytes}${over ? ` — EXCEEDS --max ${max}` : ''}`)
         for(const n of r.path) console.log(`    ${String(n.frame).padStart(5)}  ${n.sig}`)
     }
 

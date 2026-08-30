@@ -155,7 +155,7 @@ TEST(ScanProcBodyStackFloorReachedReportsNotOk)
     uint32_t len = encodeBody(body, 4, bytes, sizeof(bytes));
 
     register uint32_t sp asm("sp");
-    BodyScanResult r = scanProcBody(bytes, len, 0, nullptr, sp); // floor pinned at the current sp: no margin at all
+    BodyScanResult r = scanProcBody(bytes, len, 0, sp); // floor pinned at the current sp: no margin at all
     CHECK(!r.ok);
     CHECK(r.failCode == RESOURCE_EXHAUSTED_SCAN_STACK); // out of stack, not a malformed body
 }

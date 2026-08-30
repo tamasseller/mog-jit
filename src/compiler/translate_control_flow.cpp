@@ -7,36 +7,33 @@ using namespace jitc;
 
 using R = ArmV6M::LoReg;
 
-/* What one open level can still consume below its own checkStackFloor, from
- * the real call graph (objdump edges, .su frames) rather than by eye:
- * processUntilTerminator 120 + handleComparisonEmission 72 + emitComparison
- * 40 + Shape::materialize 8 + materializeImm32 24 + ensurePoolRoom 8 +
- * flushPool 48 + placeholderBranch 8 + emit 16 + ensureSpace 16 + evict 40 +
- * occupiedSizeOf 20 = 420. One flushPool only — its AtomicScope suppresses
- * the inner emit's own pool check. Rounded well up, not pinned. */
-static constexpr uint32_t TRANSLATE_BODY_STACK_MARGIN = 512;
+static constexpr uint32_t TRANSLATE_BODY_STACK_MARGIN = 520;
 
-bool jitc::emitNarrowBranch(Assembler &a, Label &label, ArmV6M::Condition condition)
+static bool emitBranch(Assembler &a, Label &label, ArmV6M::Condition condition, BranchWidth width)
 {
-    return a.branchTo(label, condition);
-}
-
-bool jitc::emitWideBranch(Assembler &a, Label &label, ArmV6M::Condition condition)
-{
-    Label fallThrough;
-
-    const auto branchOk = a.branchTo(fallThrough, ArmV6M::inverse(condition));
-    assert(branchOk);
-
-    if(!a.branchTo(label))
+    if(width == BranchWidth::Narrow)
     {
-        return false;
+        return a.branchTo(label, condition);
     }
+    else
+    {
+        assert(width == BranchWidth::Wide);
 
-    const auto bindOk = a.bind(fallThrough);
-    assert(bindOk);
+        Label fallThrough;
 
-    return true;
+        const auto branchOk = a.branchTo(fallThrough, ArmV6M::inverse(condition));
+        assert(branchOk);
+
+        if(!a.branchTo(label))
+        {
+            return false;
+        }
+
+        const auto bindOk = a.bind(fallThrough);
+        assert(bindOk);
+
+        return true;
+    }
 }
 
 ArmV6M::Condition testAccNonzero(Assembler &a, AccState &accState)
@@ -80,7 +77,7 @@ void Ctx::handleGlobalJump(Instr term, uint32_t tos)
     this->window.tos = tos;
 }
 
-uint32_t Ctx::translateIfThen(uint32_t pc, EmitBranch emitBranch)
+uint32_t Ctx::translateIfThen(uint32_t pc, BranchWidth width)
 {
     Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
     
@@ -92,7 +89,7 @@ uint32_t Ctx::translateIfThen(uint32_t pc, EmitBranch emitBranch)
 
     const auto cond = fused ? this->pendingComparisonCondition : testAccNonzero(a, this->accState);
 
-    if(!emitBranch(a, skip, cond))
+    if(!emitBranch(a, skip, cond, width))
     {
         return -1;
     }
@@ -102,7 +99,7 @@ uint32_t Ctx::translateIfThen(uint32_t pc, EmitBranch emitBranch)
         this->accState.producer(Shape::ofImm(0));
     }
     
-    if(DecodedInstr term; this->processUntilTerminator(pc, emitBranch, false, term))
+    if(DecodedInstr term; this->processUntilTerminator(pc, width, false, term))
     {
         if(term.instr.op == Op::BLOCK_END)
         {
@@ -124,7 +121,7 @@ uint32_t Ctx::translateIfThen(uint32_t pc, EmitBranch emitBranch)
     return -1;
 }
 
-uint32_t Ctx::translateIfThenElse(uint32_t pc, EmitBranch emitBranch)
+uint32_t Ctx::translateIfThenElse(uint32_t pc, BranchWidth width)
 {
     Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
 
@@ -136,7 +133,7 @@ uint32_t Ctx::translateIfThenElse(uint32_t pc, EmitBranch emitBranch)
 
     if(fused)
     {
-        if(!emitBranch(a, otherwise, this->pendingComparisonCondition))
+        if(!emitBranch(a, otherwise, this->pendingComparisonCondition, width))
         {
             return -1;
         }
@@ -147,14 +144,14 @@ uint32_t Ctx::translateIfThenElse(uint32_t pc, EmitBranch emitBranch)
 
         a.emit(ArmV6M::cmp(R(ACC_REG), ArmV6M::Imm<8>(1)));
 
-        if(!emitBranch(a, end, ArmV6M::Condition::HI))
+        if(!emitBranch(a, end, ArmV6M::Condition::HI, width))
         {
             return -1;
         }
 
         a.emit(ArmV6M::cmp(R(ACC_REG), ArmV6M::Imm<8>(1)));
 
-        if(!emitBranch(a, otherwise, ArmV6M::Condition::EQ))
+        if(!emitBranch(a, otherwise, ArmV6M::Condition::EQ, width))
         {
             return -1;
         }
@@ -162,7 +159,7 @@ uint32_t Ctx::translateIfThenElse(uint32_t pc, EmitBranch emitBranch)
 
     this->accState.producer(Shape::ofImm(0));
 
-    if(DecodedInstr term; this->processUntilTerminator(pc, emitBranch, false, term))
+    if(DecodedInstr term; this->processUntilTerminator(pc, width, false, term))
     {
         if(term.instr.op == Op::BLOCK_END)
         {
@@ -185,7 +182,7 @@ uint32_t Ctx::translateIfThenElse(uint32_t pc, EmitBranch emitBranch)
 
         this->accState.producer(Shape::ofImm(1));
 
-        if(DecodedInstr term2; this->processUntilTerminator(term.next, emitBranch, false, term2))
+        if(DecodedInstr term2; this->processUntilTerminator(term.next, width, false, term2))
         {
             if(term2.instr.op == Op::BLOCK_END)
             {
@@ -213,7 +210,7 @@ uint32_t Ctx::translateIfThenElse(uint32_t pc, EmitBranch emitBranch)
     return -1;
 }
 
-uint32_t Ctx::translateSwitch(uint32_t pc, EmitBranch emitBranch, uint32_t n)
+uint32_t Ctx::translateSwitch(uint32_t pc, BranchWidth width, uint32_t n)
 {
     Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
 
@@ -249,7 +246,7 @@ uint32_t Ctx::translateSwitch(uint32_t pc, EmitBranch emitBranch, uint32_t n)
 
         this->accState.poison();
 
-        if(DecodedInstr term; this->processUntilTerminator(pc, emitBranch, false, term))
+        if(DecodedInstr term; this->processUntilTerminator(pc, width, false, term))
         {
             if(term.instr.op == Op::BLOCK_END)
             {
@@ -293,7 +290,7 @@ uint32_t Ctx::translateSwitch(uint32_t pc, EmitBranch emitBranch, uint32_t n)
     return pc;
 }
 
-uint32_t Ctx::translateLoop(uint32_t pc, EmitBranch emitBranch)
+uint32_t Ctx::translateLoop(uint32_t pc, BranchWidth width)
 {
     Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
 
@@ -302,7 +299,7 @@ uint32_t Ctx::translateLoop(uint32_t pc, EmitBranch emitBranch)
     this->accState.flushLive(a, ACC_REG);
     const auto start = a.pc();
 
-    if(DecodedInstr condTerm; this->processUntilTerminator(pc, emitBranch, true, condTerm))
+    if(DecodedInstr condTerm; this->processUntilTerminator(pc, width, true, condTerm))
     {
         assert(condTerm.instr.op == Op::BLOCK_END);
 
@@ -321,7 +318,7 @@ uint32_t Ctx::translateLoop(uint32_t pc, EmitBranch emitBranch)
         const auto cond = fused ? this->pendingComparisonCondition : testAccNonzero(a, this->accState);
 
         Label out;
-        if(!emitBranch(a, out, ArmV6M::inverse(cond)))
+        if(!emitBranch(a, out, ArmV6M::inverse(cond), width))
         {
             return -1;
         }
@@ -331,7 +328,7 @@ uint32_t Ctx::translateLoop(uint32_t pc, EmitBranch emitBranch)
             this->accState.producer(Shape::ofImm(1));
         }
 
-        if(DecodedInstr bodyTerm; this->processUntilTerminator(condTerm.next, emitBranch, false, bodyTerm))
+        if(DecodedInstr bodyTerm; this->processUntilTerminator(condTerm.next, width, false, bodyTerm))
         {
             if(bodyTerm.instr.op == Op::BLOCK_END)
             {
@@ -365,7 +362,7 @@ uint32_t Ctx::translateLoop(uint32_t pc, EmitBranch emitBranch)
     return -1;
 }
 
-bool Ctx::translateBody(EmitBranch emitBranch)
+bool Ctx::translateBody(BranchWidth width)
 {
     Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
 
@@ -376,7 +373,7 @@ bool Ctx::translateBody(EmitBranch emitBranch)
         accState.flush(a, physReg(window.tos - 1));
     }
 
-    if(DecodedInstr decoded; processUntilTerminator(0, emitBranch, false, decoded))
+    if(DecodedInstr decoded; processUntilTerminator(0, width, false, decoded))
     {
         const Instr &instr = decoded.instr;
 

@@ -1,5 +1,6 @@
 #include "Test.h"
 #include "ext.h"
+#include "ext_stub.h"
 #include "runtime.h"
 #include "encode_instr.h"
 
@@ -216,7 +217,7 @@ TEST(WalkReportsAnUnknownOpcodeAsADeploymentMismatch)
     const uint32_t bodyOffset = 1;
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0, /*extension=*/nullptr);
+    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0);
     CHECK(runtime->loadProgram(programBytes, sizeof(programBytes), bodyOffset) == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
 
@@ -236,9 +237,8 @@ uint32_t extCallShapedDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl
     return 1;
 }
 
-const ExtHooks EXT_OK = {jitc::EXT_ABI_VERSION, extInlineDecode};
-const ExtHooks EXT_CALL_SHAPED = {jitc::EXT_ABI_VERSION, extCallShapedDecode};
-const ExtHooks EXT_STALE_ABI = {jitc::EXT_ABI_VERSION + 1, extInlineDecode};
+const ExtStub EXT_OK = {extInlineDecode};
+const ExtStub EXT_CALL_SHAPED = {extCallShapedDecode};
 
 uint32_t extProgram(uint8_t *out)
 {
@@ -252,33 +252,23 @@ uint32_t extProgram(uint8_t *out)
 
 TEST(WalkAcceptsAWellFormedExtensionDeclaration)
 {
-    const ExtHooks *ext = &EXT_OK;
+    ExtScope ext(&EXT_OK);
     uint8_t programBytes[8];
     uint32_t len = extProgram(programBytes);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0, ext);
+    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0);
     CHECK(runtime->loadProgram(programBytes, len, 1) == 0);
 }
 
-TEST(WalkRejectsAnExtensionBuiltAgainstADifferentAbiVersion)
-{
-    const ExtHooks *ext = &EXT_STALE_ABI;
-    uint8_t programBytes[8];
-    uint32_t len = extProgram(programBytes);
-
-    alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0, ext);
-    CHECK(runtime->loadProgram(programBytes, len, 1) == RESOURCE_PROGRAM_EXT_ABI);
-}
 
 TEST(WalkRejectsACallShapedExtensionDeclarationAsUnsupported)
 {
-    const ExtHooks *ext = &EXT_CALL_SHAPED;
+    ExtScope ext(&EXT_CALL_SHAPED);
     uint8_t programBytes[8];
     uint32_t len = extProgram(programBytes);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0, ext);
+    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0);
     CHECK(runtime->loadProgram(programBytes, len, 1) == RESOURCE_PROGRAM_EXT_UNSUPPORTED);
 }

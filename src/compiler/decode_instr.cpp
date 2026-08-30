@@ -122,14 +122,9 @@ bool decodeLeb128Checked(const uint8_t *bytes, uint32_t bytesLen, uint32_t offse
     return true;
 }
 
-uint32_t extDecodeLength(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t &decl, const ExtHooks *ext)
+uint32_t extDecodeLength(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t &decl)
 {
-    if(ext == nullptr || ext->decode == nullptr)
-    {
-        return 0;
-    }
-    
-    uint32_t len = ext->decode(bytes, bytesLen, offset, &decl);
+    uint32_t len = extDecode(bytes, bytesLen, offset, &decl);
     
     if(len == 0 || len > bytesLen - offset)
     {
@@ -138,7 +133,7 @@ uint32_t extDecodeLength(const uint8_t *bytes, uint32_t bytesLen, uint32_t offse
     return len;
 }
 
-DecodedInstr decodeInstr(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, const ExtHooks *ext)
+DecodedInstr decodeInstr(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset)
 {
     assert(offset < bytesLen); // GCOV_EXCL_LINE — ran off the end of the buffer; malformed input
     (void)bytesLen;            // only consulted by the assert above outside debug builds
@@ -151,7 +146,7 @@ DecodedInstr decodeInstr(const uint8_t *bytes, uint32_t bytesLen, uint32_t offse
     if(code >= EXT_OPCODE_BASE)
     {
         instr.op = Op::EXT;
-        uint32_t len = extDecodeLength(bytes, bytesLen, offset, instr.extDecl, ext);
+        uint32_t len = extDecodeLength(bytes, bytesLen, offset, instr.extDecl);
         assert(len >= 1); // GCOV_EXCL_LINE — unreachable: the walk already accepted this byte
         return {instr, offset + len};
     }

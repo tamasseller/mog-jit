@@ -14,7 +14,7 @@ g++ -std=c++17 -O1 -g \
     -I ../src/compiler -I ../src/runtime \
     repro.cpp \
     harness.cpp \
-    ../src/compiler/{ext,window,accstate,assembler,arithmetic,shape,abi_strategy,decode_instr,proc_scan,translate_proc,translate_data_flow,translate_control_flow}.cpp \
+    ../src/compiler/{ext,ext_default,window,accstate,assembler,arithmetic,shape,abi_strategy,decode_instr,proc_scan,translate_proc,translate_data_flow,translate_control_flow}.cpp \
     ../src/runtime/runtime.cpp \
     -o repro_driver
 

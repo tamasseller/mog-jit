@@ -7,6 +7,7 @@
 #include "Test.h"
 #include "translate_proc.h"
 #include "ext.h"
+#include "ext_stub.h"
 #include "encode_instr.h"
 #include "armv6.h"
 #include "registers.h"
@@ -110,7 +111,6 @@ public:
         }
     }
     Runtime &runtime() { return *reinterpret_cast<Runtime *>(bytes); }
-    void setExtension(const ExtHooks *e) { runtime().ext = e; }
 
     // Reserves cap bytes of low, dereferenceable memory for procedure
     // idx's own body, pins it as that slot's bodyPtr, and hands back the
@@ -1535,8 +1535,8 @@ void cHelperEmit(jitc::Assembler &a, const ExtSite &site)
     jitc::extEmitCHelperCall(a, site, FAKE_HELPER_ADDR);
 }
 
-const ExtHooks EXT_RAW_HELPER = {jitc::EXT_ABI_VERSION, helperDecode, rawHelperEmit, 0};
-const ExtHooks EXT_C_HELPER = {jitc::EXT_ABI_VERSION, helperDecode, cHelperEmit, EXT_THUNK_STACK_BYTES};
+const ExtStub EXT_RAW_HELPER = {helperDecode, rawHelperEmit, 0};
+const ExtStub EXT_C_HELPER = {helperDecode, cHelperEmit, EXT_THUNK_STACK_BYTES};
 
 // True iff `needle` appears anywhere in the first `n` halfwords of `buf`.
 bool containsSeq(const uint16_t *buf, uint32_t n, const uint16_t *needle, uint32_t len)
@@ -1550,8 +1550,8 @@ bool containsSeq(const uint16_t *buf, uint32_t n, const uint16_t *needle, uint32
     return false;
 }
 
-const ExtHooks EXT_CAPTURE = {jitc::EXT_ABI_VERSION, twoPopDecode, captureEmit};
-const ExtHooks EXT_OVERRUN = {jitc::EXT_ABI_VERSION, twoPopDecode, overrunEmit};
+const ExtStub EXT_CAPTURE = {twoPopDecode, captureEmit};
+const ExtStub EXT_OVERRUN = {twoPopDecode, overrunEmit};
 
 
 // PUSH PUSH <0x80> RETURN, hand-spliced: encodeBody takes Instr[], which
@@ -1572,7 +1572,7 @@ TEST(AnExtensionOpIsStagedIntoR1R2AndEmitsThroughTheAssembler)
     FakeRuntime<1> rt(/*arenaBytes=*/128);
     uint8_t *raw = rt.bodyBuf(0, 32);
     rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/false);
-    rt.setExtension(&EXT_CAPTURE);
+    ExtScope extScope(&EXT_CAPTURE);
     translateProc(0, rt.runtime(), LRU_TICK);
 
     CHECK(g_seen.called);
@@ -1597,7 +1597,7 @@ TEST(AnExtensionOpOverrunningItsDeclaredBudgetIsReported)
     FakeRuntime<1> rt(/*arenaBytes=*/128);
     uint8_t *raw = rt.bodyBuf(0, 32);
     rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/false);
-    rt.setExtension(&EXT_OVERRUN);
+    ExtScope extScope(&EXT_OVERRUN);
 
     EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_EXT_UNSUPPORTED, translateProc(0, rt.runtime(), LRU_TICK));
 }
@@ -1607,7 +1607,7 @@ TEST(ARawHelperReachIsAPooledAddressAndABlx)
     FakeRuntime<1> rt(/*arenaBytes=*/256);
     uint8_t *raw = rt.bodyBuf(0, 32);
     rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/true);
-    rt.setExtension(&EXT_RAW_HELPER);
+    ExtScope extScope(&EXT_RAW_HELPER);
     uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
 
     // No r10 vector detour: the address comes from the literal pool, so the
@@ -1632,7 +1632,7 @@ TEST(ACHelperReachGoesThroughTheThunkWithTheTargetInR12)
     FakeRuntime<1> rt(/*arenaBytes=*/256);
     uint8_t *raw = rt.bodyBuf(0, 32);
     rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/true);
-    rt.setExtension(&EXT_C_HELPER);
+    ExtScope extScope(&EXT_C_HELPER);
     uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
 
     // Target parked in r12/ip — the AAPCS scratch register, so r0-r3 stay

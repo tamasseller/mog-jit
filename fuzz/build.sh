@@ -18,6 +18,7 @@ g++ -std=c++17 -O1 -g \
     harness.cpp \
     ../src/compiler/window.cpp \
     ../src/compiler/ext.cpp \
+    ../src/compiler/ext_default.cpp \
     ../src/compiler/accstate.cpp \
     ../src/compiler/assembler.cpp \
     ../src/compiler/arithmetic.cpp \

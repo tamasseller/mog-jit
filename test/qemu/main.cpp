@@ -38,7 +38,7 @@ static ProgramResult enterProgramWithSharedArena(
     const uint8_t *programBytes, uint32_t programSize, uint32_t arenaSize)
 {
     return enterProgramSplit(args, argCount, programBytes, programSize,
-        /*extension=*/nullptr, (uint32_t)(uintptr_t)sharedArena, arenaSize, stackLimitAboveBss(), /*interruptReserve=*/0);
+        (uint32_t)(uintptr_t)sharedArena, arenaSize, stackLimitAboveBss(), /*interruptReserve=*/0);
 }
 
 static uint32_t makeProgram(uint32_t maxCallDepth, uint32_t totalDepth, const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCap)
@@ -63,7 +63,10 @@ TEST(HandTranscribedFixturesMatchExpectedResults)
         uint32_t argv[fx.program->entryArgCount];
         if(fx.args != nullptr)
         {
-            memcpy(argv, fx.args, sizeof(argv));
+            for(uint32_t i = 0; i < fx.program->entryArgCount; i++)
+            {
+                argv[i] = fx.args[i];
+            }
         }
         else if(fx.program->entryArgCount != 0)
         {
@@ -103,7 +106,7 @@ TEST(OnStackGenerousSucceeds)
     uint32_t len = makeProgram(/*maxCallDepth=*/1, /*totalDepth=*/1, procs, 2, bytes, sizeof(bytes));
 
     uint32_t stackLimit = stackLimitAboveBss();
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, /*extension=*/nullptr, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -125,7 +128,7 @@ TEST(SplitThreeDeepCallChainSucceeds)
     static uint8_t arena[GENEROUS_ARENA];
     uint32_t stackLimit = stackLimitAboveBss();
     ProgramResult r = enterProgramSplit(nullptr, 0, bytes, len,
-        /*extension=*/nullptr, (uint32_t)(uintptr_t)arena, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+        (uint32_t)(uintptr_t)arena, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -144,7 +147,7 @@ TEST(OnStackRejectsBeforeTouchingAnything)
     uint32_t len = makeProgram(/*maxCallDepth=*/1, /*totalDepth=*/1, procs, 2, bytes, sizeof(bytes));
 
     uint32_t stackLimit = currentSp(); // measured before this callee's own prologue — strictly higher than sp once inside it
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, /*extension=*/nullptr, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -161,7 +164,7 @@ TEST(OnStackRejectsBeforeTouchingAnything)
 TEST(AProgramWithNoProceduresIsRejected)
 {
     const uint8_t bytes[] = {0x00, 0x00, 0x00};
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, sizeof(bytes), /*extension=*/nullptr, GENEROUS_ARENA, 0, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, sizeof(bytes), GENEROUS_ARENA, 0, /*interruptReserve=*/0);
 
     CHECK(r.trapped);
     CHECK(r.value == RESOURCE_PROGRAM_NO_PROCS);
@@ -170,7 +173,7 @@ TEST(AProgramWithNoProceduresIsRejected)
 TEST(AnExtensionRangeOpcodeIsRejectedOnHardware)
 {
     const uint8_t bytes[] = {0x01, 0x01, 0x01, 0x00, 0x80};
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, sizeof(bytes), /*extension=*/nullptr, GENEROUS_ARENA, 0, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, sizeof(bytes), GENEROUS_ARENA, 0, /*interruptReserve=*/0);
 
     CHECK(r.trapped);
     CHECK(r.value == RESOURCE_PROGRAM_EXT_UNKNOWN);
@@ -481,7 +484,7 @@ TEST(OnStackAcceptsAtComputedBudgetBoundary)
     uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + GENEROUS_ARENA;
     uint32_t stackLimit = currentSp() - needed - BOUNDARY_SLACK;
 
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, /*extension=*/nullptr, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -509,7 +512,7 @@ TEST(OnStackRejectsJustAboveComputedBudget)
     uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + GENEROUS_ARENA;
     uint32_t stackLimit = currentSp() - needed + BOUNDARY_SLACK;
 
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, /*extension=*/nullptr, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -570,7 +573,7 @@ TEST(OnStackSucceedsWithBothArenaAndStackBudgetTight)
     uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + tightArena;
     uint32_t stackLimit = currentSp() - needed - TIGHT_TEST_SLACK;
 
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, /*extension=*/nullptr, tightArena, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, tightArena, stackLimit, /*interruptReserve=*/0);
 
     if(r.trapped)
     {
@@ -579,6 +582,11 @@ TEST(OnStackSucceedsWithBothArenaAndStackBudgetTight)
     CHECK(!r.trapped);
     CHECK(r.value == 106);
 }
+
+/* This image is its own integrator: the strong definition overrides
+ * ext_default.cpp's weak one, which is how an extension binds. */
+static uint32_t g_extHelperStackBytes = 0;
+extern "C" uint32_t extHelperStackBytes() { return g_extHelperStackBytes; }
 
 TEST(AnExtensionsDeclaredHelperStackIsAddedToTheUpFrontBudget)
 {
@@ -599,8 +607,7 @@ TEST(AnExtensionsDeclaredHelperStackIsAddedToTheUpFrontBudget)
     uint32_t needed = requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + GENEROUS_ARENA;
     uint32_t stackLimit = currentSp() - needed - BOUNDARY_SLACK;
 
-    ProgramResult without = enterProgramOnStack(nullptr, 0, bytes, len, /*extension=*/nullptr,
-        GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult without = enterProgramOnStack(nullptr, 0, bytes, len, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
     if(without.trapped)
     {
         writeHexTrap(without.value);
@@ -609,9 +616,10 @@ TEST(AnExtensionsDeclaredHelperStackIsAddedToTheUpFrontBudget)
     CHECK(without.value == 37);
 
     // Declaring more than the slack that just made it fit must tip it over.
-    static const ExtHooks HUNGRY = {EXT_ABI_VERSION, nullptr, nullptr, BOUNDARY_SLACK * 2};
-    ProgramResult with = enterProgramOnStack(nullptr, 0, bytes, len, &HUNGRY,
+    g_extHelperStackBytes = BOUNDARY_SLACK * 2;
+    ProgramResult with = enterProgramOnStack(nullptr, 0, bytes, len,
         GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    g_extHelperStackBytes = 0;
     CHECK(with.trapped);
     CHECK(with.value == RESOURCE_EXHAUSTED_STACK_BUDGET);
 }

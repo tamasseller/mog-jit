@@ -29,7 +29,7 @@ struct ScanFrame
     uint32_t remaining; // Case only
 };
 
-static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool &needsLRSave, ScanFrame *frame, uint32_t stackFloor, const ExtHooks *ext, bool &stop, bool &foundEnd, uint32_t &failCode)
+static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool &needsLRSave, ScanFrame *frame, uint32_t stackFloor, bool &stop, bool &foundEnd, uint32_t &failCode)
 {
     register uint32_t sp asm("sp");
     if(sp < SCAN_STACK_MARGIN || sp - SCAN_STACK_MARGIN < stackFloor)
@@ -51,7 +51,7 @@ static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool
             }
 
             uint32_t decl = 0;
-            if(extDecodeLength(bytes, maxBytes, pc, decl, ext) == 0)
+            if(extDecodeLength(bytes, maxBytes, pc, decl) == 0)
             {
                 stop = true;
                 failCode = RESOURCE_PROGRAM_EXT_UNKNOWN;
@@ -66,7 +66,7 @@ static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool
             }
         }
 
-        DecodedInstr d = decodeInstr(bytes, maxBytes, pc, ext);
+        DecodedInstr d = decodeInstr(bytes, maxBytes, pc);
         if(triggersLRSave(d.instr))
         {
             needsLRSave = true;
@@ -76,14 +76,14 @@ static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool
         if(d.instr.op == Op::BR_TABLE)
         {
             ScanFrame inner{ScanFrameKind::Case, (uint32_t)d.instr.imm};
-            scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, ext, stop, foundEnd, failCode);
+            scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, stop, foundEnd, failCode);
             if(stop) return;
             continue;
         }
         if(d.instr.op == Op::LOOP)
         {
             ScanFrame inner{ScanFrameKind::LoopCond, 0};
-            scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, ext, stop, foundEnd, failCode);
+            scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, stop, foundEnd, failCode);
             if(stop) return;
             continue;
         }
@@ -129,7 +129,7 @@ static void scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool
     }
 }
 
-BodyScanResult scanProcBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t startOffset, const ExtHooks *ext, uint32_t stackFloor)
+BodyScanResult scanProcBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t startOffset, uint32_t stackFloor)
 {
     uint32_t pc = startOffset;
     bool needsLRSave = false;
@@ -137,7 +137,7 @@ BodyScanResult scanProcBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t st
     bool foundEnd = false;
     uint32_t failCode = 0;
 
-    scanBody(bytes, maxBytes, pc, needsLRSave, nullptr, stackFloor, ext, stop, foundEnd, failCode);
+    scanBody(bytes, maxBytes, pc, needsLRSave, nullptr, stackFloor, stop, foundEnd, failCode);
 
     if(!foundEnd && failCode == 0)
     {

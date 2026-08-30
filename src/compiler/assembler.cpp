@@ -19,20 +19,27 @@ static uint32_t roundUpToWord(uint32_t v)
 
 Assembler::Assembler(Runtime &rt, uint32_t lruTick): buf((uint16_t *)(uintptr_t)rt.getArenaCursor()), runtime(rt), lruTick(lruTick) {}
 
-uint32_t Assembler::emit(uint16_t word)
+uint32_t Assembler::doEmit(uint16_t word)
 {
     uint32_t at = pc();
 
     this->buf = this->runtime.ensureSpace(buf + count, lruTick);
-    
+
     if(buf)
     {
         buf[count++] = word;
+    }
 
-        if(!suppressPoolCheck)
-        {
-            ensurePoolRoom(0);
-        }
+    return at;
+}
+
+uint32_t Assembler::emit(uint16_t word)
+{
+    uint32_t at = doEmit(word);
+
+    if(buf && !suppressPoolCheck)
+    {
+        ensurePoolRoom(0);
     }
 
     return at;
@@ -242,17 +249,15 @@ void Assembler::flushPool(bool emitGuard)
         return;
     }
 
-    AtomicScope atomic(*this);
-
     uint32_t branchSite = 0;
     if(emitGuard)
     {
-        branchSite = placeholderBranch();
+        branchSite = doEmit(ArmV6M::b(ArmV6M::Ioff<1, 11>(0)));
     }
 
     if(pc() % 4 != 0)
     {
-        emit(ArmV6M::nop());
+        doEmit(ArmV6M::nop());
     }
 
     for(uint32_t i = 0; i < pendingCount; i++)
@@ -273,8 +278,8 @@ void Assembler::flushPool(bool emitGuard)
         }
 
         uint32_t word = pc();
-        emit((uint16_t)(pendingValues[i] & 0xffff));
-        emit((uint16_t)(pendingValues[i] >> 16));
+        doEmit((uint16_t)(pendingValues[i] & 0xffff));
+        doEmit((uint16_t)(pendingValues[i] >> 16));
         patchPoolSite(pendingSites[i], word);
 
         for(uint32_t j = i + 1; j < pendingCount; j++)
