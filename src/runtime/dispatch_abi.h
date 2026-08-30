@@ -28,6 +28,6 @@ extern uint64_t enterDispatch(void* dispatchTable, Runtime *runtime, const Entry
 
 #define ENTER_PROGRAM_CORE_FRAME_BYTES 88
 
-#define TRANSLATOR_ENTRY_WORST_CASE_BYTES (28 + 200 + 120 + 96)
+#define TRANSLATOR_ENTRY_WORST_CASE_BYTES (24 + 224 + 16 + 16 + 16 + 76)
 
 #endif /* JIT_ARMV6M_RUNTIME_DISPATCH_ABI_H_ */

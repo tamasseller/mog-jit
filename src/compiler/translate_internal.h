@@ -29,8 +29,6 @@ struct Ctx
 
     Ctx(Runtime& r, uint32_t procIdx, uint32_t lruTick);
 
-    bool checkStackFloor();
-
     void localJumpCleanup(uint32_t tos);
     void handleGlobalJump(Instr term, uint32_t tos);
 

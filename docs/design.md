@@ -1473,12 +1473,12 @@ full chain) — `translateLoop`/`translateIfThen`/`translateIfThenElse`/
 `translateProc`/`processNonTerminators` at `-Os` and don't appear as
 separate frames to budget.
 
-`test/qemu/Makefile`'s `stack-usage-check` target (`check_stack_usage.py`)
-verifies every function on both the fixed one-time chain and the
-recursive cluster against checked-in expected byte counts on every build,
-failing on drift in either direction — including a value that's silently
-gotten *smaller* than expected, which is exactly how
-`TRANSLATOR_ENTRY_WORST_CASE_BYTES` went stale before. A per-file
+`test/qemu/Makefile`'s `stack-usage-check` target runs `tools/stack-margin.ts`
+over GCC's `-fcallgraph-info` output: it takes a signature filter, walks the
+subgraph below every matching function, cuts recursion back-edges to give the
+per-level cost, and computes the margin from the measured frames. It rejects
+anything it cannot bound exactly — dynamic frames, dynamic objects, indirect
+calls, calls with no definition in the graph. A per-file
 `-Werror=stack-usage=512` backstops the one thing a static byte-count
 comparison can't catch on its own: an accidental unbounded `alloca`/VLA
 in a tracked function.

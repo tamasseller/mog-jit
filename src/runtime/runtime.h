@@ -72,6 +72,28 @@ public:
     ProcSlot slots[];
 
 public:
+    class DynamicStackGuard
+    {
+        DynamicStackGuard(const DynamicStackGuard&) = delete;
+        DynamicStackGuard(DynamicStackGuard&&) = delete;
+
+        void operator =(const DynamicStackGuard&) = delete;
+        void operator =(DynamicStackGuard&&) = delete;
+
+        Runtime& r;
+
+    public:
+        inline DynamicStackGuard(Runtime& r, uint32_t margin): r(r)
+        {
+            r.addStackMargin(margin);
+        }
+
+        inline ~DynamicStackGuard()
+        {
+            r.removeStackMargin();
+        }
+    };
+
     static uint32_t storageBytesFor(uint32_t procCount)
     {
         return (uint32_t)sizeof(Runtime) + (procCount + 1) * (uint32_t)sizeof(ProcSlot);
@@ -185,11 +207,6 @@ public:
         return arenaEnd - arenaCursor >= need;
     }
 
-    uint32_t liveStackFloor() const
-    {
-        return (arenaOverlapsStack && arenaCursor > stackLimit) ? arenaCursor : stackLimit;
-    }
-
     uint32_t commit(uint32_t newEnd)
     {
         assert(arenaCursor <= newEnd && newEnd <= arenaEnd);
@@ -204,6 +221,10 @@ public:
     uint32_t occupiedSizeOf(uint32_t idx) const;
     void evict(uint32_t idx, const uint16_t *end);
     uint16_t* ensureSpace(const uint16_t* end, uint32_t lruTick);
+
+private:
+    void addStackMargin(uint32_t margin);
+    void removeStackMargin();
 };
 
 static_assert(sizeof(ProcSlot) == DISPATCH_SENTINEL_OFFSET,

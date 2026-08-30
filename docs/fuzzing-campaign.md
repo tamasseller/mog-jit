@@ -710,3 +710,92 @@ Finding 5's resolution reaches further than the rest, being a spec change:
 `binops.cpp`, `test_binops.cpp`, and
 `target-js/test/binary-op-codegen.runtime.test.ts`, whose differential
 matrix fed shift amounts of 32 and above straight into `evalBinary`.
+
+---
+
+# Second campaign — after the runtime restructuring
+
+Run against the tree as of the `src/` restructuring, whose runtime changes
+the first campaign never saw: `enterDispatch`'s argument reorder and its
+`ldmia`-based entry-argument marshalling, `trapHelper`'s rewrite, `savedSp`
+moved into the sentinel slot's tail, `compile_proc.cpp` deleted in favour of
+`runtime.S` calling `translateProc` directly, `REALIGN_ENTER` reworked, and
+the `blocks.cpp` split into `translate_control_flow.cpp`/
+`translate_data_flow.cpp`.
+
+## Scale
+
+| | |
+|---|---|
+| Crash campaigns | 1.66M + 3.42M before the fix, 2.90M after — 7.98M executions, 987k validator-approved, **0 crashes** |
+| Seeds, on emulated ARM | 39 inputs, 37 comparable, **0 mismatches, 0 hangs** — identical before and after the fix |
+| Spilled-entry-argument sub-corpus | 363 then 1,820 programs, **all matched** |
+| Broad corpus samples | 3,000 → 2,992 compared (8 legitimate bails), then 3,000 → 2,997 (3 bails), **0 mismatches, 0 hangs** |
+
+Neither fuzz half found anything. The one finding came from the static
+side, which had stopped looking.
+
+## 1. The translator's stack margin no longer covered its own contract
+
+`check_stack_usage.py` verifies the hand-derived stack constants against
+GCC's own `-fstack-usage` output. Every function name it tracked had been
+renamed, deleted or un-inlined by the restructuring, so all four groups
+matched zero entries and the script had been reporting nothing but "matched
+ZERO" for some time. It is not part of `make test`, so nothing surfaced it.
+
+Behind that, `TRANSLATE_BODY_STACK_MARGIN` had gone from comfortable to
+insufficient. Its contract, from its own original derivation, is *one open
+level's frames plus the deepest non-recursive chain that level can still
+make below its own `checkStackFloor`*. The `translate_control_flow` /
+`translate_data_flow` split stopped the block handlers being inlined into
+one frame, so measured at `-Os`:
+
+| | old | new |
+|---|---|---|
+| recursion, check to next check | 168 | 216 |
+| deepest emission excursion below a check | — | **260** |
+| `TRANSLATE_BODY_STACK_MARGIN` | 224 | 224 |
+
+The excursion is `processUntilTerminator` 120 + `abiEmitCall` 24 +
+`materializeImm32` 24 + `Assembler::emit` 16 + `ensureSpace` 16 + `evict` 40
++ `occupiedSizeOf` 20. A nested `LOOP`/`BR_TABLE` deep enough to sit just
+above the guard's firing point, emitting a `CALL` that also triggers an
+arena eviction, would write 36 bytes below `liveStackFloor()` — into the
+code arena when `arenaOverlapsStack`. Neither fuzz half can see it: the
+corruption is silent, and it needs both conditions at once.
+
+Fixed by raising the margin to 352 and by making the script model the
+excursion, not just the recursion frames — the weaker model is why the
+margin's real contract was never enforced even before the names went stale.
+Also corrected: `TRANSLATOR_ENTRY_WORST_CASE_BYTES`, whose composition still
+named the deleted `compileProc`'s 200-byte frame (measured chain is now 372,
+not 444), the `FIXED_CHAIN_ASM_BYTES` term (28 → 24, `REALIGN_ENTER`'s worst
+case dropped from 12 to 8), and `SCAN_CLUSTER`'s `scanBody` (72 → 80, still
+inside `SCAN_STACK_MARGIN`).
+
+Raising the margin cost no practical nesting depth: every seed's outcome is
+unchanged, `deep_nesting` still bailing on the scan stack rather than the
+translator's.
+
+## Coverage added
+
+- `entry_args_spilled_trap`, `entry_args_spilled_call` — an entry procedure
+  whose arguments spill, that then traps, and one that calls on top of the
+  spill. `enterDispatch` captures `savedSp` before pushing those words, so
+  `trapHelper`'s single `mov sp, savedSp` has to subsume them. The shape
+  existed as `fixtures.cpp` fixture 47 but not as a seed, so the standing
+  `qemu_exec.ts seeds` check never covered the rewritten `.LentrySpill`.
+- A filtered sub-corpus sweep for spilled entry procedures. They are only
+  0.26% of approved programs, so a random 3,000-program sample reaches the
+  path about eight times; filtering the export for `argCount >= 5` gave 363.
+
+## Still not covered
+
+- `extThunkHelper` is never executed anywhere — no extension is registered
+  in either fuzz half, and every `test/qemu` entry passes
+  `extension=nullptr`. `test/host` only checks the emitted halfwords. Its
+  `REALIGN_ENTER` was reworked with nothing executing it. Closing this needs
+  an extension registered in the QEMU runner image, which the extension
+  mechanism's own cleanup (`docs/TODO.md`) should settle first.
+- Non-terminating programs, and `EXT` opcodes in the fuzzer — unchanged from
+  the first campaign.

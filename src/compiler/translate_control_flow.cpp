@@ -7,7 +7,14 @@ using namespace jitc;
 
 using R = ArmV6M::LoReg;
 
-static constexpr uint32_t TRANSLATE_BODY_STACK_MARGIN = 224;
+/* What one open level can still consume below its own checkStackFloor, from
+ * the real call graph (objdump edges, .su frames) rather than by eye:
+ * processUntilTerminator 120 + handleComparisonEmission 72 + emitComparison
+ * 40 + Shape::materialize 8 + materializeImm32 24 + ensurePoolRoom 8 +
+ * flushPool 48 + placeholderBranch 8 + emit 16 + ensureSpace 16 + evict 40 +
+ * occupiedSizeOf 20 = 420. One flushPool only — its AtomicScope suppresses
+ * the inner emit's own pool check. Rounded well up, not pinned. */
+static constexpr uint32_t TRANSLATE_BODY_STACK_MARGIN = 512;
 
 bool jitc::emitNarrowBranch(Assembler &a, Label &label, ArmV6M::Condition condition)
 {
@@ -28,19 +35,6 @@ bool jitc::emitWideBranch(Assembler &a, Label &label, ArmV6M::Condition conditio
 
     const auto bindOk = a.bind(fallThrough);
     assert(bindOk);
-
-    return true;
-}
-
-bool Ctx::checkStackFloor()
-{
-    register uint32_t sp asm("sp");
-
-    if(sp < TRANSLATE_BODY_STACK_MARGIN || sp - TRANSLATE_BODY_STACK_MARGIN < a.runtime.liveStackFloor())
-    {
-        runtimeBail(&a.runtime, RESOURCE_EXHAUSTED_TRANSLATOR_STACK);
-        return false;
-    }
 
     return true;
 }
@@ -88,8 +82,8 @@ void Ctx::handleGlobalJump(Instr term, uint32_t tos)
 
 uint32_t Ctx::translateIfThen(uint32_t pc, EmitBranch emitBranch)
 {
-    if(!checkStackFloor()) return -1;
-
+    Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
+    
     const auto entryTos = this->window.tos;
     const bool fused = this->hasPendingComparisonCondition;
     this->hasPendingComparisonCondition = false;
@@ -132,8 +126,7 @@ uint32_t Ctx::translateIfThen(uint32_t pc, EmitBranch emitBranch)
 
 uint32_t Ctx::translateIfThenElse(uint32_t pc, EmitBranch emitBranch)
 {
-    if(!checkStackFloor()) return -1;
-
+    Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
 
     const auto entryTos = this->window.tos;
     const bool fused = this->hasPendingComparisonCondition;
@@ -222,8 +215,7 @@ uint32_t Ctx::translateIfThenElse(uint32_t pc, EmitBranch emitBranch)
 
 uint32_t Ctx::translateSwitch(uint32_t pc, EmitBranch emitBranch, uint32_t n)
 {
-    if(!checkStackFloor()) return -1;
-
+    Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
 
     const auto entryTos = this->window.tos;
     assert(this->hasPendingComparisonCondition == false);
@@ -303,7 +295,7 @@ uint32_t Ctx::translateSwitch(uint32_t pc, EmitBranch emitBranch, uint32_t n)
 
 uint32_t Ctx::translateLoop(uint32_t pc, EmitBranch emitBranch)
 {
-    if(!checkStackFloor()) return -1;
+    Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
 
     const auto entryTos = this->window.tos;
 
@@ -375,7 +367,7 @@ uint32_t Ctx::translateLoop(uint32_t pc, EmitBranch emitBranch)
 
 bool Ctx::translateBody(EmitBranch emitBranch)
 {
-    if(!checkStackFloor()) return false;
+    Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_BODY_STACK_MARGIN);
 
     abiEmitPrologue(a, savesLR);
 

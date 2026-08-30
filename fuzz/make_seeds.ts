@@ -685,7 +685,44 @@ const entryArgs = (argCount: number): RtlProgram => ({
     }],
 })
 
+/** An entry procedure whose arguments spill, that then TRAPs. enterDispatch
+ *  captures savedSp *before* pushing those out-of-window words, so
+ *  trapHelper's single `mov sp, savedSp` has to subsume them — the shape
+ *  test/qemu/fixtures.cpp fixture 47 pins down, absent from seeds/ until
+ *  now. Distinguishes a trap from a return: the value is the trap code. */
+const entryArgsSpilledTrap: RtlProgram = {
+    procedures: [{
+        argCount: 6,
+        body: [
+            { op: "LOAD", target: 0 },
+            { op: "SHL", combo: "IMM_ACC", imm: 4 },
+            { op: "OR", combo: "REG_ACC", target: 5 },
+            { op: "TRAP", imm: 754 },
+        ],
+    }],
+}
+
+/** Spilled entry arguments *and* a nested frame on top of them: proc0's own
+ *  out-of-window words sit below everything proc1's prologue pushes, so a
+ *  return has to unwind past both without disturbing the entry spill. */
+const entryArgsSpilledCall: RtlProgram = {
+    procedures: [
+        {
+            argCount: 6,
+            body: ret([
+                { op: "LOAD", target: 0 },
+                { op: "SHL", combo: "IMM_ACC", imm: 4 },
+                { op: "OR", combo: "REG_ACC", target: 5 },
+                { op: "CALL", calleeIndex: 1 },
+            ]),
+        },
+        { argCount: 1, body: ret([{ op: "LOAD", target: 0 }, { op: "ADD", combo: "IMM_ACC", imm: 3 }]) },
+    ],
+}
+
 const authored: [string, RtlProgram][] = [
+    ["entry_args_spilled_trap", entryArgsSpilledTrap],
+    ["entry_args_spilled_call", entryArgsSpilledCall],
     ["entry_args_two", entryArgs(2)],
     ["entry_args_spilled", entryArgs(5)],
     ["entry_args_spilled_pair", entryArgs(6)],

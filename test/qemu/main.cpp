@@ -17,7 +17,7 @@ using namespace jitc;
 extern "C" uint8_t __bss_end; 
 
 static constexpr uint32_t GENEROUS_ARENA = 400;
-static constexpr uint32_t GENEROUS_SLACK = 512;
+static constexpr uint32_t GENEROUS_SLACK = 128;
 
 static uint32_t currentSp()
 {

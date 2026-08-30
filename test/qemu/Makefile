@@ -51,6 +51,13 @@ CXXFLAGS += -std=gnu++17 -fno-exceptions -fno-rtti
 
 CXXFLAGS += -fstack-usage
 
+# The same frames -fstack-usage reports, but as GCC's own callgraph: one .ci
+# per translation unit (VCG), nodes keyed by mangled name and carrying their
+# frame size, edges carrying the call site. Crucially an indirect call is not
+# silently absent — it lands as an edge to a "__indirect_call" placeholder,
+# so a new one has to be resolved deliberately rather than being missed.
+CXXFLAGS += -fcallgraph-info=su,da
+
 COMPILE_PROC_CPP_FLAGS += -Werror=stack-usage=512
 TRANSLATE_PROC_CPP_FLAGS += -Werror=stack-usage=512
 PROC_SCAN_CPP_FLAGS += -Werror=stack-usage=512
@@ -77,7 +84,9 @@ qemu-debug: $(OUTPUT)
 	qemu-system-arm -M lm3s811evb -m 8k -nographic -monitor none -s -S \
 	    -semihosting-config enable=on,target=native -kernel $(OUTPUT)
 
+STACK_MARGIN_FILTER ?= jitc::Ctx::translate
+
 stack-usage-check: $(OUTPUT)
-	python3 check_stack_usage.py $(OBJDIR)
+	../../tools/stack-margin.ts '$(STACK_MARGIN_FILTER)' $(OBJDIR)
 
 .PHONY: qemu-test qemu-debug stack-usage-check
