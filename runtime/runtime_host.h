@@ -9,7 +9,6 @@
 extern "C" {
 #endif
 
-/* compiler/src/ext.h. Incomplete is enough — only ever a pointer here. */
 struct ExtHooks;
 
 typedef struct
@@ -49,6 +48,8 @@ ProgramResult enterProgramSplit(
 
 #define DISPATCH_SENTINEL_OFFSET 16      /* dispatchBase - this = &slots[0] (the sentinel) */
 
+#define CALL_RECORD_BOOT 0xffff          /* == packRecord(-1, 0) — asserted in dispatch_abi.cpp */
+
 #define LANDING_SUCCESS 0u        /* value = the entry procedure's own result */
 #define LANDING_TRAP 1u           /* value = the bytecode TRAP's own code, at any call depth */
 #define LANDING_RESOURCE_ERROR 2u /* value = one of the RESOURCE_* codes below — nothing ran, or ran to completion */
@@ -79,8 +80,8 @@ ProgramResult enterProgramSplit(
 #define RESOURCE_LIMIT_BRANCH_RANGE 0x52453300u   /* a forward fixup resolved beyond Bcc/B reach */
 #define RESOURCE_LIMIT_LOOP_BACK_EDGE 0x52453400u /* a LOOP body outgrew B's own backward reach */
 #define RESOURCE_LIMIT_ARG_COUNT 0x52453500u      /* arg_count over ProcSlot's own field width */
-/* Unreachable: needs a body over 1MB, which neither build has room to
- * construct. A known gap. */
+#define RESOURCE_LIMIT_PROC_COUNT 0x52453700u     /* proc_count over the call record's own procIdx field */
+#define RESOURCE_LIMIT_RESUME_OFFSET 0x52453800u  /* resume offset over the call record's own field */
 #define RESOURCE_LIMIT_BODY_BYTES 0x52453600u /* body size over ProcSlot's own field width */
 
 #endif /* JIT_ARMV6M_RUNTIME_HOST_H_ */

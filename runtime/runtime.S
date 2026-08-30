@@ -208,7 +208,7 @@ enterDispatch:
     ldmia r2!, {r0, r4, r5, r6, r7} // EntryArgs::acc, EntryArgs::window
 
     // Parameters for call helper, callee: #0, return to #-1 @ offset 0
-    ldr   r1, =0xffff
+    ldr   r1, =CALL_RECORD_BOOT
     movs  r2, #0
     b     callHelper
 

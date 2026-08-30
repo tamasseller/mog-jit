@@ -1,5 +1,5 @@
-#ifndef JIT_ARMV6M_COMPILER_PROC_H_
-#define JIT_ARMV6M_COMPILER_PROC_H_
+#ifndef JIT_ARMV6M_TEST_QEMU_PROC_H_
+#define JIT_ARMV6M_TEST_QEMU_PROC_H_
 
 #include <cstdint>
 
@@ -15,4 +15,4 @@ struct Proc
 
 } // namespace jitc
 
-#endif // JIT_ARMV6M_COMPILER_PROC_H_
+#endif // JIT_ARMV6M_TEST_QEMU_PROC_H_

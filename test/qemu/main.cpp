@@ -4,6 +4,7 @@
 #include "ext.h"
 #include "instr.h"
 #include "encode_instr.h"
+#include "proc.h"
 #include "translate_proc.h"
 #include "runtime.h" 
 #include "dispatch_abi.h"

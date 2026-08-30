@@ -18,7 +18,7 @@ SOURCES += test_enter_program.cpp
 # Test support
 SOURCES += main.cpp
 SOURCES += host_runtime_support.cpp
-SOURCES += ../../compiler/src/encode_instr.cpp
+SOURCES += ../encode_instr.cpp
 
 # The compiler itself (armv6.h is header-only — test_armv6_encoding.cpp
 # reaches it straight off INCLUDE_DIRS, no extra .cpp to compile)
@@ -47,6 +47,7 @@ SOURCES += ../../vendor/1test/TestRunner.cpp
 SOURCES += ../../vendor/1test/PrintfOutput.cpp
 
 INCLUDE_DIRS += ../../compiler/src   # jitc:: headers, armv6.h
+INCLUDE_DIRS += ..                    # encode_instr.h
 INCLUDE_DIRS += ../../runtime         # runtime.h / runtime_host.h
 INCLUDE_DIRS += ../../vendor/1test
 

@@ -12,7 +12,7 @@ cd "$(dirname "$0")"
 g++ -std=c++17 -O1 \
     -I ../compiler/src -I ../test \
     dump_seeds.cpp \
-    ../compiler/src/encode_instr.cpp \
+    ../test/encode_instr.cpp \
     -o dump_seeds
 
 mkdir -p seeds_raw

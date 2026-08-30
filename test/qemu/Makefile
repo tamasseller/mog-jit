@@ -21,7 +21,7 @@ SOURCES += ../../compiler/src/translate_proc.cpp
 SOURCES += ../../compiler/src/translate_data_flow.cpp
 SOURCES += ../../compiler/src/translate_control_flow.cpp
 
-SOURCES += ../../compiler/src/encode_instr.cpp
+SOURCES += ../encode_instr.cpp
 SOURCES += fixtures.cpp
 SOURCES += smoke_test.cpp
 SOURCES += stack_paint.cpp
@@ -34,7 +34,7 @@ SOURCES += ../../vendor/1test/TestRunner.cpp
 INCLUDE_DIRS += ../../compiler/src   # jitc:: headers, armv6.h
 INCLUDE_DIRS += ../../runtime         # runtime_host.h / runtime.h
 INCLUDE_DIRS += .                      # fixtures.h / semihosting_output.h
-INCLUDE_DIRS += ..                      # corpus_programs.h, shared with test/tools/dump_corpus.cpp
+INCLUDE_DIRS += ..                      # corpus_programs.h, encode_instr.h
 INCLUDE_DIRS += ../../vendor/1test      # Test.h
 
 CC  = arm-none-eabi-gcc

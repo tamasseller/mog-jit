@@ -1,19 +1,24 @@
 #include "dispatch_abi.h"
+#include "registers.h"
+#include "abi_strategy.h"
 
 extern const uint32_t trampolineAddr = (uint32_t)(uintptr_t)translatorTrampoline;
 
-extern const uint32_t helperVec[10] = {
-    (uint32_t)(uintptr_t)callHelper,
-    (uint32_t)(uintptr_t)returnHelperFromLr,
-    (uint32_t)(uintptr_t)returnHelperFromStack,
-    (uint32_t)(uintptr_t)returnHelperTail,
-    (uint32_t)(uintptr_t)clzHelper,
-    (uint32_t)(uintptr_t)revbitsHelper,
-    (uint32_t)(uintptr_t)brTableJumpHelper,
-    (uint32_t)(uintptr_t)returnHelperFromStackReclaim,
-    (uint32_t)(uintptr_t)trapHelper,
-    (uint32_t)(uintptr_t)extThunkHelper,
+extern "C" const HelperVec helperVec = {
+    .call                   = (uint32_t)(uintptr_t)callHelper,
+    .returnFromLr           = (uint32_t)(uintptr_t)returnHelperFromLr,
+    .returnFromStack        = (uint32_t)(uintptr_t)returnHelperFromStack,
+    .returnTail             = (uint32_t)(uintptr_t)returnHelperTail,
+    .clz                    = (uint32_t)(uintptr_t)clzHelper,
+    .revbits                = (uint32_t)(uintptr_t)revbitsHelper,
+    .brTableJump            = (uint32_t)(uintptr_t)brTableJumpHelper,
+    .returnFromStackReclaim = (uint32_t)(uintptr_t)returnHelperFromStackReclaim,
+    .trap                   = (uint32_t)(uintptr_t)trapHelper,
+    .extThunk               = (uint32_t)(uintptr_t)extThunkHelper,
 };
+
+static_assert(jitc::packRecord((uint32_t)-1, 0) == CALL_RECORD_BOOT,
+    "runtime.S's own boot record must be what packRecord would have produced");
 
 extern "C" void runtimeBail(Runtime *runtime, uint32_t trapCode)
 {

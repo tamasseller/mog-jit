@@ -17,7 +17,13 @@ void emitPrologueStub(Assembler &a);
 
 void abiEmitPrologue(Assembler &a, bool savesLR);
 
-uint32_t packRecord(uint32_t procIdx, uint32_t offsetPlus1);
+constexpr uint32_t MAX_PROC_IDX = 0x7fffu;
+constexpr uint32_t MAX_RESUME_OFFSET = 0xffffu;
+
+constexpr uint32_t packRecord(uint32_t procIdx, uint32_t offsetPlus1)
+{
+    return (procIdx & 0xffffu) | (offsetPlus1 << 16);
+}
 
 void abiEmitCall(Assembler &a, uint32_t procIdx, uint32_t calleeIndex);
 

@@ -1,5 +1,6 @@
 #include "abi_strategy.h"
 #include "assembler.h"
+#include "runtime.h"
 #include "registers.h"
 #include "armv6.h"
 
@@ -26,11 +27,6 @@ void abiEmitPrologue(Assembler &a, bool savesLR)
     }
 }
 
-uint32_t packRecord(uint32_t procIdx, uint32_t offsetPlus1)
-{
-    return (procIdx & 0xffffu) | (offsetPlus1 << 16);
-}
-
 static constexpr uint32_t CALL_SEQUENCE_HALFWORDS = 1 /*record*/ + 1 /*calleeIndex*/ + 3 /*movHi + ldr(callHelper) + bx*/;
 static constexpr uint32_t CALL_SEQUENCE_BYTES = CALL_SEQUENCE_HALFWORDS * 2;
 
@@ -39,6 +35,10 @@ void abiEmitCall(Assembler &a, uint32_t procIdx, uint32_t calleeIndex)
     uint32_t preCallPc = a.pc();
 
     uint32_t k = (preCallPc - STUB_SIZE) + CALL_SEQUENCE_HALFWORDS * 2;
+    if(k + 1 > MAX_RESUME_OFFSET)
+    {
+        runtimeBail(&a.runtime, RESOURCE_LIMIT_RESUME_OFFSET); // GCOV_EXCL_LINE — see the code's own note
+    }
     uint32_t record = packRecord(procIdx, k + 1);
 
     Assembler::AtomicBlock atomic(a, /*poolEntries=*/2);

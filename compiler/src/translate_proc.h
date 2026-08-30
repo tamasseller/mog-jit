@@ -9,7 +9,6 @@
 #define JIT_ARMV6M_COMPILER_TRANSLATE_PROC_H_
 
 #include <cstdint>
-#include "proc.h"
 #include "assembler.h"
 
 extern "C" uint32_t translateProc(uint32_t procIdx, Runtime& r, uint32_t lruTick);

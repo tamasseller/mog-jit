@@ -9,6 +9,7 @@
 #include "proc_scan.h"
 #include "ext.h"
 #include "decode_instr.h"
+#include "abi_strategy.h"
 
 class Runtime;
 
@@ -101,6 +102,11 @@ public:
         if(this->ext != nullptr && this->ext->abiVersion != jitc::EXT_ABI_VERSION)
         {
             return RESOURCE_PROGRAM_EXT_ABI;
+        }
+
+        if(procCount > jitc::MAX_PROC_IDX + 1)
+        {
+            return RESOURCE_LIMIT_PROC_COUNT;
         }
 
         uint32_t pos = bodyOffset;
@@ -211,6 +217,7 @@ constexpr uint32_t RESOURCE_CODES[] = {
     RESOURCE_LIMIT_WINDOW_RECLAIM, RESOURCE_LIMIT_SPILL_OFFSET,
     RESOURCE_LIMIT_BRANCH_RANGE, RESOURCE_LIMIT_LOOP_BACK_EDGE,
     RESOURCE_LIMIT_ARG_COUNT, RESOURCE_LIMIT_BODY_BYTES,
+    RESOURCE_LIMIT_PROC_COUNT, RESOURCE_LIMIT_RESUME_OFFSET,
 };
 
 constexpr bool resourceCodesDistinct()

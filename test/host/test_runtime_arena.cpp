@@ -187,6 +187,39 @@ TEST(WalkReportsAnArgCountPastProcSlotsOwnFieldWidth)
     CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == RESOURCE_LIMIT_ARG_COUNT);
 }
 
+TEST(WalkReportsAProcCountPastTheCallRecordsOwnProcIdxField)
+{
+    // Rejected before the walk touches a single body, so the header alone is
+    // enough — a program that really had this many procedures could not be
+    // built here.
+    uint8_t programBytes[] = {0x00};
+
+    alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
+    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
+
+    runtime->init(jitc::MAX_PROC_IDX + 2, ARENA_BASE, ARENA_SIZE, 0, 0);
+    CHECK(runtime->loadProgram(programBytes, sizeof(programBytes), 0) == RESOURCE_LIMIT_PROC_COUNT);
+}
+
+TEST(WalkAcceptsTheLargestProcCountTheCallRecordCanStillAddress)
+{
+    const Instr body[] = {bare(Op::RETURN)};
+    ProcSource procs[] = {ProcSource{0, body, 1}};
+    uint8_t programBytes[16];
+    uint32_t len = encodeProgram(procs, 1, programBytes, sizeof(programBytes));
+    uint32_t bodyOffset;
+    decodeLeb128(programBytes, 0, bodyOffset);
+
+    alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
+    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
+
+    // The boundary itself is not the rejection — one procedure walked under a
+    // procCount at the ceiling still has to pass.
+    runtime->init(1, ARENA_BASE, ARENA_SIZE, 0, 0);
+    CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == 0);
+    CHECK(jitc::MAX_PROC_IDX + 1 == 0x8000u);
+}
+
 TEST(WalkReportsAnUnknownOpcodeAsADeploymentMismatch)
 {
     uint8_t programBytes[] = {0x01, 0x00, 0x80}; // proc_count=1, arg_count=0, body=[EXT 0x80]

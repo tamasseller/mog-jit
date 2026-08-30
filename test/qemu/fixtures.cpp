@@ -559,7 +559,7 @@ static Program f40Prog;
 // total (26 small envelopes + every fixture body combined measures well
 // under 2.5KB) — an overrun here is a fixture-authoring bug, never a
 // runtime condition, exactly like encodeInstr's own assert-and-move-on
-// (putByte, compiler/src/encode_instr.cpp), which is what would actually
+// (putByte, test/encode_instr.cpp), which is what would actually
 // catch it on a host build; the QEMU build's own -DNDEBUG strips that, so
 // keep this margin real rather than tight.
 static constexpr uint32_t SCRATCH_CAPACITY = 3072;
