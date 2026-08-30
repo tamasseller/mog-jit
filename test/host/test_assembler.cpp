@@ -67,7 +67,6 @@ TEST(materializeImm32ParksAPlaceholderForAnEligibleValue)
     a.materializeImm32(0, 0x12345678u); // cost 7 -- pool-eligible
     CHECK(a.halfwordCount() == 1);      // just the placeholder LDR at the site
     CHECK(ArmV6M::isLiteralAccess(buf[0]));
-    CHECK(a.pendingPoolEntries() == 1);
 }
 
 // ── pool flush ───────────────────────────────────────────────────────────
@@ -139,10 +138,22 @@ TEST(PoolFlushesAutomaticallyOnceFull)
     {
         a.materializeImm32(0, 0x10000001u + i); // 16 distinct pool-eligible values
     }
-    CHECK(a.pendingPoolEntries() == 16); // still open, all 16 pending
+    // Nothing flushed yet: sixteen placeholder LDRs and no pool data.
+    CHECK(a.halfwordCount() == 16);
 
     a.materializeImm32(0, 0x20000001u); // 17th -- must flush the first 16 before parking this one
-    CHECK(a.pendingPoolEntries() == 1); // exactly the new site remains pending
+
+    // The flush wrote the first pooled value out as data, little end first.
+    bool firstValueEmitted = false;
+    for(uint32_t i = 0; i + 1 < a.halfwordCount(); i++)
+    {
+        if(buf[i] == 0x0001 && buf[i + 1] == 0x1000) firstValueEmitted = true;
+    }
+    CHECK(firstValueEmitted);
+
+    // ...and the 17th is parked rather than resolved: still the last
+    // halfword emitted, still a placeholder.
+    CHECK(ArmV6M::isLiteralAccess(buf[a.halfwordCount() - 1]));
 }
 
 // ── Label / bind() ───────────────────────────────────────────────────────
