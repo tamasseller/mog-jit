@@ -70,13 +70,14 @@ static uint32_t codeLimitFor(uint32_t needed, uint32_t stackLimit)
     return (sp - needed) >= stackLimit ? sp - needed : 0;
 }
 
-ProgramResult Executor::run(const uint8_t *programBytes, uint32_t programSize, uint32_t *args, uint32_t argCount) const
+ProgramResult Executor::run(const uint8_t *programBytes, uint32_t programSize, uint32_t *args, uint32_t argCount)
 {
     ProgramHeader hdr = parseProgramHeader(programBytes, programSize);
     uint32_t operandStackBytes = hdr.totalDepth * 4;
 
     const uint32_t codeLimit = codeLimitFor(
-        requiredStackBytes(hdr.procCount, operandStackBytes, hdr.maxCallDepth, interruptReserve), stackLimit);
+        requiredStackBytes(hdr.procCount, operandStackBytes, hdr.maxCallDepth, arena.getInterruptReserve()),
+        arena.getStackLimit());
 
     if(codeLimit == 0)
     {
@@ -88,13 +89,10 @@ ProgramResult Executor::run(const uint8_t *programBytes, uint32_t programSize, u
         return ProgramResult{ RESOURCE_PROGRAM_NO_PROCS, LANDING_RESOURCE_ERROR };
     }
 
-    /* Sharing the stack region means taking exactly what the check above just
-     * proved this excursion will not need; a region of its own is itself. */
-    const uint32_t arenaBase = arenaOverlapsStack ? stackLimit : codeArenaBase;
-    const uint32_t arenaBytes = arenaOverlapsStack ? codeLimit - stackLimit : codeArenaSize;
+    CodeArena::Excursion excursion(arena, codeLimit);
 
     alignas(Runtime) unsigned char runtimeStorage[Runtime::storageBytesFor(hdr.procCount)];
-    auto runtime = new(runtimeStorage) Runtime(hdr.procCount, arenaBase, arenaBytes, stackLimit, arenaOverlapsStack, interruptReserve);
+    auto runtime = new(runtimeStorage) Runtime(hdr.procCount, arena);
 
     if(uint32_t code = runtime->loadProgram(programBytes, programSize, hdr.bodyOffset))
     {
@@ -119,23 +117,4 @@ ProgramResult Executor::run(const uint8_t *programBytes, uint32_t programSize, u
 
     uint64_t packed = enterDispatch(&runtime->slot(0), runtime, &entryArgs);
     return ProgramResult{ (uint32_t)packed, (uint32_t)(packed >> 32) };
-}
-
-extern "C" ProgramResult enterProgramOnStack(
-    uint32_t *args, uint32_t argCount,
-    const uint8_t *programBytes, uint32_t programSize,
-    uint32_t stackLimit, uint32_t interruptReserve)
-{
-    return Executor::onStack(stackLimit, interruptReserve)
-        .run(programBytes, programSize, args, argCount);
-}
-
-extern "C" ProgramResult enterProgramSplit(
-    uint32_t *args, uint32_t argCount,
-    const uint8_t *programBytes, uint32_t programSize,
-    uint32_t codeArenaBase, uint32_t codeArenaSize,
-    uint32_t stackLimit, uint32_t interruptReserve)
-{
-    return Executor::split(codeArenaBase, codeArenaSize, stackLimit, interruptReserve)
-        .run(programBytes, programSize, args, argCount);
 }

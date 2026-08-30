@@ -17,6 +17,7 @@
 #include "encode_instr.h"
 #include "translate_proc.h"
 #include "runtime.h"
+#include "executor.h"
 #include "Test.h"
 #include "semihosting_output.h"
 
@@ -141,8 +142,8 @@ TEST(DeepNestingStaysWithinStackBudget)
     uint32_t progLen = encodeJitProgram(/*maxCallDepth=*/0, /*totalDepth=*/0, procs, 1, progBytes, sizeof(progBytes));
 
     static uint8_t arena[512];
-    ProgramResult r = enterProgramSplit(nullptr, 0, progBytes, progLen,
-        (uint32_t)(uintptr_t)arena, sizeof(arena), stackLimitAboveBss(), /*interruptReserve=*/0);
+    ProgramResult r = Executor::split((uint32_t)(uintptr_t)arena, sizeof(arena), stackLimitAboveBss(), /*interruptReserve=*/0)
+        .run(progBytes, progLen, nullptr, 0);
 
     // Either outcome is healthy and worth distinguishing in the report:
     // a clean RESOURCE_ERROR proves the live checks fired before anything

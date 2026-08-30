@@ -4,7 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#include "runtime_host.h" /* ENTRY_ARGS_*_OFFSET */
 #include "window.h"       /* jitc::physReg, and WINDOW_BASE/WINDOW_SIZE via registers.h */
 
 struct EntryArgs

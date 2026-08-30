@@ -1,5 +1,5 @@
 // The hand-transcribed fixture programs main.cpp's own fixture loop drives
-// enterProgramSplit() with. Each Fixture owns one whole, already-encoded
+// Executor::split with. Each Fixture owns one whole, already-encoded
 // jit-armv6m program (the packages/machine/src/bytecode.ts envelope plus
 // an ordinary isa-core.md §5.5 body) — real wire bytes, the same shape a
 // genuine flashed image would have, built once at startup by
@@ -9,7 +9,7 @@
 
 #include <cstdint>
 
-#include "runtime_host.h" // LANDING_* — Fixture::expectLanding's own value space
+#include "dispatch_abi.h" // LANDING_* — Fixture::expectLanding's own value space
 
 // One whole encoded program (bytes + length). A plain struct rather than
 // two separate Fixture fields: fixtures[] (below) is itself a static
@@ -35,7 +35,7 @@ struct Fixture
 {
     const char *name;
     const Program *program;
-    // One of runtime_host.h's LANDING_* tags, compared exactly rather than
+    // One of dispatch_abi.h's LANDING_* tags, compared exactly rather than
     // for truthiness: a bytecode TRAP and a RESOURCE_ERROR are distinct
     // outcomes now, and a fixture that means one must not pass on the
     // other. Every plain-return row spells this `false`, which is 0 —
@@ -56,7 +56,7 @@ struct Fixture
 
 // Encodes every fixture program into its own scratch slot, since a real
 // wire blob (LEB128-encoded) isn't something an Instr[] literal can become
-// at compile time on its own. Must run before any enterProgramSplit call —
+// at compile time on its own. Must run before any Executor::run call —
 // main.cpp calls it first thing.
 void initFixtures();
 

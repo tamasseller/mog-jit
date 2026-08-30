@@ -569,13 +569,13 @@ static uint32_t scratchUsed = 0;
 // max_call_depth is 0 for every fixture here, and total_depth is the entry
 // procedure's own arg_count rather than a real whole-program figure:
 // main.cpp's fixture loop does run every one of them through
-// enterProgramSplit's own real up-front stack-budget check, but so slack an
+// Executor::run's own real up-front stack-budget check, but so slack an
 // envelope makes that check see almost no operand-stack/call-record cost,
 // leaving essentially the fixed-cost floor (Runtime/dispatch-table size,
 // ENTER_DISPATCH_FIXED_BYTES, TRANSLATOR_ENTRY_WORST_CASE_BYTES) — nowhere
 // near tight enough to reject anything real. Exercising the check against
 // real, hand-derived max_call_depth/total_depth values is what
-// enterProgramOnStack/enterProgramSplit's own dedicated scenarios in
+// Executor::onStack/Executor::split's own dedicated scenarios in
 // main.cpp are for instead.
 //
 // Not zero, though, which it used to be: enterProgramCore refuses to push a

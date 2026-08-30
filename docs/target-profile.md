@@ -154,7 +154,7 @@ well-formedness one.
 ## `TRAP` unwinds through a helper-vector slot
 
 **How a whole excursion ends.** Three ways, and `ProgramResult.trapped`
-names which by carrying one of `runtime_host.h`'s `LANDING_*` tags:
+names which by carrying one of `dispatch_abi.h`'s `LANDING_*` tags:
 
 | `trapped` | reached by | `value` |
 |---|---|---|
@@ -241,7 +241,7 @@ sized off it.
 ## The entry procedure's own arg_count
 
 Nothing above is entry-specific, and that is now true of the runtime too:
-`enterProgram*` takes the entry procedure's whole argument vector
+`Executor::run` takes the entry procedure's whole argument vector
 (`design.md` §9), so procedure 0's `arg_count` behaves exactly like any
 callee's. The `argCount <= 131` hard ceiling and
 `RESOURCE_LIMIT_WINDOW_RECLAIM` apply to it unchanged — it is the same

@@ -2,7 +2,7 @@
 .cpu cortex-m0
 .thumb
 
-#include "runtime_host.h" // RUNTIME_DISPATCH_TABLE_OFFSET / DISPATCH_SENTINEL_OFFSET / ENTRY_ARGS_*_OFFSET
+#include "dispatch_abi.h" // DISPATCH_SENTINEL_OFFSET / CALL_RECORD_BOOT / LANDING_*
 
 .thumb_func
 .global callHelper

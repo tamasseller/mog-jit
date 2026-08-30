@@ -15,11 +15,12 @@
  *  - Checked per level, after enterDispatch. The stack and the code arena
  *    share one region, and the traffic is one-way: the arena never grows past
  *    the line Executor::run validated up front, while the stack may descend
- *    into whatever of that line's ground the arena has not actually taken. A
- *    guard checks itself against the arena's real top and publishes the lowest
- *    sp it will reach, so the arena can stop short of it for as long as the
- *    stack is down there. A recursion carries its guard at the single function
- *    every one of its cycles passes through.
+ *    into whatever of that line's ground the arena has not actually taken.
+ *    Both are the same quantity — the lowest sp this excursion will reach —
+ *    so the validated line is simply the first one published, and a guard
+ *    publishes a lower one when its own level goes deeper. The arena stops
+ *    above whichever is lowest. A recursion carries its guard at the single
+ *    function every one of its cycles passes through.
  *
  * The C++ numbers are measured from GCC's own call graph by
  * tools/stack-margin.ts, not traced by hand, and test/qemu's
@@ -29,11 +30,16 @@
 
 /* --- reserved up front --------------------------------------------------- */
 
+/* What an ARMv6-M exception entry pushes on its own — the floor under any
+ * caller's interruptReserve, never a substitute for measuring the handler. */
+#define ARMV6M_EXCEPTION_FRAME_BYTES 32
+
 /* enterDispatch's own frame, from runtime.S. */
 #define ENTER_DISPATCH_FIXED_BYTES 36
 
 /* Executor::run's frame, excluding the Runtime it places (that is sized
- * separately from procCount). */
+ * separately from procCount). Hand-checked against -fstack-usage: the VLA
+ * makes the frame dynamic, which stack-margin.ts refuses to bound. */
 #define EXECUTOR_RUN_FRAME_BYTES 88
 
 /* translatorTrampoline's push {r0, r1, r2, lr} plus REALIGN_ENTER's worst
@@ -45,7 +51,7 @@
  * be reserved in full. The body scan has the same kind of unguarded prefix and
  * runs from the same frame one phase earlier, so it is gated against this
  * number too rather than reserved separately. */
-#define TRANSLATOR_ENTRY_CPP_BYTES 472
+#define TRANSLATOR_ENTRY_CPP_BYTES 488
 
 #define TRANSLATOR_ENTRY_WORST_CASE_BYTES (TRANSLATOR_ENTRY_ASM_BYTES + TRANSLATOR_ENTRY_CPP_BYTES)
 
@@ -59,7 +65,7 @@
  * Includes that function's own frame, which is already spent when its check
  * runs — the slack that buys a rule with no prologue-placement assumption.
  * Doubles as what that guard publishes as the arena's ceiling. */
-#define TRANSLATE_LEVEL_STACK_MARGIN 416
+#define TRANSLATE_LEVEL_STACK_MARGIN 432
 
 /* The same, for the pre-pass that walks a procedure body before translation.
  * GUARDED_scanBody recurses on block nesting and checks its own floor per level. */

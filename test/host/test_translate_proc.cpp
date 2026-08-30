@@ -90,11 +90,13 @@ class FakeRuntime
     alignas(8) uint8_t bytes[sizeof(Runtime) + (procCount + 1) * sizeof(ProcSlot)] = {};
     LowMemory low{1u << 20}; // 1 MiB — comfortably covers every test's own arena + bodies
     uint32_t arenaBase;
+    CodeArena arena = CodeArena::region(0, 0, /*stackLimit=*/0);
 public:
     explicit FakeRuntime(uint32_t arenaBytes = 64, uint32_t stackLimit = 0)
     {
         arenaBase = low.alloc(arenaBytes);
-        new(bytes) Runtime(procCount, arenaBase, arenaBytes, stackLimit, /*arenaOverlapsStack=*/0);
+        arena = CodeArena::region(arenaBase, arenaBytes, stackLimit);
+        new(bytes) Runtime(procCount, arena);
         // Every slot starts not-resident (Runtime::isResident() reads
         // codePtr against trampolineAddr) — left at its zero-init default
         // otherwise, growForAttached's own findEvictionVictim/evict loop

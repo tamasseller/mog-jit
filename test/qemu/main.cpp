@@ -7,6 +7,7 @@
 #include "proc.h"
 #include "translate_proc.h"
 #include "runtime.h" 
+#include "executor.h"
 #include "dispatch_abi.h"
 #include "Test.h"
 #include "semihosting_output.h"
@@ -37,8 +38,8 @@ static ProgramResult enterProgramWithSharedArena(
     uint32_t *args, uint32_t argCount,
     const uint8_t *programBytes, uint32_t programSize, uint32_t arenaSize)
 {
-    return enterProgramSplit(args, argCount, programBytes, programSize,
-        (uint32_t)(uintptr_t)sharedArena, arenaSize, stackLimitAboveBss(), /*interruptReserve=*/0);
+    return Executor::split((uint32_t)(uintptr_t)sharedArena, arenaSize, stackLimitAboveBss(), /*interruptReserve=*/0)
+        .run(programBytes, programSize, args, argCount);
 }
 
 static uint32_t makeProgram(uint32_t maxCallDepth, uint32_t totalDepth, const ProcSource *procs, uint32_t procCount, uint8_t *out, uint32_t outCap)
@@ -106,7 +107,7 @@ TEST(OnStackGenerousSucceeds)
     uint32_t len = makeProgram(/*maxCallDepth=*/1, /*totalDepth=*/1, procs, 2, bytes, sizeof(bytes));
 
     uint32_t stackLimit = stackLimitAboveBss();
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
 
     if(r.trapped)
     {
@@ -127,8 +128,8 @@ TEST(SplitThreeDeepCallChainSucceeds)
 
     static uint8_t arena[GENEROUS_ARENA];
     uint32_t stackLimit = stackLimitAboveBss();
-    ProgramResult r = enterProgramSplit(nullptr, 0, bytes, len,
-        (uint32_t)(uintptr_t)arena, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = Executor::split((uint32_t)(uintptr_t)arena, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0)
+        .run(bytes, len, nullptr, 0);
 
     if(r.trapped)
     {
@@ -147,7 +148,7 @@ TEST(OnStackRejectsBeforeTouchingAnything)
     uint32_t len = makeProgram(/*maxCallDepth=*/1, /*totalDepth=*/1, procs, 2, bytes, sizeof(bytes));
 
     uint32_t stackLimit = currentSp(); // measured before this callee's own prologue — strictly higher than sp once inside it
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
 
     if(r.trapped)
     {
@@ -164,7 +165,7 @@ TEST(OnStackRejectsBeforeTouchingAnything)
 TEST(AProgramWithNoProceduresIsRejected)
 {
     const uint8_t bytes[] = {0x00, 0x00, 0x00};
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, sizeof(bytes), 0, /*interruptReserve=*/0);
+    ProgramResult r = Executor::onStack(0, /*interruptReserve=*/0).run(bytes, sizeof(bytes), nullptr, 0);
 
     CHECK(r.trapped);
     CHECK(r.value == RESOURCE_PROGRAM_NO_PROCS);
@@ -173,7 +174,7 @@ TEST(AProgramWithNoProceduresIsRejected)
 TEST(AnExtensionRangeOpcodeIsRejectedOnHardware)
 {
     const uint8_t bytes[] = {0x01, 0x01, 0x01, 0x00, 0x80};
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, sizeof(bytes), 0, /*interruptReserve=*/0);
+    ProgramResult r = Executor::onStack(0, /*interruptReserve=*/0).run(bytes, sizeof(bytes), nullptr, 0);
 
     CHECK(r.trapped);
     CHECK(r.value == RESOURCE_PROGRAM_EXT_UNKNOWN);
@@ -184,8 +185,8 @@ static uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint
     static uint16_t scratch[128];
 
     alignas(8) uint8_t runtimeBytes[sizeof(Runtime) + (calleeCount + 1) * sizeof(ProcSlot)] = {};
-    Runtime &r = *new(runtimeBytes) Runtime(calleeCount, (uint32_t)(uintptr_t)scratch, sizeof(scratch),
-        /*stackLimit=*/0, /*arenaOverlapsStack=*/0);
+    CodeArena arena = CodeArena::region((uint32_t)(uintptr_t)scratch, sizeof(scratch), /*stackLimit=*/0);
+    Runtime &r = *new(runtimeBytes) Runtime(calleeCount, arena);
     for(uint32_t i = 0; i < calleeCount; i++)
     {
         r.slot(i).codePtr = trampolineAddr;
@@ -444,7 +445,7 @@ TEST(EvictionChurnUnderLoopedCallChain)
 // public Runtime::storageBytesFor and dispatch_abi.h constants it uses) so
 // the two boundary TESTs below can derive stackLimit from the exact
 // formula the real upfront check applies, rather than the deliberately
-// generous stackLimitAboveBss() every other enterProgramOnStack TEST here
+// generous stackLimitAboveBss() every other Executor::onStack TEST here
 // relies on. fixtures.cpp's own finishProgram comment flags this as the
 // one thing nothing here yet exercises: real, hand-derived max_call_depth/
 // total_depth values pushed right up against the computed floor.
@@ -462,11 +463,11 @@ static uint32_t requiredStackBytesFor(uint32_t procCount, uint32_t totalDepth, u
 // where this TEST measures currentSp() and where Executor::run's own
 // codeLimitFor() re-measures it a few calls deeper — large enough to
 // absorb that gap reliably, small enough (versus TRANSLATOR_ENTRY_WORST_
-// CASE_BYTES=496 alone) that the boundary is still meaningfully tight
+// CASE_BYTES=512 alone) that the boundary is still meaningfully tight
 // rather than arbitrarily generous.
 static constexpr uint32_t BOUNDARY_SLACK = 256;
 
-// enterProgramOnStack does not take an arena size — the arena is whatever
+// Executor::onStack does not take an arena size — the arena is whatever
 // sits between stackLimit and the code limit the formula above computes. So
 // what these TESTs choose is how much to leave there: enough for the compiled
 // chain plus the translator's own live per-level margin, which is checked
@@ -488,7 +489,7 @@ TEST(OnStackAcceptsAtComputedBudgetBoundary)
 
     uint32_t stackLimit = currentSp() - requiredStackBytesFor(procCount, totalDepth, maxCallDepth) - ARENA_ALLOWANCE;
 
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
 
     if(r.trapped)
     {
@@ -518,7 +519,7 @@ TEST(OnStackRejectsJustAboveComputedBudget)
     // claimed rather than merely inside the arena it would have got.
     uint32_t stackLimit = currentSp() - requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + BOUNDARY_SLACK;
 
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
 
     if(r.trapped)
     {
@@ -534,12 +535,12 @@ TEST(OnStackRejectsJustAboveComputedBudget)
 
 TEST(OnStackSucceedsWithTheArenaTrimmedToWhatTheChainNeeds)
 {
-    // Runtime::pushStackFloor() (runtime.cpp): enterProgramOnStack
+    // Runtime::pushStackFloor() (runtime.cpp): Executor::onStack
     // anchors the code arena's own base at stackLimit itself, so
     // arenaCursor advances past stackLimit as soon as even one procedure
     // compiles — at that point the translator's own live-recursion floor
     // tracks arenaCursor instead of the flat stackLimit. Every other
-    // enterProgramOnStack TEST here crosses that line incidentally (a
+    // Executor::onStack TEST here crosses that line incidentally (a
     // generous leftover just makes it harmless); this one leaves only what
     // the measured chain actually needs, so the crossing decides whether
     // this succeeds. It is also the case where arenaCeiling() is bound by
@@ -568,19 +569,11 @@ TEST(OnStackSucceedsWithTheArenaTrimmedToWhatTheChainNeeds)
     uint32_t maxCallDepth = 2, totalDepth = 2, procCount = 3;
     uint32_t len = makeProgram(maxCallDepth, totalDepth, procs, procCount, bytes, sizeof(bytes));
 
-    // A bigger margin than BOUNDARY_SLACK: with the leftover shrunk to the
-    // measured code size, there's nothing (the totalDepth/maxCallDepth terms
-    // that normally provide it) left to absorb the translator's own
-    // separately-checked TRANSLATE_LEVEL_STACK_MARGIN live guard — discovered
-    // empirically while tuning this TEST. This isn't trying to find that exact
-    // minimum (deliberately out of scope — see this corpus expansion's own
-    // plan on avoiding G5-adjacent edge-probing); it just needs enough over
-    // BOUNDARY_SLACK to clear that margin too.
     static constexpr uint32_t TIGHT_TEST_SLACK = BOUNDARY_SLACK + 512;
     uint32_t stackLimit = currentSp()
         - requiredStackBytesFor(procCount, totalDepth, maxCallDepth) - tightArena - TIGHT_TEST_SLACK;
 
-    ProgramResult r = enterProgramOnStack(nullptr, 0, bytes, len, stackLimit, /*interruptReserve=*/0);
+    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
 
     if(r.trapped)
     {
@@ -590,21 +583,11 @@ TEST(OnStackSucceedsWithTheArenaTrimmedToWhatTheChainNeeds)
     CHECK(r.value == 106);
 }
 
-/* This image is its own integrator: the strong definition overrides
- * ext_default.cpp's weak one, which is how an extension binds. */
 static uint32_t g_extHelperStackBytes = 0;
 extern "C" uint32_t extHelperStackBytes() { return g_extHelperStackBytes; }
 
 TEST(AnExtensionsDeclaredHelperStackIsAddedToTheUpFrontBudget)
 {
-    // Same program, same arena, same stackLimit — the ONLY difference is
-    // that an extension declares helper stack. If that declaration doesn't
-    // reach requiredStackBytes, both runs behave identically and the static
-    // reservation stops being a bound at the one moment it matters: a
-    // helper runs at the deepest point of an excursion.
-    //
-    // The program contains no extension opcodes, so decode is never called;
-    // helperStackBytes is consulted regardless.
     const Instr body[] = {CONST(37), bare(Op::RETURN)};
     ProcSource procs[] = {{0, body, 2}};
     uint8_t bytes[32];
@@ -613,7 +596,7 @@ TEST(AnExtensionsDeclaredHelperStackIsAddedToTheUpFrontBudget)
 
     uint32_t stackLimit = currentSp() - requiredStackBytesFor(procCount, totalDepth, maxCallDepth) - ARENA_ALLOWANCE;
 
-    ProgramResult without = enterProgramOnStack(nullptr, 0, bytes, len, stackLimit, /*interruptReserve=*/0);
+    ProgramResult without = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
     if(without.trapped)
     {
         writeHexTrap(without.value);
@@ -621,11 +604,8 @@ TEST(AnExtensionsDeclaredHelperStackIsAddedToTheUpFrontBudget)
     CHECK(!without.trapped);
     CHECK(without.value == 37);
 
-    // Declaring more than the leftover that just made it fit must tip it over:
-    // the code limit drops by the declared bytes, and past ARENA_ALLOWANCE it
-    // drops below stackLimit itself.
     g_extHelperStackBytes = ARENA_ALLOWANCE + BOUNDARY_SLACK;
-    ProgramResult with = enterProgramOnStack(nullptr, 0, bytes, len, stackLimit, /*interruptReserve=*/0);
+    ProgramResult with = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
     g_extHelperStackBytes = 0;
     CHECK(with.trapped);
     CHECK(with.value == RESOURCE_EXHAUSTED_STACK_BUDGET);
@@ -633,9 +613,6 @@ TEST(AnExtensionsDeclaredHelperStackIsAddedToTheUpFrontBudget)
 
 int main(void)
 {
-    // Must run before anything else pushes a single frame — see
-    // stack_paint.cpp's own header comment for why (docs/design.md
-    // G2/G3/G5's empirical corroboration).
     paintStack();
 
     initFixtures();

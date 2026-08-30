@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <cassert>
 
-#include "runtime_host.h"
+#include "resource_codes.h"
 #include "code_arena.h"
 #include "dispatch_table.h"
 
@@ -21,7 +21,7 @@ class Runtime
 {
     friend struct RuntimeProbe;
 
-    CodeArena memory;
+    CodeArena &memory;        /* owned by whoever runs this program, not by it */
     DispatchTable dispatch;   /* holds the flexible array member — keep last */
 
     uint32_t pushStackFloor(uint32_t margin);
@@ -65,8 +65,7 @@ public:
         return ptr; 
     }
 
-    inline Runtime(uint32_t procCount, uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit, uint32_t arenaOverlapsStack, uint32_t interruptReserve = 0):
-        memory(codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack, interruptReserve), dispatch(procCount)
+    inline Runtime(uint32_t procCount, CodeArena &memory): memory(memory), dispatch(procCount)
     { }
 
     uint32_t loadProgram(const uint8_t *programBytes, uint32_t programSize, uint32_t bodyOffset);
@@ -85,45 +84,5 @@ public:
     uint16_t* ensureSpace(const uint16_t* end, uint32_t lruTick);
 };
 
-namespace
-{
-constexpr uint32_t RESOURCE_CODES[] = {
-    RESOURCE_PROGRAM_NO_PROCS, RESOURCE_PROGRAM_BODY_UNTERMINATED,
-    RESOURCE_PROGRAM_CALLEE_RANGE, RESOURCE_PROGRAM_ENTRY_ARG_COUNT,
-    RESOURCE_PROGRAM_ENTRY_DEPTH, RESOURCE_PROGRAM_EXT_UNKNOWN,
-    RESOURCE_PROGRAM_EXT_UNSUPPORTED,
-    RESOURCE_PROGRAM_RESERVED_OPCODE,
-    RESOURCE_EXHAUSTED_ARENA, RESOURCE_EXHAUSTED_STACK_BUDGET,
-    RESOURCE_EXHAUSTED_TRANSLATOR_STACK, RESOURCE_EXHAUSTED_SCAN_STACK,
-    RESOURCE_LIMIT_WINDOW_RECLAIM, RESOURCE_LIMIT_SPILL_OFFSET,
-    RESOURCE_LIMIT_BRANCH_RANGE, RESOURCE_LIMIT_LOOP_BACK_EDGE,
-    RESOURCE_LIMIT_ARG_COUNT, RESOURCE_LIMIT_BODY_BYTES,
-    RESOURCE_LIMIT_PROC_COUNT, RESOURCE_LIMIT_RESUME_OFFSET,
-};
-
-constexpr bool resourceCodesDistinct()
-{
-    for(unsigned i = 0; i < sizeof(RESOURCE_CODES) / sizeof(RESOURCE_CODES[0]); i++)
-    {
-        for(unsigned j = i + 1; j < sizeof(RESOURCE_CODES) / sizeof(RESOURCE_CODES[0]); j++)
-        {
-            if(RESOURCE_CODES[i] == RESOURCE_CODES[j])
-            {
-                return false;
-            }
-        }
-        if((RESOURCE_CODES[i] >> 16) != RESOURCE_ERROR_SIGNATURE
-            || RESOURCE_ERROR_CLASS(RESOURCE_CODES[i]) == 0
-            || (RESOURCE_CODES[i] & 0xffu) != 0)
-        {
-            return false;
-        }
-    }
-    return true;
-}
-} // namespace
-
-static_assert(resourceCodesDistinct(),
-    "RESOURCE_* codes must be distinct, carry the 0x5245 signature and a class nibble, and leave the low byte zero");
 
 #endif 

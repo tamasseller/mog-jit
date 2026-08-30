@@ -69,13 +69,15 @@ class TestAssembler
     alignas(8) uint8_t runtimeBytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
     LowMemory low;
     uint32_t arenaBase;
+    CodeArena arena = CodeArena::region(0, 0, /*stackLimit=*/0);
 
     inline Runtime &runtimeRef() { return *reinterpret_cast<Runtime *>(runtimeBytes); }
 
     Runtime &setup(uint32_t capacityHalfwords)
     {
         arenaBase = low.alloc(capacityHalfwords * 2);
-        new(runtimeBytes) Runtime(1, arenaBase, capacityHalfwords * 2, /*stackLimit=*/0, /*arenaOverlapsStack=*/0);
+        arena = CodeArena::region(arenaBase, capacityHalfwords * 2, /*stackLimit=*/0);
+        new(runtimeBytes) Runtime(1, arena);
         RuntimeProbe::setArenaEnd(runtimeRef(), arenaBase + capacityHalfwords * 2);
         runtimeRef().slot(0).codePtr = trampolineAddr;
         return runtimeRef();

@@ -12,11 +12,14 @@ class CodeArena
 {
     friend struct RuntimeProbe;
 
+    /* Fixed for this arena's lifetime. */
     uint32_t end;
-    uint32_t cursor;
     uint32_t stackLimit;
     uint32_t overlapsStack;   /* 0/1, not bool, so this struct's layout is trivial */
     uint32_t interruptReserve;
+
+    /* One excursion's worth — Excursion is what puts these back. */
+    uint32_t cursor;
     uint32_t liveStackFloor;
 
     /* Whichever of the two the stack meets first: the statically validated
@@ -26,13 +29,58 @@ class CodeArena
         return (overlapsStack && stackLimit < cursor) ? cursor : stackLimit;
     }
 
-public:
-    inline CodeArena(uint32_t base, uint32_t size, uint32_t stackLimit, uint32_t overlapsStack, uint32_t interruptReserve):
-        end((base + size) & ~3u), cursor((base + 3u) & ~3u), stackLimit(stackLimit),
-        overlapsStack(overlapsStack), interruptReserve(interruptReserve), liveStackFloor(UINT32_MAX)
+    inline CodeArena(uint32_t base, uint32_t end, uint32_t stackLimit, uint32_t overlapsStack, uint32_t interruptReserve):
+        end(end & ~3u), stackLimit(stackLimit), overlapsStack(overlapsStack),
+        interruptReserve(interruptReserve), cursor((base + 3u) & ~3u), liveStackFloor(UINT32_MAX)
     {
-        assert(cursor <= end); // GCOV_EXCL_LINE
+        assert(cursor <= this->end); // GCOV_EXCL_LINE
     }
+
+public:
+    /* Memory of its own, that the stack never reaches. */
+    static inline CodeArena region(uint32_t base, uint32_t size, uint32_t stackLimit, uint32_t interruptReserve = 0)
+    {
+        return CodeArena(base, base + size, stackLimit, /*overlapsStack=*/0, interruptReserve);
+    }
+
+    /* The bottom of the stack region itself, with no end of its own: what
+     * stops it is the stack coming down to meet it. */
+    static inline CodeArena sharedWithStack(uint32_t stackLimit, uint32_t interruptReserve = 0)
+    {
+        return CodeArena(stackLimit, UINT32_MAX, stackLimit, /*overlapsStack=*/1, interruptReserve);
+    }
+
+    /* One program's use of the arena, handing back on the way out exactly what
+     * it found. codeLimit is the highest address compiled code may reach on
+     * this run — published as the first stack floor, since that line is
+     * exactly a promise about how deep the stack will come. */
+    class Excursion
+    {
+        Excursion(const Excursion&) = delete;
+        Excursion(Excursion&&) = delete;
+
+        void operator =(const Excursion&) = delete;
+        void operator =(Excursion&&) = delete;
+
+        CodeArena& a;
+        uint32_t outerCursor;
+
+    public:
+        inline Excursion(CodeArena& a, uint32_t codeLimit):
+            a(a), outerCursor(a.cursor)
+        {
+            if(a.overlapsStack) 
+            {
+                a.liveStackFloor = codeLimit + a.interruptReserve;
+            }
+        }
+
+        inline ~Excursion()
+        {
+            a.cursor = outerCursor;
+            a.liveStackFloor = UINT32_MAX;
+        }
+    };
 
     inline uint32_t getCursor() const
     {
@@ -46,8 +94,15 @@ public:
         return stackLimit;
     }
 
-    /* Never past what was validated up front, and never into the stack for as
-     * long as a guard holds a floor below that line. */
+    /* Room kept below the stack for an exception frame, so it belongs to the
+     * up-front reservation as much as to the arena's own ceiling. */
+    inline uint32_t getInterruptReserve() const
+    {
+        return interruptReserve;
+    }
+
+    /* Never past the arena's own end, and never into the ground a live floor
+     * has claimed for the stack. */
     inline uint32_t ceiling() const
     {
         if(!overlapsStack)
@@ -89,10 +144,12 @@ public:
         return hardFloor() + margin + interruptReserve;
     }
 
+    /* Floors only ever descend while a guard is live: an inner level reaching
+     * less deep than the excursion's own promise does not give ground back. */
     inline uint32_t publishStackFloor(uint32_t floor)
     {
         const uint32_t outerFloor = liveStackFloor;
-        liveStackFloor = floor;
+        liveStackFloor = floor < outerFloor ? floor : outerFloor;
         return outerFloor;
     }
 

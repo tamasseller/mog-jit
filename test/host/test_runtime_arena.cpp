@@ -20,6 +20,10 @@ template<uint32_t procCount>
 class RuntimeStorage
 {
     alignas(8) uint8_t bytes[sizeof(Runtime) + (procCount + 1) * sizeof(ProcSlot)] = {};
+    CodeArena arena;
+    /* Stands in for the up-front check: a shared arena's ceiling is the code
+     * limit an excursion opens with, not anything the arena was built with. */
+    CodeArena::Excursion excursion;
 
     const Instr trivialBody[1] = {bare(Op::RETURN)};
     uint8_t programBytes[procCount * 4 + 8] = {};
@@ -31,7 +35,11 @@ public:
     }
 
     RuntimeStorage(uint32_t base = ARENA_BASE, uint32_t size = ARENA_SIZE,
-        uint32_t overlapsStack = 0, uint32_t interruptReserve = 0)
+        uint32_t overlapsStack = 0, uint32_t interruptReserve = 0):
+        arena(overlapsStack
+            ? CodeArena::sharedWithStack(base, interruptReserve)
+            : CodeArena::region(base, size, /*stackLimit=*/0, interruptReserve)),
+        excursion(arena, base + size)
     {
         ProcSource procs[procCount];
         for(uint32_t i = 0; i < procCount; i++)
@@ -41,7 +49,7 @@ public:
         uint32_t len = encodeProgram(procs, procCount, programBytes, sizeof(programBytes));
         uint32_t bodyOffset;
         decodeLeb128(programBytes, 0, bodyOffset); // past proc_count's own LEB128
-        new(bytes) Runtime(procCount, base, size, 0, overlapsStack, interruptReserve);
+        new(bytes) Runtime(procCount, arena);
         uint32_t code = (*this)->loadProgram(programBytes, len, bodyOffset);
         assert(code == 0); // GCOV_EXCL_LINE — this file's own encoding setup, not the thing under test
         (void)code;
@@ -208,7 +216,8 @@ TEST(WalkFailsWithoutTouchingDispatchStateWhenAProcedureCantBeScanned)
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
     register uint32_t sp asm("sp");
-    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, sp, 0);
+    CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/sp);
+    Runtime *runtime = new(bytes) Runtime(1, arena);
     CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == RESOURCE_EXHAUSTED_SCAN_STACK);
 }
 
@@ -222,7 +231,8 @@ TEST(WalkReportsAnUnterminatedBodySeparatelyFromRunningOutOfStack)
     decodeLeb128(programBytes, 0, bodyOffset);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0);
+    CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
+    Runtime *runtime = new(bytes) Runtime(1, arena);
     CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == RESOURCE_PROGRAM_BODY_UNTERMINATED);
 }
 
@@ -236,7 +246,8 @@ TEST(WalkReportsAnArgCountPastProcSlotsOwnFieldWidth)
     decodeLeb128(programBytes, 0, bodyOffset);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0);
+    CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
+    Runtime *runtime = new(bytes) Runtime(1, arena);
     CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == RESOURCE_LIMIT_ARG_COUNT);
 }
 
@@ -248,7 +259,8 @@ TEST(WalkReportsAProcCountPastTheCallRecordsOwnProcIdxField)
     uint8_t programBytes[] = {0x00};
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = new(bytes) Runtime(jitc::MAX_PROC_IDX + 2, ARENA_BASE, ARENA_SIZE, 0, 0);
+    CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
+    Runtime *runtime = new(bytes) Runtime(jitc::MAX_PROC_IDX + 2, arena);
     CHECK(runtime->loadProgram(programBytes, sizeof(programBytes), 0) == RESOURCE_LIMIT_PROC_COUNT);
 }
 
@@ -264,7 +276,8 @@ TEST(WalkAcceptsTheLargestProcCountTheCallRecordCanStillAddress)
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
     // The boundary itself is not the rejection — one procedure walked under a
     // procCount at the ceiling still has to pass.
-    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0);
+    CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
+    Runtime *runtime = new(bytes) Runtime(1, arena);
     CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == 0);
     CHECK(jitc::MAX_PROC_IDX + 1 == 0x8000u);
 }
@@ -275,7 +288,8 @@ TEST(WalkReportsAnUnknownOpcodeAsADeploymentMismatch)
     const uint32_t bodyOffset = 1;
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0);
+    CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
+    Runtime *runtime = new(bytes) Runtime(1, arena);
     CHECK(runtime->loadProgram(programBytes, sizeof(programBytes), bodyOffset) == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
 
@@ -315,7 +329,8 @@ TEST(WalkAcceptsAWellFormedExtensionDeclaration)
     uint32_t len = extProgram(programBytes);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0);
+    CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
+    Runtime *runtime = new(bytes) Runtime(1, arena);
     CHECK(runtime->loadProgram(programBytes, len, 1) == 0);
 }
 
@@ -327,6 +342,7 @@ TEST(WalkRejectsACallShapedExtensionDeclarationAsUnsupported)
     uint32_t len = extProgram(programBytes);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0);
+    CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
+    Runtime *runtime = new(bytes) Runtime(1, arena);
     CHECK(runtime->loadProgram(programBytes, len, 1) == RESOURCE_PROGRAM_EXT_UNSUPPORTED);
 }

@@ -1,9 +1,10 @@
-// enterProgram*'s argument plumbing and its two entry-argument guards.
+// Executor::run's argument plumbing and its two entry-argument guards.
 // A fake enterDispatch captures the descriptor so a plumbing mistake fails
 // in milliseconds with the values printed, rather than as a hung guest.
 #include "Test.h"
 
 #include "runtime.h"
+#include "executor.h"
 #include "dispatch_abi.h"
 #include "entry_args.h"
 #include "ext.h"
@@ -19,7 +20,7 @@ namespace
 
 /* What the real enterDispatch would have marshalled, captured verbatim.
  * Deep-copied rather than kept by pointer: the descriptor lives in
- * enterProgramCore's own frame and is dead the moment it returns. */
+ * Executor::run's own frame and is dead the moment it returns. */
 struct Captured
 {
     bool called = false;
@@ -42,7 +43,7 @@ uint32_t buildProgram(uint32_t entryArgCount, uint32_t totalDepth, uint8_t *out,
 }
 
 /* Declines every byte, so a program containing one is rejected — which is
- * observable only if enterProgram* actually installed it. */
+ * observable only if Executor::run actually installed it. */
 uint32_t decliningDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *)
 {
     return 0;
@@ -62,8 +63,8 @@ ProgramResult enterWithExtension(const ExtStub *ext, const uint8_t *bytes, uint3
     static uint8_t arena[512];
     ExtScope scope(ext);
     g_captured = Captured{};
-    return enterProgramSplit(nullptr, 0, bytes, len,
-        (uint32_t)(uintptr_t)arena, sizeof(arena), /*stackLimit=*/0, /*interruptReserve=*/0);
+    return Executor::split((uint32_t)(uintptr_t)arena, sizeof(arena), /*stackLimit=*/0, /*interruptReserve=*/0)
+        .run(bytes, len, nullptr, 0);
 }
 
 ProgramResult enter(uint32_t *args, uint32_t argCount, const uint8_t *bytes, uint32_t len)
@@ -73,8 +74,8 @@ ProgramResult enter(uint32_t *args, uint32_t argCount, const uint8_t *bytes, uin
     /* stackLimit 0 makes the up-front budget check trivially pass, which is
      * not what these TESTs are about — the two boundary cases for that
      * check live in test/qemu/main.cpp, against a real measured sp. */
-    return enterProgramSplit(args, argCount, bytes, len,
-        (uint32_t)(uintptr_t)arena, sizeof(arena), /*stackLimit=*/0, /*interruptReserve=*/0);
+    return Executor::split((uint32_t)(uintptr_t)arena, sizeof(arena), /*stackLimit=*/0, /*interruptReserve=*/0)
+        .run(bytes, len, args, argCount);
 }
 
 } // namespace
@@ -100,7 +101,7 @@ extern "C" uint64_t enterDispatch(void*, Runtime *runtime, const EntryArgs *entr
     return (uint64_t)LANDING_SUCCESS << 32 | 0xABCDu;
 }
 
-TEST(enterProgramAcceptsAZeroArgumentEntryProcedure)
+TEST(executorRunAcceptsAZeroArgumentEntryProcedure)
 {
     uint8_t bytes[32];
     uint32_t len = buildProgram(/*entryArgCount=*/0, /*totalDepth=*/1, bytes, sizeof(bytes));
@@ -114,7 +115,7 @@ TEST(enterProgramAcceptsAZeroArgumentEntryProcedure)
     CHECK(g_captured.acc == 0);
 }
 
-TEST(enterProgramPlacesASingleArgumentInAcc)
+TEST(executorRunPlacesASingleArgumentInAcc)
 {
     uint8_t bytes[32];
     uint32_t len = buildProgram(/*entryArgCount=*/1, /*totalDepth=*/1, bytes, sizeof(bytes));
@@ -131,10 +132,10 @@ TEST(enterProgramPlacesASingleArgumentInAcc)
     for(uint32_t i = 0; i < WINDOW_SIZE; i++) CHECK(g_captured.window[i] == 0);
 }
 
-TEST(enterProgramMarshalsEveryArgCountThroughTheRealPlumbing)
+TEST(executorRunMarshalsEveryArgCountThroughTheRealPlumbing)
 {
     // test_entry_args.cpp establishes that buildEntryArgs agrees with a real
-    // call site. This checks the rest of the path — that enterProgram*
+    // call site. This checks the rest of the path — that Executor::run
     // actually reaches it with the caller's own vector, for both window
     // phases and a spilled tail.
     for(uint32_t n = 1; n <= 12; n++)
@@ -162,7 +163,7 @@ TEST(enterProgramMarshalsEveryArgCountThroughTheRealPlumbing)
     }
 }
 
-TEST(enterProgramRejectsAnArgumentCountTheEntryProcedureDoesNotDeclare)
+TEST(executorRunRejectsAnArgumentCountTheEntryProcedureDoesNotDeclare)
 {
     uint8_t bytes[32];
     uint32_t len = buildProgram(/*entryArgCount=*/1, /*totalDepth=*/1, bytes, sizeof(bytes));
@@ -182,7 +183,7 @@ TEST(enterProgramRejectsAnArgumentCountTheEntryProcedureDoesNotDeclare)
     CHECK(!g_captured.called);
 }
 
-TEST(enterProgramRejectsOutOfWindowArgsPastTheEnvelopesOwnTotalDepth)
+TEST(executorRunRejectsOutOfWindowArgsPastTheEnvelopesOwnTotalDepth)
 {
     // total_depth is trusted wire data, and enterDispatch is about to push
     // arg_count - WINDOW_SIZE words against a reservation sized from it. A
@@ -202,7 +203,7 @@ TEST(enterProgramRejectsOutOfWindowArgsPastTheEnvelopesOwnTotalDepth)
     CHECK(!g_captured.called);
 }
 
-TEST(enterProgramAcceptsOutOfWindowArgsThatDoFitTotalDepth)
+TEST(executorRunAcceptsOutOfWindowArgsThatDoFitTotalDepth)
 {
     // The other side of the same guard: 8 arguments need 4 pushed words, and
     // a total_depth of 8 covers them — the bound is on the pushed words, not
@@ -220,7 +221,7 @@ TEST(enterProgramAcceptsOutOfWindowArgsThatDoFitTotalDepth)
     CHECK(g_captured.spilledCount == 4);
 }
 
-TEST(enterProgramRejectsAProgramWithNoProcedures)
+TEST(executorRunRejectsAProgramWithNoProcedures)
 {
     // max_call_depth:0 total_depth:0 proc_count:0 — rejected before any
     // Runtime storage is sized, since entering procedure 0 would read one

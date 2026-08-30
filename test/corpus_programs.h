@@ -1,7 +1,7 @@
 // Diverse-shape Instr[] programs shared between fixtures.cpp (the real
 // QEMU exercise) and test/tools/dump_corpus.cpp (a seed-corpus dump for
 // whenever a fuzz harness gets built around decodeLeb128/translateProc/
-// enterProgramSplit). Authored once here so both consumers see the exact
+// Executor::split). Authored once here so both consumers see the exact
 // same bytes rather than two independently-typed copies drifting apart.
 // Host-portable (instr.h has no runtime/target dependency, same as every
 // other fixtures.cpp program), inline so this header can be included from

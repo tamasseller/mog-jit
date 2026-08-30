@@ -12,7 +12,7 @@
  * already runs this exact translator plus the real, unmodified runtime/ on
  * qemu-system-arm. The only thing it doesn't do is take its programs from
  * outside the image. So this runner reads a whole *batch* of fuzzer
- * programs and runs each one through the real enterProgramSplit, printing
+ * programs and runs each one through the real Executor::split, printing
  * one result line each — one QEMU boot per batch rather than per program,
  * which is what makes the emulator affordable here.
  *
@@ -35,7 +35,7 @@
  *               length bytes of one whole program envelope )
  *
  * The argument words carry the entry procedure's own arguments, which
- * enterProgram* requires to match its declared arg_count exactly. They
+ * Executor::run requires to match its declared arg_count exactly. They
  * precede the program bytes so the variable-length part stays last, and
  * they are copied into an aligned local before use — see readU32 below on
  * why nothing in flash can be word-loaded in place.
@@ -44,7 +44,7 @@
  *     R:xxxxxxxx   normal return, the entry procedure's own result
  *     T:xxxxxxxx   bytecode TRAP, the trap code
  *     E:xxxxxxxx   resource bail, the RESOURCE_* code saying which
- *                  (runtime_host.h) — a legitimate outcome, not
+ *                  (resource_codes.h) — a legitimate outcome, not
  *                  comparable against the reference VM
  *     X:xxxxxxxx   rejected before running (length past PROGRAM_MAX)
  * then
@@ -60,7 +60,9 @@
 #include <stdint.h>
 
 #include "semihost.h"
-#include "runtime_host.h"
+#include "executor.h"
+#include "dispatch_abi.h"
+#include "resource_codes.h"
 
 /* Exactly linker.ld's own rom ORIGIN+LENGTH, and BATCH_LIMIT is the rest of
  * this model's flash, whose end was measured at 0xA000 rather than assumed.
@@ -178,7 +180,7 @@ int main(void)
         const uint8_t *programBytes = cursor;
         cursor += len;
 
-        /* The split variant, not enterProgramOnStack: its arena is a
+        /* The split variant, not Executor::onStack: its arena is a
          * distinct region rather than the same memory the translator's own
          * recursion runs on, so a deep compilation cannot quietly corrupt
          * the arena it is writing into, and a RESOURCE_ERROR here means
@@ -188,17 +190,16 @@ int main(void)
          * ever meeting.
          *
          * interruptReserve 0: no interrupts are enabled in this image. */
-        ProgramResult r = enterProgramSplit(
-            entryArgs, argCount,
-            programBytes, len,
-            (uint32_t)(uintptr_t)g_codeArena, CODE_ARENA_BYTES,
-            /*stackLimit=*/(uint32_t)(uintptr_t)(g_codeArena + CODE_ARENA_BYTES),
-            /*interruptReserve=*/0);
+        ProgramResult r = Executor::split(
+                (uint32_t)(uintptr_t)g_codeArena, CODE_ARENA_BYTES,
+                /*stackLimit=*/(uint32_t)(uintptr_t)(g_codeArena + CODE_ARENA_BYTES),
+                /*interruptReserve=*/0)
+            .run(programBytes, len, entryArgs, argCount);
 
         ran++;
 
         /* Three fully distinguishable outcomes, straight off
-         * ProgramResult::trapped's own LANDING_* tag (runtime_host.h) —
+         * ProgramResult::trapped's own LANDING_* tag (dispatch_abi.h) —
          * nothing is encoded in `value`'s bits, so a program may return
          * any uint32_t and trap with any code without the two aliasing. */
         if(r.trapped == LANDING_TRAP)

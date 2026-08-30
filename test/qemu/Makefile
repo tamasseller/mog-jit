@@ -76,7 +76,7 @@ LDFLAGS += -specs=nosys.specs
 LDFLAGS += -T linker.ld
 
 include ../../vendor/ultimate-makefile/Makefile.ultimate
-$(OBJDIR)/$(abspath ../../src/runtime/runtime.S).o: $(abspath ../../src/runtime/runtime_host.h)
+$(OBJDIR)/$(abspath ../../src/runtime/runtime.S).o: $(abspath ../../src/runtime/dispatch_abi.h)
 
 qemu-test: $(OUTPUT)
 	qemu-system-arm -M lm3s811evb -m 8k -nographic -monitor none \

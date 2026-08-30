@@ -4,8 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#include "runtime_host.h"
-
 extern const uint32_t trampolineAddr;
 
 struct ProcSlot
@@ -50,8 +48,6 @@ struct ProcSlot
 };
 
 static_assert(sizeof(ProcSlot) == 16, "power-of-two: idx*16 must stay a shift, not a multiply — runtime.S's own hardcoded stride");
-static_assert(sizeof(ProcSlot) == DISPATCH_SENTINEL_OFFSET,
-    "runtime.S's own DISPATCH_SENTINEL_OFFSET must match sizeof(ProcSlot)");
 
 /* One entry per procedure, plus the sentinel below index zero that runtime.S
  * parks the landing address and the entry sp in. Says where each procedure's

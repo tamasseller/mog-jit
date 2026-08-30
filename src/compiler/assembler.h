@@ -3,7 +3,7 @@
 
 #include <cstdint>
 #include "armv6.h"
-#include "runtime_host.h"
+#include "resource_codes.h"
 
 class Runtime;
 

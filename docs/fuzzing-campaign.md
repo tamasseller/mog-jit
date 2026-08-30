@@ -595,7 +595,7 @@ an estimate rather than a constant.
 
 **Execution oracle (`fuzz/qemu_exec/`).** The half that found five of the
 nine. Batches of programs are loaded into guest flash, run through the real
-`enterProgramSplit` on `qemu-system-arm` against the unmodified `runtime/`,
+`Executor::split` on `qemu-system-arm` against the unmodified `runtime/`,
 and diffed against the reference VM. One boot per batch. `minimize_exec.ts`
 shrinks a failing program by deleting whole instructions and re-encoding, so
 every candidate stays validator-approved, with ddmin-style coarse-to-fine
@@ -690,7 +690,7 @@ New: `fuzz/README.md`, `fuzz/make_seeds.ts`, `fuzz/dump_code.{cpp,sh}`,
 the whole-program envelope format (34 in `seeds/` in total).
 
 Modified — runtime: `runtime.S` (`trapHelper`), `dispatch_abi.{h,cpp}`,
-`runtime_host.h`, `runtime.h`, `executor.cpp`. Translator:
+`resource_codes.h`, `runtime.h`, `executor.cpp`. Translator:
 `binops.cpp`, `blocks.cpp`, `translate_proc.cpp`, `abi_strategy.{h,cpp}`,
 `registers.h`, `accstate.h`. Harness: `harness.cpp`, `oracle_server.ts`,
 `dump_seeds.{cpp,sh}`, `make_seeds.ts`. `@ppl/machine`: `vm.ts`,

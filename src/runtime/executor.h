@@ -3,31 +3,31 @@
 
 #include <stdint.h>
 
-#include "runtime_host.h"
+#include "code_arena.h"
 
-/* Where programs get their memory from, settled once for as many of them as
- * the caller cares to run. Everything program-specific arrives at run(),
- * which places that program's Runtime in its own frame and takes it back down
- * again on the way out. */
+/* How an excursion ended: `trapped` is one of dispatch_abi.h's LANDING_* tags,
+ * and `value` is what that tag says it is. */
+struct ProgramResult
+{
+    uint32_t value;
+    uint32_t trapped;
+};
+
+/* Owns the arena, settled once for as many programs as the caller cares to
+ * run. Everything program-specific arrives at run(), which places that
+ * program's Runtime in its own frame and takes both that and the arena back
+ * down again on the way out. */
 class Executor
 {
-    uint32_t codeArenaBase;    /* both zero when arenaOverlapsStack: run() derives */
-    uint32_t codeArenaSize;    /* the arena from what the budget check leaves over */
-    uint32_t stackLimit;
-    uint32_t arenaOverlapsStack;   /* 0/1, not bool, so this struct's layout is trivial */
-    uint32_t interruptReserve;
+    CodeArena arena;
 
-    inline Executor(uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit,
-            uint32_t arenaOverlapsStack, uint32_t interruptReserve):
-        codeArenaBase(codeArenaBase), codeArenaSize(codeArenaSize), stackLimit(stackLimit),
-        arenaOverlapsStack(arenaOverlapsStack), interruptReserve(interruptReserve)
-    { }
+    inline explicit Executor(const CodeArena &arena): arena(arena) { }
 
 public:
     /* The arena is a region of its own and the stack never reaches it. */
     static inline Executor split(uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit, uint32_t interruptReserve)
     {
-        return Executor(codeArenaBase, codeArenaSize, stackLimit, /*arenaOverlapsStack=*/0, interruptReserve);
+        return Executor(CodeArena::region(codeArenaBase, codeArenaSize, stackLimit, interruptReserve));
     }
 
     /* The arena sits at the bottom of the permitted stack region and the two
@@ -36,10 +36,10 @@ public:
      * its own static reservation leaves over. */
     static inline Executor onStack(uint32_t stackLimit, uint32_t interruptReserve)
     {
-        return Executor(0, 0, stackLimit, /*arenaOverlapsStack=*/1, interruptReserve);
+        return Executor(CodeArena::sharedWithStack(stackLimit, interruptReserve));
     }
 
-    ProgramResult run(const uint8_t *programBytes, uint32_t programSize, uint32_t *args, uint32_t argCount) const;
+    ProgramResult run(const uint8_t *programBytes, uint32_t programSize, uint32_t *args, uint32_t argCount);
 };
 
 #endif /* JIT_ARMV6M_RUNTIME_EXECUTOR_H_ */

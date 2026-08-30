@@ -1,55 +1,10 @@
-#ifndef JIT_ARMV6M_RUNTIME_HOST_H_
-#define JIT_ARMV6M_RUNTIME_HOST_H_
+#ifndef JIT_ARMV6M_RUNTIME_RESOURCE_CODES_H_
+#define JIT_ARMV6M_RUNTIME_RESOURCE_CODES_H_
 
-#ifndef __ASSEMBLER__
-
-#include <stdint.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-typedef struct
-{
-    uint32_t value;
-    uint32_t trapped;
-} ProgramResult;
-
-#define ARMV6M_EXCEPTION_FRAME_BYTES 32
-
-/* No arena size: the arena is everything between stackLimit and the code
- * limit computed from the program's own static reservation. */
-ProgramResult enterProgramOnStack(
-    uint32_t *args,
-    uint32_t argCount,
-    const uint8_t *programBytes,
-    uint32_t programSize,
-    uint32_t stackLimit,
-    uint32_t interruptReserve);
-
-ProgramResult enterProgramSplit(
-    uint32_t *args,
-    uint32_t argCount,
-    const uint8_t *programBytes,
-    uint32_t programSize,
-    uint32_t codeArenaBase,
-    uint32_t codeArenaSize,
-    uint32_t stackLimit,
-    uint32_t interruptReserve);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* __ASSEMBLER__ */
-
-#define DISPATCH_SENTINEL_OFFSET 16      /* dispatchBase - this = &slots[0] (the sentinel) */
-
-#define CALL_RECORD_BOOT 0xffff          /* == packRecord(-1, 0) — asserted in dispatch_abi.cpp */
-
-#define LANDING_SUCCESS 0u        /* value = the entry procedure's own result */
-#define LANDING_TRAP 1u           /* value = the bytecode TRAP's own code, at any call depth */
-#define LANDING_RESOURCE_ERROR 2u /* value = one of the RESOURCE_* codes below — nothing ran, or ran to completion */
+/* Every way the JIT refuses a program, as one flat vocabulary. A code carries
+ * the 0x5245 signature in its top half and a class nibble below it, so a
+ * caller can tell one of these from a program's own trap value without a
+ * lookup table; the static_assert at the bottom is what keeps that true. */
 
 #define RESOURCE_ERROR_SIGNATURE 0x5245u /* == (value >> 16) for every code below */
 #define RESOURCE_ERROR_CLASS(v) (((v) >> 12) & 0xfu)
@@ -80,4 +35,51 @@ ProgramResult enterProgramSplit(
 #define RESOURCE_LIMIT_RESUME_OFFSET 0x52453800u  /* resume offset over the call record's own field */
 #define RESOURCE_LIMIT_BODY_BYTES 0x52453600u /* body size over ProcSlot's own field width */
 
-#endif /* JIT_ARMV6M_RUNTIME_HOST_H_ */
+#ifdef __cplusplus
+
+#include <stdint.h>
+
+namespace
+{
+constexpr uint32_t RESOURCE_CODES[] = {
+    RESOURCE_PROGRAM_NO_PROCS, RESOURCE_PROGRAM_BODY_UNTERMINATED,
+    RESOURCE_PROGRAM_CALLEE_RANGE, RESOURCE_PROGRAM_ENTRY_ARG_COUNT,
+    RESOURCE_PROGRAM_ENTRY_DEPTH, RESOURCE_PROGRAM_EXT_UNKNOWN,
+    RESOURCE_PROGRAM_EXT_UNSUPPORTED,
+    RESOURCE_PROGRAM_RESERVED_OPCODE,
+    RESOURCE_EXHAUSTED_ARENA, RESOURCE_EXHAUSTED_STACK_BUDGET,
+    RESOURCE_EXHAUSTED_TRANSLATOR_STACK, RESOURCE_EXHAUSTED_SCAN_STACK,
+    RESOURCE_LIMIT_WINDOW_RECLAIM, RESOURCE_LIMIT_SPILL_OFFSET,
+    RESOURCE_LIMIT_BRANCH_RANGE, RESOURCE_LIMIT_LOOP_BACK_EDGE,
+    RESOURCE_LIMIT_ARG_COUNT, RESOURCE_LIMIT_BODY_BYTES,
+    RESOURCE_LIMIT_PROC_COUNT, RESOURCE_LIMIT_RESUME_OFFSET,
+};
+
+constexpr bool resourceCodesDistinct()
+{
+    for(unsigned i = 0; i < sizeof(RESOURCE_CODES) / sizeof(RESOURCE_CODES[0]); i++)
+    {
+        for(unsigned j = i + 1; j < sizeof(RESOURCE_CODES) / sizeof(RESOURCE_CODES[0]); j++)
+        {
+            if(RESOURCE_CODES[i] == RESOURCE_CODES[j])
+            {
+                return false;
+            }
+        }
+        if((RESOURCE_CODES[i] >> 16) != RESOURCE_ERROR_SIGNATURE
+            || RESOURCE_ERROR_CLASS(RESOURCE_CODES[i]) == 0
+            || (RESOURCE_CODES[i] & 0xffu) != 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+static_assert(resourceCodesDistinct(),
+    "RESOURCE_* codes must be distinct, carry the 0x5245 signature and a class nibble, and leave the low byte zero");
+
+#endif /* __cplusplus */
+
+#endif /* JIT_ARMV6M_RUNTIME_RESOURCE_CODES_H_ */

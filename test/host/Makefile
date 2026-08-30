@@ -13,7 +13,7 @@ SOURCES += test_arithmetic.cpp
 SOURCES += test_proc_scan.cpp
 SOURCES += test_ext.cpp
 SOURCES += test_entry_args.cpp
-SOURCES += test_enter_program.cpp
+SOURCES += test_executor.cpp
 
 # Test support
 SOURCES += main.cpp
@@ -38,7 +38,7 @@ SOURCES += ../../src/compiler/translate_control_flow.cpp
 
 # The runtime's own entry layer. Compiles and links cleanly on the host —
 # its only target-specific dependency is enterDispatch, which
-# test_enter_program.cpp fakes so the descriptor it is handed can be
+# test_executor.cpp fakes so the descriptor it is handed can be
 # inspected without booting an emulator.
 SOURCES += ../../src/runtime/executor.cpp
 SOURCES += ../../src/runtime/runtime.cpp

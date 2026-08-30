@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-#include "runtime_host.h"
+#include "resource_codes.h"
 #include "ext.h"
 
 namespace jitc

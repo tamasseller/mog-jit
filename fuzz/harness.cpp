@@ -232,7 +232,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     static_assert(sizeof(Runtime) + (ORACLE_MAX_PROC_COUNT + 1) * sizeof(ProcSlot) <= 512,
         "grow this buffer if Runtime/ProcSlot grow, or if the oracle's procCount cap rises");
     alignas(8) uint8_t storage[512] = {};
-    Runtime &rt = *new(storage) Runtime(procCount, arenaBase(), ARENA_CAPACITY, /*stackLimit=*/0, /*arenaOverlapsStack=*/0);
+    CodeArena arena = CodeArena::region(arenaBase(), ARENA_CAPACITY, /*stackLimit=*/0);
+    Runtime &rt = *new(storage) Runtime(procCount, arena);
     if(rt.loadProgram(data, (uint32_t)size, bodyOffset) != 0)
     {
         return 0; // the JIT's own static ceiling rejected it -- graceful, not a bug
@@ -257,7 +258,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     for(uint32_t i = 0; i < procCount; i++)
     {
-        new(storage) Runtime(procCount, arenaBase(), ARENA_CAPACITY, /*stackLimit=*/0, /*arenaOverlapsStack=*/0);
+        arena = CodeArena::region(arenaBase(), ARENA_CAPACITY, /*stackLimit=*/0);
+        new(storage) Runtime(procCount, arena);
         rt.loadProgram(data, (uint32_t)size, bodyOffset); // already known to succeed
 
         if(setjmp(g_resourceEscape) == 0)
@@ -293,7 +295,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     const uint32_t arenaSize = arenaSizeFor(data, size, bodyOffset);
     memset(g_arena, 0, arenaSize);
 
-    new(storage) Runtime(procCount, arenaBase(), arenaSize, /*stackLimit=*/0, /*arenaOverlapsStack=*/0);
+    arena = CodeArena::region(arenaBase(), arenaSize, /*stackLimit=*/0);
+    new(storage) Runtime(procCount, arena);
     if(rt.loadProgram(data, (uint32_t)size, bodyOffset) != 0)
     {
         return 0;

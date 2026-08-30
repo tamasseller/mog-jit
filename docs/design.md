@@ -13,24 +13,28 @@
 
 ## 1. Goal
 
-Native C/C++ entry points, callable from bare-metal firmware, that
-JIT-compile and execute one Generic Core program injected at runtime
-(`jit-armv6m/runtime/runtime_host.h`):
+One C++ entry point, callable from bare-metal firmware, that JIT-compiles
+and executes Generic Core programs injected at runtime
+(`jit-armv6m/src/runtime/executor.h`):
 
-```c
-typedef struct { uint32_t value; uint32_t trapped; } ProgramResult;
+```c++
+struct ProgramResult { uint32_t value; uint32_t trapped; };
 
-ProgramResult enter_program_on_stack(const uint32_t *args, uint32_t argCount,
-                                     const uint8_t *programBytes,
-                                     uint32_t programSize, uint32_t codeArenaSize,
-                                     uint32_t stackLimit, uint32_t interruptReserve);
+class Executor
+{
+public:
+    static Executor onStack(uint32_t stackLimit, uint32_t interruptReserve);
+    static Executor split(uint32_t codeArenaBase, uint32_t codeArenaSize,
+                          uint32_t stackLimit, uint32_t interruptReserve);
 
-ProgramResult enter_program_split(const uint32_t *args, uint32_t argCount,
-                                  const uint8_t *programBytes,
-                                  uint32_t programSize, uint32_t codeArenaBase,
-                                  uint32_t codeArenaSize, uint32_t stackLimit,
-                                  uint32_t interruptReserve);
+    ProgramResult run(const uint8_t *programBytes, uint32_t programSize,
+                      uint32_t *args, uint32_t argCount);
+};
 ```
+
+Memory is settled once, when the `Executor` is built; `run` takes only what
+is specific to one program, and hands the arena back as it found it, so the
+same `Executor` runs as many programs as the caller has.
 
 `args`/`argCount` is the entry procedure's whole argument vector, in
 frame-slot order — the same shape `packages/machine`'s own
@@ -45,10 +49,10 @@ the way out is sized from that same number. This replaced a single
 uninitialized window registers — or, past four, reclaiming a frame nobody
 had pushed.
 
-No bare arena-less entry point: both variants take an explicit `stackLimit`
-and are checked against it up front. A caller that just wants a plain
-global arena declares one itself (one line, sized to what it actually
-needs) and calls `enter_program_split`.
+No bare arena-less configuration: both take an explicit `stackLimit` and
+are checked against it up front. A caller that just wants a plain global
+arena declares one itself (one line, sized to what it actually needs) and
+uses `Executor::split`.
 
 `programBytes`/`programSize` is one whole serialized program: a
 jit-armv6m-specific envelope (`max_call_depth:LEB128 total_depth:LEB128` —
@@ -75,27 +79,33 @@ possible, followed by one branch-range fixup pass. Generated code is
 position-independent (no embedded absolute addresses), so eviction and
 compaction never need a relocation pass.
 
-`Executor` (`jit-armv6m/src/runtime/executor.h`) holds where a program's
-memory comes from and nothing else, so one of them serves any number of
-programs; `Executor::run` takes one encoded blob plus its arguments, places
-that program's `Runtime` in its own frame and takes it back down on return.
-`enter_program_on_stack`/`enter_program_split` are its two named
-configurations, exported as C entry points.
+`Executor` (`jit-armv6m/src/runtime/executor.h`) owns the `CodeArena` and
+nothing else, so one of them serves any number of programs; `Executor::run`
+takes one encoded blob plus its arguments, places that program's `Runtime`
+in its own frame and hands both that and the arena back empty on return.
+`Executor::onStack`/`Executor::split` are its two named configurations.
 
-`Runtime` is that per-program state, and it is two things bolted together
-rather than one: a `CodeArena` (`code_arena.h`) owning where compiled code
-goes and how far down the stack may come to meet it, and a `DispatchTable`
-(`dispatch_table.h`) owning where each procedure's code ended up. Neither
-half needs the other. `Runtime` itself carries only what does — eviction,
-which picks an LRU victim from the table and compacts the arena, and the
-stack floor, whose check has to bail out through the table's sentinel.
+`Runtime` is the per-program state, and it is two things rather than one: a
+`DispatchTable` (`dispatch_table.h`) it owns, saying where each procedure's
+code ended up, and a reference to the `Executor`'s `CodeArena`
+(`code_arena.h`), saying where compiled code goes and how far down the stack
+may come to meet it. Neither half needs the other. `Runtime` itself carries
+only what does — eviction, which picks an LRU victim from the table and
+compacts the arena, and the stack floor, whose check has to bail out through
+the table's sentinel.
 
-`enter_program_on_stack` makes the current C stack the whole work area:
+The arena outliving the program is what makes an `Executor` reusable, so a
+run hands back exactly what it found: `CodeArena::Excursion` saves the cursor
+and the live stack floor and restores both, the same save-and-restore shape
+the per-level stack guard uses. Everything else — end, `stackLimit`, the
+interrupt reserve — was settled when the `Executor` was built.
+
+`Executor::onStack` makes the current C stack the whole work area:
 `Runtime`, its dispatch table, the operand stack and the compiled-code
 arena all come out of it. It takes no arena size — the arena is exactly
 `[stackLimit, codeLimit)`, so a program gets every byte its own reservation
 (§2) leaves over, and a caller has no second number to get wrong.
-`enter_program_split` puts the arena in
+`Executor::split` puts the arena in
 caller-supplied memory instead (a distinct SRAM bank, CCM, whatever the
 target's bus matrix makes worth using) while `Runtime`, the dispatch table
 and the operand stack stay on the C stack, since the translator and any C
@@ -121,14 +131,14 @@ which is the geometry that makes sharing work:
     operand stack                       call/return records interleaved
         JIT frame J ... JIT frame 1
     dispatch table + sentinel slot      fixed
-    enter_program frame                 MSP → PSP switch happens here
+    Executor::run frame                 MSP → PSP switch happens here
     app stack frame K ... frame 1       (MSP)
 (higher addresses)
 ```
 
-`enter_program` computes a hard ceiling for compiled code once, at entry:
+`Executor::run` computes a hard ceiling for compiled code once, at entry:
 `codeLimit = SP(at entry) − requiredStackBytes`. Under
-`enter_program_on_stack` that ceiling *is* the arena's end, so nothing is
+`Executor::onStack` that ceiling *is* the arena's end, so nothing is
 left stranded between the two. Every term of
 `requiredStackBytes` (`jit-armv6m/src/runtime/executor.cpp`, summing the
 fixed-cost constants `jit-armv6m/src/runtime/stack_budget.h` declares) is
@@ -605,7 +615,7 @@ bits doesn't realistically wrap in an embedded system's lifetime, so the
 scan is a plain comparison.
 
 The static half (`body_ptr`/`static_info`) is what makes this table
-double as the whole-program procedure directory: `enter_program`'s one-time
+double as the whole-program procedure directory: `Executor::run`'s one-time
 wire-format walk
 (`Runtime::loadProgram`, `jit-armv6m/src/runtime/runtime.cpp`) fills it in for
 every procedure before `enter_dispatch` ever runs, and `compileProc` reads
@@ -1172,7 +1182,7 @@ in the arena — the next victim, evicted before running once.
 `LANDING_RESOURCE_ERROR` is a failure mode this target introduces, distinct
 from anything isa-core.md §9's static guarantees cover. The tag is the
 discriminator; `value` names which of fourteen ways it happened, as a
-`RESOURCE_*` code from `runtime/runtime_host.h` (`0x5245` signature, class
+`RESOURCE_*` code from `runtime/resource_codes.h` (`0x5245` signature, class
 nibble, reason nibble, low byte reserved for a future detail payload).
 `TRAPPED` carries the ISA's own `TRAP #code` value unchanged.
 
@@ -1485,13 +1495,12 @@ than trying to keep a separate static margin in sync with it.
 frame — it was never a valid proxy for the real translator's heavier one,
 and no longer needs to be, since `checkStackFloor` covers that directly.
 
-`TRANSLATOR_ENTRY_WORST_CASE_BYTES` (`dispatch_abi.h`) is re-derived from
-a real `-fstack-usage` measurement rather than hand-traced: 444
-(28 asm-verified + 200 + 120 + 96, see the constant's own comment for the
-full chain) — `translateLoop`/`translateIfThen`/`translateIfThenElse`/
-`translateSwitch`/`translateBody` are confirmed fully inlined into
-`translateProc`/`processNonTerminators` at `-Os` and don't appear as
-separate frames to budget.
+`TRANSLATOR_ENTRY_WORST_CASE_BYTES` (`stack_budget.h`) is re-derived from
+GCC's own call graph rather than hand-traced: 512, being 24 hand-maintained
+asm bytes plus a measured `TRANSLATOR_ENTRY_CPP_BYTES` —
+`translateLoop`/`translateIfThen`/`translateIfThenElse`/`translateSwitch`/
+`translateBody` are confirmed fully inlined into `translateProc` at `-Os`
+and don't appear as separate frames to budget.
 
 `test/qemu/Makefile`'s `stack-usage-check` target runs `tools/stack-margin.ts`
 over GCC's `-fcallgraph-info` output: it takes a signature filter, walks the
@@ -1514,7 +1523,7 @@ assumption about prologue placement in it. It holds without case analysis
 because exactly one function is guarded — `GUARDED_processUntilTerminator`, the
 cut vertex every translator recursion cycle passes through — so the frame in the
 guarantee and the frame charged at the cut are the same number; `--max` turns the report into a gate, and the Makefile feeds it
-`TRANSLATE_BODY_STACK_MARGIN` read straight out of the source. A per-file
+`TRANSLATE_LEVEL_STACK_MARGIN` read straight out of the source. A per-file
 `-Werror=stack-usage=512` backstops the one thing a static byte-count
 comparison can't catch on its own: an accidental unbounded `alloca`/VLA
 in a tracked function.
@@ -1557,7 +1566,7 @@ emitted.
 real, unmodified `runtime/`. A batch of programs is loaded straight into
 guest flash (`-device loader`; semihosting file I/O was tried first and
 `SYS_OPEN` returns -1 on this machine), each is run through the real
-`enterProgramSplit`, and the results are diffed against `@ppl/machine`'s
+`Executor::split`, and the results are diffed against `@ppl/machine`'s
 reference VM. One boot per batch, so the emulator's startup cost amortizes
 away.
 
@@ -1687,7 +1696,7 @@ it costs shifts `RUNTIME_DISPATCH_TABLE_OFFSET` from 40 to 44, which
 `runtime.S` picks up from the macro rather than hardcoding.
 
 > That shift is also how `test/qemu/Makefile` acquired an explicit
-> dependency from `runtime.S`'s object to `runtime_host.h`.
+> dependency from `runtime.S`'s object to the ABI header it includes.
 > Makefile.ultimate generates header dependencies for `.c`/`.cpp` but its
 > `%.S.o` rule has neither `DEPFLAGS` nor a `.d` prerequisite, so a stale
 > assembly object kept the old offset while the C++ half used the new one —

@@ -20,6 +20,9 @@ extern "C" const HelperVec helperVec = {
 static_assert(jitc::packRecord((uint32_t)-1, 0) == CALL_RECORD_BOOT,
     "runtime.S's own boot record must be what packRecord would have produced");
 
+static_assert(sizeof(ProcSlot) == DISPATCH_SENTINEL_OFFSET,
+    "runtime.S's own DISPATCH_SENTINEL_OFFSET must match sizeof(ProcSlot)");
+
 extern "C" void runtimeBail(Runtime *runtime, uint32_t trapCode)
 {
     register uint32_t trapCodeReg asm("r0") = trapCode;
