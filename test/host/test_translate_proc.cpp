@@ -1721,3 +1721,147 @@ TEST(ACHelperReachGoesThroughTheThunkWithTheTargetInR12)
     };
     CHECK(containsSeq(rt.code(), n, seq, 4));
 }
+
+// ── the window-aliasing cases the service surface exists to hide ─────────
+
+namespace
+{
+/* physReg(k) wraps every WINDOW_SIZE slots, so the register a service is
+ * about to write can be the one a deferred acc is still reading. Each of
+ * these bodies parks acc on a window register first, with LOAD's own
+ * pending-shape path, and then has the extension write that register. */
+uint32_t zeroDeltaDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+{
+    *decl = jitc::extDecl(0, /*tosDelta=*/0, /*halfwords=*/8);
+    return 1;
+}
+
+// Four pushes, then LOAD <slot> — acc ends up pending on physReg(slot).
+uint32_t windowBody(uint8_t *out, uint32_t loadSlot)
+{
+    const Instr prelude[] = {
+        CONST(1), PUSH(), CONST(2), PUSH(), CONST(3), PUSH(), CONST(4), PUSH(),
+        LOAD(loadSlot)};
+    uint32_t n = encodeBody(prelude, 9, out, 48);
+    out[n++] = 0x80;
+    out[n++] = 100; // RETURN
+    return n;
+}
+
+uint32_t inWindowLoadBody(uint8_t *out) { return windowBody(out, 2); }
+uint32_t aliasingBody(uint8_t *out) { return windowBody(out, 0); }
+
+void inWindowLoadEmit(ExtSite &site)
+{
+    // Slot 2 of four is in the window, so this costs no instruction at all.
+    uint32_t r = site.load(/*slot=*/2, ENTRY_IDX_REG);
+    site.a.emit(ArmV6M::adds(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(r), ArmV6M::Imm<3>(1)));
+    site.accIsNowIn(ACC_REG);
+}
+
+void inWindowStoreEmit(ExtSite &site)
+{
+    // acc is pending on physReg(2), which is exactly what this overwrites.
+    site.store(/*slot=*/2, ENTRY_IDX_REG);
+}
+
+void pushPopEmit(ExtSite &site)
+{
+    // tos is 4 and acc is pending on physReg(0) — the same register as
+    // physReg(4), which is where the push lands.
+    site.push(ENTRY_IDX_REG);
+    site.pop(SCRATCH_REG);
+}
+
+void invalidateEmit(ExtSite &site)
+{
+    site.a.emit(ArmV6M::movs(ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<8>(0)));
+    site.accInvalidate();
+}
+
+const ExtStub EXT_IN_WINDOW_LOAD = {zeroDeltaDecode, inWindowLoadEmit};
+const ExtStub EXT_IN_WINDOW_STORE = {zeroDeltaDecode, inWindowStoreEmit};
+const ExtStub EXT_PUSH_POP = {zeroDeltaDecode, pushPopEmit};
+const ExtStub EXT_INVALIDATE = {zeroDeltaDecode, invalidateEmit};
+
+uint32_t translateWindowCase(FakeRuntime<1> &rt, uint32_t (*body)(uint8_t *))
+{
+    uint8_t *raw = rt.bodyBuf(0, 48);
+    rt.setLen(0, /*argCount=*/0, body(raw), /*savesLR=*/false);
+    return translateProc(0, rt.runtime(), LRU_TICK);
+}
+} // namespace
+
+TEST(AnInWindowSlotIsReachedAsARegisterWithNoLoad)
+{
+    FakeRuntime<1> rt(/*arenaBytes=*/256);
+    ExtScope extScope(&EXT_IN_WINDOW_LOAD);
+    uint32_t n = translateWindowCase(rt, inWindowLoadBody);
+
+    // physReg(2) with tos 4, and nothing loaded from the spill area.
+    const uint16_t adds[] = {
+        ArmV6M::adds(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(physReg(2)), ArmV6M::Imm<3>(1))};
+    CHECK(containsSeq(rt.code(), n, adds, 1));
+
+    const uint16_t ldr[] = {ArmV6M::ldrSp(ArmV6M::LoReg(ENTRY_IDX_REG), ArmV6M::Uoff<2, 8>(0))};
+    CHECK(!containsSeq(rt.code(), n, ldr, 1));
+}
+
+TEST(AStoreResolvesAnAccumulatorLivingInTheSlotItOverwrites)
+{
+    FakeRuntime<1> rt(/*arenaBytes=*/256);
+    ExtScope extScope(&EXT_IN_WINDOW_STORE);
+    uint32_t n = translateWindowCase(rt, inWindowLoadBody);
+
+    // The deferred acc is materialized out of physReg(2) before the store
+    // clobbers it — without the first MOV the LOAD's value is simply lost.
+    const uint16_t seq[] = {
+        ArmV6M::mov(ArmV6M::AnyReg(ACC_REG), ArmV6M::AnyReg(physReg(2))),
+        ArmV6M::mov(ArmV6M::AnyReg(physReg(2)), ArmV6M::AnyReg(ENTRY_IDX_REG)),
+    };
+    CHECK(containsSeq(rt.code(), n, seq, 2));
+}
+
+TEST(APushResolvesAnAccumulatorAliasingItsDestination)
+{
+    FakeRuntime<1> rt(/*arenaBytes=*/256);
+    ExtScope extScope(&EXT_PUSH_POP);
+    uint32_t n = translateWindowCase(rt, aliasingBody);
+
+    // physReg(4) == physReg(0): the push evicts that register to the spill
+    // area and then overwrites it, so the acc pending on it has to be
+    // materialized in between.
+    CHECK(physReg(4) == physReg(0));
+
+    const uint16_t seq[] = {
+        ArmV6M::mov(ArmV6M::AnyReg(ACC_REG), ArmV6M::AnyReg(physReg(0))),
+        ArmV6M::mov(ArmV6M::AnyReg(physReg(0)), ArmV6M::AnyReg(ENTRY_IDX_REG)),
+    };
+    CHECK(containsSeq(rt.code(), n, seq, 2));
+
+    // And the pop uncovers what the push evicted, into that same register.
+    ArmV6M::LoRegs evicted{0};
+    evicted.add(ArmV6M::LoReg((uint16_t)physReg(0)));
+    const uint16_t evict[] = {ArmV6M::push(evicted)};
+    const uint16_t uncover[] = {ArmV6M::pop(evicted)};
+    CHECK(containsSeq(rt.code(), n, evict, 1));
+    CHECK(containsSeq(rt.code(), n, uncover, 1));
+}
+
+TEST(AnExtensionOpCanLeaveTheAccumulatorUndefined)
+{
+    // accInvalidate is the escape hatch for an op that clobbers r0 without
+    // establishing a value there; the following CONST re-establishes one.
+    FakeRuntime<1> rt(/*arenaBytes=*/256);
+    uint8_t *raw = rt.bodyBuf(0, 48);
+    const Instr prelude[] = {CONST(1), PUSH(), CONST(2), PUSH()};
+    uint32_t len = encodeBody(prelude, 4, raw, 48);
+    raw[len++] = 0x80;
+    const Instr tail[] = {CONST(9), bare(Op::RETURN)};
+    len += encodeBody(tail, 2, raw + len, 48 - len);
+    rt.setLen(0, /*argCount=*/0, len, /*savesLR=*/false);
+
+    ExtScope extScope(&EXT_INVALIDATE);
+    uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
+    CHECK(n > 0);
+}
