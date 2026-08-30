@@ -814,7 +814,7 @@ function rather than C inline asm: the `BX`-chain that follows is opaque to
 the compiler either way, and as a real function it needs no clobber list, no
 `-ffixed-rN` fight over spare operand registers, and no staging array. It
 saves `r4`-`r7` and (mirrored through low registers) `r8`-`r11`, sets up
-`r9` (runtime pointer), `r8` (`runtime + RUNTIME_DISPATCH_TABLE_OFFSET`),
+`r9` (runtime pointer), `r8` (the dispatch table base, `&runtime->slot(0)`),
 `r10` (`g_helperVec`) and `r11` (tick 0), writes its own resume address into
 the sentinel slot, marshals the entry procedure's arguments, then
 tail-branches into `callHelper` with a boot record of `proc_idx = 0xffff`
@@ -859,7 +859,7 @@ Per-opcode-class notes:
   (`CMP #1` plus `BHI` past both arms, then `BEQ` to the second): folding
   `acc ≥ 2` into `case[1]` ran the else-arm where the ISA runs neither arm.
   `N > 2`
-  (`compiler/src/blocks.cpp`'s `openBrTableJump`) needs a literal-pool jump
+  (`translate_control_flow.cpp`'s `BR_TABLE` arm) needs a literal-pool jump
   table plus a computed `BX`, but not one dispatch routine per site: one
   flash-resident copy for the whole program (§11's reserved slot 6,
   `brTableJumpHelper`, `jit-armv6m/runtime/runtime.S`),
@@ -1240,7 +1240,7 @@ unencodable at any size, this backend cannot compile it at all.
 |---|---|---|---|
 | `RESOURCE_PROGRAM_NO_PROCS` | `0x52451100` | `executor.cpp` `Executor::run` | `proc_count == 0` |
 | `RESOURCE_PROGRAM_BODY_UNTERMINATED` | `0x52451200` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | ran off the blob with a block still open |
-| `RESOURCE_PROGRAM_CALLEE_RANGE` | `0x52451300` | `translate_proc.cpp` `processNonControl` | `calleeIndex >= procCount` |
+| `RESOURCE_PROGRAM_CALLEE_RANGE` | `0x52451300` | `translate_data_flow.cpp`'s `CALL` arm | `calleeIndex >= procCount` |
 | `RESOURCE_PROGRAM_FRAME` | `0x52451400` | `executor.cpp` `Executor::run` | §1.1's frame does not verify: truncated, corrupt, or another contract version |
 | `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` | `0x52451500` | `executor.cpp` `Executor::run` | `argCount != slot(0).argCount()` |
 | `RESOURCE_PROGRAM_ENTRY_DEPTH` | `0x52451600` | `executor.cpp` `Executor::run` | the entry procedure's out-of-window args exceed `total_depth` |
@@ -1679,20 +1679,18 @@ which is the easy mistake here:
 
 The core needs exactly two things per extension opcode:
 
-1. the **byte length**, so `proc_scan.cpp`'s body-boundary walk and
-   `blocks.cpp`'s branch-span walk can step over it;
-2. the **declared effect** (§11.2), so `needsLRSave` and the span budget
-   stay right without knowing semantics.
+1. the **byte length**, so `proc_scan.cpp`'s body-boundary walk can step
+   over it;
+2. the **declared effect** (§11.2), so `needsLRSave` stays right without
+   knowing semantics.
 
 Both come from `extDecode`, packed into one 32-bit word carried in
-`Instr`'s existing union. That is the load-bearing choice:
-`instrMaxBytes(const Instr&)` and `triggersLRSave(const Instr&)` keep their
-signatures and become bitfield reads, so `maxSpanBytes` — which re-walks
-every instruction once per enclosing nesting level — pays a shift rather
-than an indirect call per level, `sizeof(Instr)` stays 8 (a `static_assert`
-holds it there, keeping `DecodedInstr` off the sret path where the margin
-against `SCAN_STACK_MARGIN` is ~56 bytes), and the span budget, the
-prologue's `lr` decision and codegen cannot see different answers.
+`Instr`'s existing union. Packed rather than a struct because
+`triggersLRSave(const Instr&)` keeps its signature and becomes a bitfield
+read rather than an indirect call per instruction, and because
+`sizeof(Instr)` stays 8 — a `static_assert` holds it there, keeping
+`DecodedInstr` off the sret path where the margin against
+`SCAN_STACK_MARGIN` is ~56 bytes.
 
 **Operands never reach the core.** They are literal constants (§11.3), so
 the extension re-reads them from the wire when it emits. The core carries a
@@ -1700,18 +1698,19 @@ length and an effect; that is the whole coupling. It also means
 `encode_instr.cpp` structurally cannot rebuild an extension instruction
 from an `Instr`, so a fixture needing one splices its own bytes.
 
-**One gate, not three.** `Runtime::init`'s directory walk already decodes
-every instruction of every procedure before anything is translated, so the
-extension is consulted there and `decodeInstr` trusts the result. Two things
+**One gate, not three.** `Runtime::loadProgram`'s directory walk already
+decodes every instruction of every procedure before anything is translated,
+so the extension is consulted there and `decodeInstr` trusts the result. Two things
 the core checks rather than trusts, because both would turn a bad extension
 into a hang or an overrun instead of a diagnostic: a claimed length of zero
 (no forward progress), and one running past `bytesLen`.
 
 **What the declaration carries** is only what the core cannot derive at the
-site: `NEEDS_LR` and `halfwords` because the pre-pass consumes them before
-any `Assembler` exists, `poolWords` because only the extension knows how
-many literals an `ATOMIC` block will add, `CALL_SHAPED` because
-`Executor::run`'s budget takes the *max* of a translation and an extension
+site: `NEEDS_LR` because the pre-pass consumes it before any `Assembler`
+exists, `halfwords` because an extension that outgrows it should be a
+diagnostic rather than arena pressure, `poolWords` because only the
+extension knows how many literals an `ATOMIC` block will add, `CALL_SHAPED`
+because `Executor::run`'s budget takes the *max* of a translation and an extension
 helper rather than their sum, and `tosDelta` — which is not a driver but a
 postcondition, checked against the real `window.tos` after emit, since the
 wire's `total_depth` was validated against it and nothing re-derives it
@@ -1720,7 +1719,7 @@ upstream: `maxTransient` is already folded into `total_depth` by
 `validate.ts`, `terminates` is honoured in exactly one of three places on
 the TS side, and the opcode byte is at `site.opcode()`.
 
-Two rejections remain, at `init` with `EXT_UNSUPPORTED`: call-shaped, and a
+Two rejections remain, at load with `EXT_UNSUPPORTED`: call-shaped, and a
 net TOS push (not representable on the TS side either — `extension.ts`).
 
 **The stack and the accumulator are a service, not a handout.** `ExtSite`
@@ -1742,27 +1741,32 @@ worst case per call (2 for `push`/`pop`, 1 for a spilled `load`/`store`,
 `materializeImm32`'s own for `accInto`) depends on a `tos` the author
 cannot know. That is survivable because the check is empirical: the
 translator measures the real `a.pc()` delta and bails before anything runs,
-so miscounting is a deterministic diagnostic, never a bad branch offset.
+so miscounting is a deterministic diagnostic rather than a silent overspend.
 
-**The extension is per-program state, not per-image.** It arrives as an
-`enterProgram*` argument and is stored on the `Runtime` that program runs
-under, then threaded from there into the three walks that decode
-instructions. It has to be stored rather than only passed down because
-compilation is lazy — a procedure is translated on its first dispatch, long
-after `enterProgram*` returned — and `Runtime` is the context that lives
-that long and is already threaded everywhere the translator looks. The word
-it costs shifts `RUNTIME_DISPATCH_TABLE_OFFSET` from 40 to 44, which
-`runtime.S` picks up from the macro rather than hardcoding.
+**One extension per image, bound by the linker.** `extDecode`, `extEmit`
+and `extHelperStackBytes` are `extern "C"` symbols whose weak defaults live
+in `ext_default.cpp`; an extension replaces them. No table, no per-program
+argument, no pointer on the `Runtime` — direct calls are what keep the
+translator's stack bound derivable from the call graph, which is the whole
+basis of §2's up-front reservation. Tests swap implementations behind that
+seam with `ExtStub`/`ExtScope` (`test/host/ext_stub.h`), which is why the
+host suite can exercise several extensions in one binary and a target build
+cannot.
 
-> That shift is also how `test/qemu/Makefile` acquired an explicit
-> dependency from `runtime.S`'s object to the ABI header it includes.
-> Makefile.ultimate generates header dependencies for `.c`/`.cpp` but its
-> `%.S.o` rule has neither `DEPFLAGS` nor a `.d` prerequisite, so a stale
-> assembly object kept the old offset while the C++ half used the new one —
-> a binary whose two halves disagree about a struct offset, which builds
-> cleanly, asserts nothing, and hangs on the first dispatch.
+> `test/qemu/Makefile` carries an explicit dependency from `runtime.S`'s
+> object to the ABI header it includes. Makefile.ultimate generates header
+> dependencies for `.c`/`.cpp` but its `%.S.o` rule has neither `DEPFLAGS`
+> nor a `.d` prerequisite, so a stale assembly object once kept an old
+> struct offset while the C++ half used the new one — a binary whose two
+> halves disagree, which builds cleanly, asserts nothing, and hangs on the
+> first dispatch.
 
 ### 18.1 Extension state
+
+> **Not built.** Nothing in the tree defines `RUNTIME_EXT_STATE_OFFSET`,
+> `extEmitStateBase` or `extStateOffset`. This is the design to follow when
+> an extension first needs to carry state; its premises still hold against
+> `dispatch_table.h` and `returnHelperTail`.
 
 Two words of per-excursion scratch at `RUNTIME_EXT_STATE_OFFSET`, for
 whatever an extension needs to carry (a stream cursor, a buffer base, an
@@ -1772,8 +1776,9 @@ be offset by one, and nothing reads its static half — `sentinelLandingAddress(
 reads its `codePtr`, and every loop over procedures runs over
 `slot(i) == slots[i+1]`. So the words are already allocated, already
 reachable through the pointer emitted code has, and cost no layout change at
-all. `Runtime::init` zeroes them; a `static_assert` ties the offset to the
-real struct.
+all. The dispatch table's own initialization would zero them, next to the
+`slots[0].lastUsed` it already clears; a `static_assert` ties the offset to
+the real struct.
 
 Two rather than three, starting at `bodyPtr` rather than `lastUsed`, because
 `returnHelperTail` (§9) stamps the sentinel's `lastUsed` on every return out
@@ -1812,8 +1817,8 @@ rather than a slot in the flash-resident r10 vector. That vector is a fixed
 core array, so handing out indices would make every extension's helper set
 part of the core's own ABI; a pooled word needs no index, deduplicates
 within a chunk, and is compaction-safe for the same reason every other
-literal is. The price is pool-reach pressure — `poolDebt()` is charged
-against `SAFE_COND_BRANCH_SPAN`.
+literal is. The price is pool-reach pressure: one more pending entry the
+next `ensurePoolRoom` has to place.
 
 | form | emitted | for |
 |---|---|---|

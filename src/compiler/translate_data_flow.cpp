@@ -73,8 +73,8 @@ ArmV6M::Condition Ctx::handleComparisonEmission(const Instr &instr)
     }
 }
 
-/* The declared halfword count is what the span walk already sized every
- * enclosing branch's reach from, so an overrun is a wrong branch offset. */
+/* An extension that outgrows its declaration is a diagnostic here rather
+ * than arena pressure and a wide-branch retry further out. */
 static void emitExtSite(Assembler &a, ExtSite &site, uint32_t budget)
 {
     const uint32_t before = a.pc();

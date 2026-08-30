@@ -1628,9 +1628,8 @@ TEST(AnExtensionOpDrivesTheOperandStackThroughItsSite)
 
 TEST(AnExtensionOpOverrunningItsDeclaredBudgetIsReported)
 {
-    // The span walk budgeted the declared halfwords and every enclosing
-    // conditional branch's reach was computed from it, so an overrun is a
-    // wrong branch offset rather than merely wasted arena.
+    // Caught here rather than left to surface as arena pressure and a
+    // wide-branch retry, neither of which names the extension.
     FakeRuntime<1> rt(/*arenaBytes=*/128);
     uint8_t *raw = rt.bodyBuf(0, 32);
     rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/false);
