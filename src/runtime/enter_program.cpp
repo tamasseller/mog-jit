@@ -30,59 +30,6 @@ static ProgramHeader parseProgramHeader(const uint8_t *bytes, uint32_t size)
     return ProgramHeader{maxCallDepth, totalDepth, procCount, pos};
 }
 
-static ProgramResult enterProgramCore(
-    uint32_t *args, uint32_t argCount,
-    const ExtHooks *extension,
-    Runtime *runtime,
-    const uint8_t *programBytes, uint32_t programSize, const ProgramHeader &hdr,
-    uint32_t codeArenaBase, uint32_t codeArenaSize,
-    uint32_t stackLimit, uint32_t arenaOverlapsStack)
-{
-    runtime->init(hdr.procCount, codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack, extension);
-
-    if(uint32_t code = runtime->loadProgram(programBytes, programSize, hdr.bodyOffset))
-    {
-        return ProgramResult{ code, LANDING_RESOURCE_ERROR };
-    }
-
-    const uint32_t declared = runtime->slot(0).argCount();
-
-    if(argCount != declared)
-    {
-        return ProgramResult{ RESOURCE_PROGRAM_ENTRY_ARG_COUNT, LANDING_RESOURCE_ERROR };
-    }
-
-    const uint32_t entrySpilled = declared > jitc::WINDOW_SIZE ? declared - jitc::WINDOW_SIZE : 0;
-    if(entrySpilled > hdr.totalDepth)
-    {
-        return ProgramResult{ RESOURCE_PROGRAM_ENTRY_DEPTH, LANDING_RESOURCE_ERROR };
-    }
-
-    EntryArgs entryArgs;
-    buildEntryArgs(&entryArgs, args, declared);
-
-    uint64_t packed = enterDispatch(&runtime->slot(0), runtime, &entryArgs);
-    return ProgramResult{ (uint32_t)packed, (uint32_t)(packed >> 32) };
-}
-
-static ProgramResult enterProgramWithHeader(
-    uint32_t *args, uint32_t argCount,
-    const ExtHooks *extension,
-    const uint8_t *programBytes, uint32_t programSize, const ProgramHeader &hdr,
-    uint32_t codeArenaBase, uint32_t codeArenaSize,
-    uint32_t stackLimit, uint32_t arenaOverlapsStack)
-{
-    if(hdr.procCount == 0)
-    {
-        return ProgramResult{ RESOURCE_PROGRAM_NO_PROCS, LANDING_RESOURCE_ERROR };
-    }
-
-    alignas(Runtime) unsigned char runtimeStorage[Runtime::storageBytesFor(hdr.procCount)];
-    return enterProgramCore(args, argCount, extension, reinterpret_cast<Runtime *>(runtimeStorage),
-        programBytes, programSize, hdr,
-        codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack);
-}
-
 static uint32_t requiredStackBytes(
     uint32_t procCount, uint32_t operandStackBytes, uint32_t maxCallDepth,
     uint32_t interruptReserve, const ExtHooks *extension)
@@ -115,24 +62,63 @@ static bool stackHasRoom(uint32_t needed, uint32_t stackLimit)
     return (sp - needed) >= stackLimit;
 }
 
+static ProgramResult enterProgramCore(
+    uint32_t *args, uint32_t argCount,
+    const ExtHooks *extension,
+    const uint8_t *programBytes, uint32_t programSize,
+    uint32_t codeArenaBase, uint32_t codeArenaSize,
+    uint32_t stackLimit, uint32_t arenaOverlapsStack, uint32_t interruptReserve)
+{
+    ProgramHeader hdr = parseProgramHeader(programBytes, programSize);
+    uint32_t operandStackBytes = hdr.totalDepth * 4;
+
+    uint32_t needed = requiredStackBytes(hdr.procCount, operandStackBytes, hdr.maxCallDepth, interruptReserve, extension) + codeArenaSize;
+    if(!stackHasRoom(needed, stackLimit))
+    {
+        return ProgramResult{ RESOURCE_EXHAUSTED_STACK_BUDGET, LANDING_RESOURCE_ERROR };
+    }
+
+    if(hdr.procCount == 0)
+    {
+        return ProgramResult{ RESOURCE_PROGRAM_NO_PROCS, LANDING_RESOURCE_ERROR };
+    }
+
+    alignas(Runtime) unsigned char runtimeStorage[Runtime::storageBytesFor(hdr.procCount)];
+    auto runtime = new(runtimeStorage) Runtime(hdr.procCount, codeArenaBase, codeArenaSize, stackLimit, arenaOverlapsStack, extension);
+
+    if(uint32_t code = runtime->loadProgram(programBytes, programSize, hdr.bodyOffset))
+    {
+        return ProgramResult{ code, LANDING_RESOURCE_ERROR };
+    }
+
+    const uint32_t declared = runtime->slot(0).argCount();
+
+    if(argCount != declared)
+    {
+        return ProgramResult{ RESOURCE_PROGRAM_ENTRY_ARG_COUNT, LANDING_RESOURCE_ERROR };
+    }
+
+    const uint32_t entrySpilled = declared > jitc::WINDOW_SIZE ? declared - jitc::WINDOW_SIZE : 0;
+    if(entrySpilled > hdr.totalDepth)
+    {
+        return ProgramResult{ RESOURCE_PROGRAM_ENTRY_DEPTH, LANDING_RESOURCE_ERROR };
+    }
+
+    EntryArgs entryArgs;
+    buildEntryArgs(&entryArgs, args, declared);
+
+    uint64_t packed = enterDispatch(&runtime->slot(0), runtime, &entryArgs);
+    return ProgramResult{ (uint32_t)packed, (uint32_t)(packed >> 32) };
+}
+
 extern "C" ProgramResult enterProgramOnStack(
     uint32_t *args, uint32_t argCount,
     const uint8_t *programBytes, uint32_t programSize,
     const ExtHooks *extension,
     uint32_t codeArenaSize, uint32_t stackLimit, uint32_t interruptReserve)
 {
-    ProgramHeader hdr = parseProgramHeader(programBytes, programSize);
-    uint32_t operandStackBytes = hdr.totalDepth * 4;
-
-    uint32_t needed = requiredStackBytes(hdr.procCount, operandStackBytes, hdr.maxCallDepth, interruptReserve, extension)
-                     + codeArenaSize;
-    if(!stackHasRoom(needed, stackLimit))
-    {
-        return ProgramResult{ RESOURCE_EXHAUSTED_STACK_BUDGET, LANDING_RESOURCE_ERROR };
-    }
-
-    return enterProgramWithHeader(args, argCount, extension, programBytes, programSize, hdr,
-        stackLimit, codeArenaSize, stackLimit, /*arenaOverlapsStack=*/1);
+    return enterProgramCore(args, argCount, extension, programBytes, programSize, 
+        stackLimit, codeArenaSize, stackLimit, /*arenaOverlapsStack=*/1, interruptReserve);
 }
 
 extern "C" ProgramResult enterProgramSplit(
@@ -142,15 +128,6 @@ extern "C" ProgramResult enterProgramSplit(
     uint32_t codeArenaBase, uint32_t codeArenaSize,
     uint32_t stackLimit, uint32_t interruptReserve)
 {
-    ProgramHeader hdr = parseProgramHeader(programBytes, programSize);
-    uint32_t operandStackBytes = hdr.totalDepth * 4;
-
-    uint32_t needed = requiredStackBytes(hdr.procCount, operandStackBytes, hdr.maxCallDepth, interruptReserve, extension);
-    if(!stackHasRoom(needed, stackLimit))
-    {
-        return ProgramResult{ RESOURCE_EXHAUSTED_STACK_BUDGET, LANDING_RESOURCE_ERROR };
-    }
-
-    return enterProgramWithHeader(args, argCount, extension, programBytes, programSize, hdr,
-        codeArenaBase, codeArenaSize, stackLimit, /*arenaOverlapsStack=*/0);
+    return enterProgramCore(args, argCount, extension, programBytes, programSize, 
+        codeArenaBase, codeArenaSize, stackLimit, /*arenaOverlapsStack=*/0, interruptReserve);
 }

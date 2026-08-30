@@ -91,7 +91,7 @@ RECURSIVE_CLUSTER = [
 # second place for the same "constant silently stops matching reality"
 # failure mode (see this file's own header) to recur.
 TRANSLATE_PROC_CPP = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "../../compiler/src/translate_proc.cpp")
+    os.path.dirname(os.path.abspath(__file__)), "../../src/compiler/translate_proc.cpp")
 MARGIN_CONST_RE = re.compile(r"TRANSLATE_BODY_STACK_MARGIN\s*=\s*(\d+)")
 
 SCAN_CLUSTER = [

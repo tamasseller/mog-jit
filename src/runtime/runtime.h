@@ -83,18 +83,14 @@ public:
         return ptr; 
     }
 
-    void init(uint32_t procCount, uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit, uint32_t arenaOverlapsStack, const ExtHooks *extension = nullptr)
+    inline Runtime(uint32_t procCount, uint32_t codeArenaBase, uint32_t codeArenaSize, uint32_t stackLimit, uint32_t arenaOverlapsStack, const ExtHooks *extension = nullptr):
+        arenaEnd((codeArenaBase + codeArenaSize) & ~3u), arenaCursor((codeArenaBase + 3u) & ~3u), procCount(procCount), ext(extension), stackLimit(stackLimit), arenaOverlapsStack(arenaOverlapsStack)
     {
-        this->ext = extension;
-        arenaEnd = (codeArenaBase + codeArenaSize) & ~3u;
-        arenaCursor = (codeArenaBase + 3u) & ~3u;
         assert(arenaCursor <= arenaEnd); // GCOV_EXCL_LINE
-        this->procCount = procCount;
-        this->stackLimit = stackLimit;
+
         slots[0].lastUsed = 0;
         slots[0].bodyPtr = 0;
         slots[0].staticInfo = 0;
-        this->arenaOverlapsStack = arenaOverlapsStack;
     }
 
     uint32_t loadProgram(const uint8_t *programBytes, uint32_t programSize, uint32_t bodyOffset)
@@ -113,12 +109,15 @@ public:
         for(uint32_t i = 0; i < procCount; i++)
         {
             assert(pos < programSize); // GCOV_EXCL_LINE — malformed/truncated program, matching decode_instr.cpp's own convention
+            
             uint32_t argCount = jitc::decodeLeb128(programBytes, pos, pos);
             uint32_t bodyStart = pos;
+
             jitc::BodyScanResult scan = jitc::scanProcBody(programBytes, programSize, bodyStart, this->ext, stackLimit);
+
             if(!scan.ok)
             {
-                return scan.failCode; // the walk already named which of its five rejections this is
+                return scan.failCode; 
             }
             if(argCount > ProcSlot::MAX_ARG_COUNT)
             {
@@ -141,7 +140,16 @@ public:
         return 0;
     }
 
-    /* The extension serving this program, or nullptr. */
+    inline auto getArenaCursor() const 
+    {
+        return arenaCursor;
+    }
+
+    inline auto getProcCount() const 
+    {
+        return procCount;
+    }
+
     const ExtHooks *extension() const
     {
         return ext;
@@ -162,9 +170,6 @@ public:
         return slots[0].codePtr;
     }
 
-    /* Parked in the sentinel slot's tail by enterDispatch, never by C++:
-     * callHelper and returnHelperTail write only codePtr and lastUsed, so
-     * these words are the one place the dispatch ABI cannot disturb. */
     uint32_t savedSp() const
     {
         return slots[0].bodyPtr;

@@ -162,7 +162,7 @@ bool Ctx::processUntilTerminator(uint32_t pc, EmitBranch emitBranch, bool isThis
             }
             case Op::CALL:
             {
-                if(instr.calleeIndex >= this->a.runtime.procCount)
+                if(instr.calleeIndex >= this->a.runtime.getProcCount())
                 {
                     runtimeBail(&a.runtime, RESOURCE_PROGRAM_CALLEE_RANGE);
                 }

@@ -17,7 +17,7 @@ static uint32_t roundUpToWord(uint32_t v)
     return (v + 3u) & ~3u;
 }
 
-Assembler::Assembler(Runtime &rt, uint32_t lruTick): buf((uint16_t *)(uintptr_t)rt.arenaCursor), runtime(rt), lruTick(lruTick) {}
+Assembler::Assembler(Runtime &rt, uint32_t lruTick): buf((uint16_t *)(uintptr_t)rt.getArenaCursor()), runtime(rt), lruTick(lruTick) {}
 
 uint32_t Assembler::emit(uint16_t word)
 {

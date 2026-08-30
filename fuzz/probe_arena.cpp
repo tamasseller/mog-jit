@@ -64,9 +64,8 @@ int main(int argc, char **argv)
             const uint32_t arenaSize = chosen & ~3u;
 
             alignas(8) uint8_t storage[512] = {};
-            Runtime &rt = *reinterpret_cast<Runtime *>(storage);
             memset(g_arena, 0, arenaSize);
-            rt.init(procCount, ARENA_BASE, arenaSize, 0, 0);
+            Runtime &rt = *new(storage) Runtime(procCount, ARENA_BASE, arenaSize, 0, 0);
             if(uint32_t code = rt.loadProgram(data, (uint32_t)in.size(), bodyOffset); code != 0)
             {
                 printf("    arena %5u: walk rejected %08x\n", arenaSize, code);

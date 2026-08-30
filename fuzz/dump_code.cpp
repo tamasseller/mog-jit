@@ -51,10 +51,9 @@ int main(int argc, char **argv)
     const uint32_t bodyOffset = pos;
 
     alignas(8) uint8_t storage[1024] = {};
-    Runtime &rt = *reinterpret_cast<Runtime *>(storage);
     const uint32_t arenaBase = (uint32_t)(uintptr_t)g_arena;
 
-    rt.init(procCount, arenaBase, ARENA_CAPACITY, 0, 0);
+    Runtime &rt = *new(storage) Runtime(procCount, arenaBase, ARENA_CAPACITY, 0, 0);
     if(uint32_t code = rt.loadProgram(data, (uint32_t)in.size(), bodyOffset); code != 0)
     {
         fprintf(stderr, "Runtime::loadProgram rejected this program: %08x\n", code);
@@ -66,7 +65,7 @@ int main(int argc, char **argv)
         // A fresh Runtime per procedure so each one's code starts at the
         // arena base and the .bin below is that procedure alone.
         memset(g_arena, 0, ARENA_CAPACITY);
-        rt.init(procCount, arenaBase, ARENA_CAPACITY, 0, 0);
+        new(storage) Runtime(procCount, arenaBase, ARENA_CAPACITY, 0, 0);
         rt.loadProgram(data, (uint32_t)in.size(), bodyOffset);
 
         const uint32_t argCount = rt.slot(i).argCount();

@@ -9,10 +9,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-g++ -std=c++17 -O1 -g -m32 -I ../compiler/src -I ../runtime \
+g++ -std=c++17 -O1 -g -m32 -I ../src/compiler -I ../src/runtime \
     probe_arena.cpp \
-    ../compiler/src/{ext,window,accstate,assembler,arithmetic,shape,abi_strategy,decode_instr,proc_scan,translate_proc,translate_data_flow,translate_control_flow}.cpp \
-    ../runtime/runtime.cpp \
+    ../src/compiler/{ext,window,accstate,assembler,arithmetic,shape,abi_strategy,decode_instr,proc_scan,translate_proc,translate_data_flow,translate_control_flow}.cpp \
+    ../src/runtime/runtime.cpp \
     -o probe_arena
 
 ./probe_arena "$@"

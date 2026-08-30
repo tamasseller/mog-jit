@@ -21,7 +21,7 @@ CXXFLAGS=(
     -std=gnu++17 -fno-exceptions -fno-rtti
     -ffixed-r8 -ffixed-r9 -ffixed-r10 -ffixed-r11
     -fno-use-cxa-atexit
-    -I ../../compiler/src -I ../../runtime -I .
+    -I ../../src/compiler -I ../../src/runtime -I .
 )
 
 # vectors.S first on the link line — nothing else pins the vector table to
@@ -29,22 +29,22 @@ CXXFLAGS=(
 arm-none-eabi-g++ "${CXXFLAGS[@]}" \
     -static -nostartfiles -specs=nosys.specs -T linker.ld \
     vectors.S \
-    ../../runtime/runtime.S \
-    ../../runtime/runtime.cpp \
-    ../../runtime/enter_program.cpp \
-    ../../runtime/dispatch_abi.cpp \
-    ../../compiler/src/window.cpp \
-    ../../compiler/src/ext.cpp \
-    ../../compiler/src/accstate.cpp \
-    ../../compiler/src/arithmetic.cpp \
-    ../../compiler/src/assembler.cpp \
-    ../../compiler/src/shape.cpp \
-    ../../compiler/src/abi_strategy.cpp \
-    ../../compiler/src/decode_instr.cpp \
-    ../../compiler/src/proc_scan.cpp \
-    ../../compiler/src/translate_proc.cpp \
-    ../../compiler/src/translate_data_flow.cpp \
-    ../../compiler/src/translate_control_flow.cpp \
+    ../../src/runtime/runtime.S \
+    ../../src/runtime/runtime.cpp \
+    ../../src/runtime/enter_program.cpp \
+    ../../src/runtime/dispatch_abi.cpp \
+    ../../src/compiler/window.cpp \
+    ../../src/compiler/ext.cpp \
+    ../../src/compiler/accstate.cpp \
+    ../../src/compiler/arithmetic.cpp \
+    ../../src/compiler/assembler.cpp \
+    ../../src/compiler/shape.cpp \
+    ../../src/compiler/abi_strategy.cpp \
+    ../../src/compiler/decode_instr.cpp \
+    ../../src/compiler/proc_scan.cpp \
+    ../../src/compiler/translate_proc.cpp \
+    ../../src/compiler/translate_data_flow.cpp \
+    ../../src/compiler/translate_control_flow.cpp \
     semihost.cpp \
     cxx_stubs.cpp \
     exec_runner.cpp \

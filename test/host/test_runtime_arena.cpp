@@ -36,7 +36,7 @@ public:
         uint32_t len = encodeProgram(procs, procCount, programBytes, sizeof(programBytes));
         uint32_t bodyOffset;
         decodeLeb128(programBytes, 0, bodyOffset); // past proc_count's own LEB128
-        (*this)->init(procCount, base, size, 0, 0);
+        new(bytes) Runtime(procCount, base, size, 0, 0);
         uint32_t code = (*this)->loadProgram(programBytes, len, bodyOffset);
         assert(code == 0); // GCOV_EXCL_LINE — this file's own encoding setup, not the thing under test
         (void)code;
@@ -148,10 +148,8 @@ TEST(WalkFailsWithoutTouchingDispatchStateWhenAProcedureCantBeScanned)
     decodeLeb128(programBytes, 0, bodyOffset);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
-
     register uint32_t sp asm("sp");
-    runtime->init(1, ARENA_BASE, ARENA_SIZE, sp, 0);
+    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, sp, 0);
     CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == RESOURCE_EXHAUSTED_SCAN_STACK);
 }
 
@@ -165,9 +163,7 @@ TEST(WalkReportsAnUnterminatedBodySeparatelyFromRunningOutOfStack)
     decodeLeb128(programBytes, 0, bodyOffset);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
-
-    runtime->init(1, ARENA_BASE, ARENA_SIZE, 0, 0);
+    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0);
     CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == RESOURCE_PROGRAM_BODY_UNTERMINATED);
 }
 
@@ -181,9 +177,7 @@ TEST(WalkReportsAnArgCountPastProcSlotsOwnFieldWidth)
     decodeLeb128(programBytes, 0, bodyOffset);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
-
-    runtime->init(1, ARENA_BASE, ARENA_SIZE, 0, 0);
+    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0);
     CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == RESOURCE_LIMIT_ARG_COUNT);
 }
 
@@ -195,9 +189,7 @@ TEST(WalkReportsAProcCountPastTheCallRecordsOwnProcIdxField)
     uint8_t programBytes[] = {0x00};
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
-
-    runtime->init(jitc::MAX_PROC_IDX + 2, ARENA_BASE, ARENA_SIZE, 0, 0);
+    Runtime *runtime = new(bytes) Runtime(jitc::MAX_PROC_IDX + 2, ARENA_BASE, ARENA_SIZE, 0, 0);
     CHECK(runtime->loadProgram(programBytes, sizeof(programBytes), 0) == RESOURCE_LIMIT_PROC_COUNT);
 }
 
@@ -211,11 +203,9 @@ TEST(WalkAcceptsTheLargestProcCountTheCallRecordCanStillAddress)
     decodeLeb128(programBytes, 0, bodyOffset);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
-
     // The boundary itself is not the rejection — one procedure walked under a
     // procCount at the ceiling still has to pass.
-    runtime->init(1, ARENA_BASE, ARENA_SIZE, 0, 0);
+    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0);
     CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == 0);
     CHECK(jitc::MAX_PROC_IDX + 1 == 0x8000u);
 }
@@ -226,9 +216,7 @@ TEST(WalkReportsAnUnknownOpcodeAsADeploymentMismatch)
     const uint32_t bodyOffset = 1;
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
-
-    runtime->init(1, ARENA_BASE, ARENA_SIZE, 0, 0, /*extension=*/nullptr);
+    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0, /*extension=*/nullptr);
     CHECK(runtime->loadProgram(programBytes, sizeof(programBytes), bodyOffset) == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
 
@@ -269,9 +257,7 @@ TEST(WalkAcceptsAWellFormedExtensionDeclaration)
     uint32_t len = extProgram(programBytes);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
-
-    runtime->init(1, ARENA_BASE, ARENA_SIZE, 0, 0, ext);
+    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0, ext);
     CHECK(runtime->loadProgram(programBytes, len, 1) == 0);
 }
 
@@ -282,9 +268,7 @@ TEST(WalkRejectsAnExtensionBuiltAgainstADifferentAbiVersion)
     uint32_t len = extProgram(programBytes);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
-
-    runtime->init(1, ARENA_BASE, ARENA_SIZE, 0, 0, ext);
+    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0, ext);
     CHECK(runtime->loadProgram(programBytes, len, 1) == RESOURCE_PROGRAM_EXT_ABI);
 }
 
@@ -295,8 +279,6 @@ TEST(WalkRejectsACallShapedExtensionDeclarationAsUnsupported)
     uint32_t len = extProgram(programBytes);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    Runtime *runtime = reinterpret_cast<Runtime *>(bytes);
-
-    runtime->init(1, ARENA_BASE, ARENA_SIZE, 0, 0, ext);
+    Runtime *runtime = new(bytes) Runtime(1, ARENA_BASE, ARENA_SIZE, 0, 0, ext);
     CHECK(runtime->loadProgram(programBytes, len, 1) == RESOURCE_PROGRAM_EXT_UNSUPPORTED);
 }

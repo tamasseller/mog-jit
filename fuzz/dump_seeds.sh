@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 g++ -std=c++17 -O1 \
-    -I ../compiler/src -I ../test \
+    -I ../src/compiler -I ../test \
     dump_seeds.cpp \
     ../test/encode_instr.cpp \
     -o dump_seeds

@@ -11,11 +11,11 @@ g++ -std=c++17 -O1 -g \
     -fno-sanitize=shift-base \
     -m32 \
     -DPPL_FUZZ_LIBFUZZER_BUILD \
-    -I ../compiler/src -I ../runtime \
+    -I ../src/compiler -I ../src/runtime \
     repro.cpp \
     harness.cpp \
-    ../compiler/src/{ext,window,accstate,assembler,arithmetic,shape,abi_strategy,decode_instr,proc_scan,translate_proc,translate_data_flow,translate_control_flow}.cpp \
-    ../runtime/runtime.cpp \
+    ../src/compiler/{ext,window,accstate,assembler,arithmetic,shape,abi_strategy,decode_instr,proc_scan,translate_proc,translate_data_flow,translate_control_flow}.cpp \
+    ../src/runtime/runtime.cpp \
     -o repro_driver
 
 ./repro_driver "$@"
