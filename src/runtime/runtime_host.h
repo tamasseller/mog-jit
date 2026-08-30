@@ -17,12 +17,13 @@ typedef struct
 
 #define ARMV6M_EXCEPTION_FRAME_BYTES 32
 
+/* No arena size: the arena is everything between stackLimit and the code
+ * limit computed from the program's own static reservation. */
 ProgramResult enterProgramOnStack(
     uint32_t *args,
     uint32_t argCount,
     const uint8_t *programBytes,
     uint32_t programSize,
-    uint32_t codeArenaSize,
     uint32_t stackLimit,
     uint32_t interruptReserve);
 

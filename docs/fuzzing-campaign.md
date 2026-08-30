@@ -690,7 +690,7 @@ New: `fuzz/README.md`, `fuzz/make_seeds.ts`, `fuzz/dump_code.{cpp,sh}`,
 the whole-program envelope format (34 in `seeds/` in total).
 
 Modified — runtime: `runtime.S` (`trapHelper`), `dispatch_abi.{h,cpp}`,
-`runtime_host.h`, `runtime_internal.h`, `enter_program.cpp`. Translator:
+`runtime_host.h`, `runtime.h`, `executor.cpp`. Translator:
 `binops.cpp`, `blocks.cpp`, `translate_proc.cpp`, `abi_strategy.{h,cpp}`,
 `registers.h`, `accstate.h`. Harness: `harness.cpp`, `oracle_server.ts`,
 `dump_seeds.{cpp,sh}`, `make_seeds.ts`. `@ppl/machine`: `vm.ts`,

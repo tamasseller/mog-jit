@@ -11,7 +11,7 @@ in a protocol-agnostic validator.
 But a real `jit-armv6m` deployment has its own, much narrower notion of
 "realistic" than the generic validator's ceilings do. `ProcSlot`'s own wire
 field widths (`MAX_ARG_COUNT = 2047`, `MAX_BODY_BYTES ~1M`,
-`runtime_internal.h`) are wire-format capacity limits, not target-realistic
+`dispatch_table.h`) are wire-format capacity limits, not target-realistic
 ones — a real handwritten or lowered procedure never comes anywhere close
 to either. The gap between "the generic validator allows it" and "any
 plausible real program would ever produce it" is exactly the space
@@ -160,7 +160,7 @@ names which by carrying one of `runtime_host.h`'s `LANDING_*` tags:
 |---|---|---|
 | `LANDING_SUCCESS` (0) | the entry procedure's own `RETURN`, resolved against the boot record's `procIdx = -1` | the returned value |
 | `LANDING_TRAP` (1) | `runtime.S`'s `trapHelper`, helper slot 8 — a bytecode `TRAP` at any call depth | the trap code |
-| `LANDING_RESOURCE_ERROR` (2) | `dispatch_abi.cpp`'s `runtimeBail` from a translation in progress, or `enter_program.cpp` directly for a pre-execution rejection (`proc_count == 0`, a `Runtime::init` failure, the up-front stack budget) | one of the `RESOURCE_*` codes — design.md §12 |
+| `LANDING_RESOURCE_ERROR` (2) | `dispatch_abi.cpp`'s `runtimeBail` from a translation in progress, or `executor.cpp` directly for a pre-execution rejection (`proc_count == 0`, a `Runtime::loadProgram` failure, the up-front stack budget) | one of the `RESOURCE_*` codes — design.md §12 |
 
 All three land at the same place: the sentinel slot's `codePtr`, parked at
 `dispatchBase - DISPATCH_SENTINEL_OFFSET` by `enterDispatch` before it

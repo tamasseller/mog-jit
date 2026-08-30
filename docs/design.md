@@ -75,9 +75,27 @@ possible, followed by one branch-range fixup pass. Generated code is
 position-independent (no embedded absolute addresses), so eviction and
 compaction never need a relocation pass.
 
+`Executor` (`jit-armv6m/src/runtime/executor.h`) holds where a program's
+memory comes from and nothing else, so one of them serves any number of
+programs; `Executor::run` takes one encoded blob plus its arguments, places
+that program's `Runtime` in its own frame and takes it back down on return.
+`enter_program_on_stack`/`enter_program_split` are its two named
+configurations, exported as C entry points.
+
+`Runtime` is that per-program state, and it is two things bolted together
+rather than one: a `CodeArena` (`code_arena.h`) owning where compiled code
+goes and how far down the stack may come to meet it, and a `DispatchTable`
+(`dispatch_table.h`) owning where each procedure's code ended up. Neither
+half needs the other. `Runtime` itself carries only what does — eviction,
+which picks an LRU victim from the table and compacts the arena, and the
+stack floor, whose check has to bail out through the table's sentinel.
+
 `enter_program_on_stack` makes the current C stack the whole work area:
 `Runtime`, its dispatch table, the operand stack and the compiled-code
-arena all come out of it. `enter_program_split` puts the arena in
+arena all come out of it. It takes no arena size — the arena is exactly
+`[stackLimit, codeLimit)`, so a program gets every byte its own reservation
+(§2) leaves over, and a caller has no second number to get wrong.
+`enter_program_split` puts the arena in
 caller-supplied memory instead (a distinct SRAM bank, CCM, whatever the
 target's bus matrix makes worth using) while `Runtime`, the dispatch table
 and the operand stack stay on the C stack, since the translator and any C
@@ -98,7 +116,7 @@ which is the geometry that makes sharing work:
         compiled fn 1
         compiled fn 2
         ...
-    codeLimit ......................... margin, currently unused
+    codeLimit ......................... = SP(entry) − requiredStackBytes
     helper / translator frame           dynamic, self-checked
     operand stack                       call/return records interleaved
         JIT frame J ... JIT frame 1
@@ -109,9 +127,11 @@ which is the geometry that makes sharing work:
 ```
 
 `enter_program` computes a hard ceiling for compiled code once, at entry:
-`codeLimit = SP(at entry) − requiredStackBytes`. Every term of
-`requiredStackBytes` (`jit-armv6m/runtime/enter_program.cpp`, summing the
-fixed-cost constants `jit-armv6m/runtime/dispatch_abi.h` declares) is
+`codeLimit = SP(at entry) − requiredStackBytes`. Under
+`enter_program_on_stack` that ceiling *is* the arena's end, so nothing is
+left stranded between the two. Every term of
+`requiredStackBytes` (`jit-armv6m/src/runtime/executor.cpp`, summing the
+fixed-cost constants `jit-armv6m/src/runtime/stack_budget.h` declares) is
 derived from the program's own wire envelope (§1) or a measured constant:
 
 | Term | Source |
@@ -545,7 +565,7 @@ path.
 one's gap, then updates only the dispatch table's `code_ptr` entries:
 O(procedure count), not O(code size). A procedure's code length comes from
 neighbors rather than a stored field (`occupiedSizeOf`,
-`jit-armv6m/runtime/runtime_internal.h`): compaction keeps every resident
+`jit-armv6m/src/runtime/runtime.h`): compaction keeps every resident
 procedure packed back to back with no gaps, so a scan for whichever other
 resident entry has the next-closest `code_ptr` above this one's (or the
 arena's high-water mark if none) gives the boundary, and boundary minus
@@ -587,7 +607,7 @@ scan is a plain comparison.
 The static half (`body_ptr`/`static_info`) is what makes this table
 double as the whole-program procedure directory: `enter_program`'s one-time
 wire-format walk
-(`Runtime::init`, `jit-armv6m/runtime/runtime_internal.h`) fills it in for
+(`Runtime::loadProgram`, `jit-armv6m/src/runtime/runtime.cpp`) fills it in for
 every procedure before `enter_dispatch` ever runs, and `compileProc` reads
 a procedure's own `arg_count`/body location/`needs_lr_save` straight out
 of its own slot instead of any fixture- or caller-supplied side channel.
@@ -1128,7 +1148,7 @@ real overflow at `emit()` is genuine, and *that* exits directly
 (`Assembler::fail(RESOURCE_EXHAUSTED_ARENA)` → `runtimeBail`,
 `runtime/dispatch_abi.cpp`) rather than propagating a flag, since the caller (`compileProc`,
 `runtime/compile_proc.cpp`) has nothing useful left to do once arena
-exhaustion is real. `Runtime::evict` (`runtime/runtime_internal.h`) is
+exhaustion is real. `Runtime::evict` (`src/runtime/runtime.cpp`) is
 unchanged: it still takes an `inProgressLenBytes` parameter (default 0,
 so every other caller's behavior is unchanged) that extends its own
 tail-relocation range from `arenaCursor` to
@@ -1163,17 +1183,17 @@ unencodable at any size, this backend cannot compile it at all.
 
 | code | value | site | predicate |
 |---|---|---|---|
-| `RESOURCE_PROGRAM_NO_PROCS` | `0x52451100` | `enter_program.cpp` `enterProgramWithHeader` | `proc_count == 0` |
+| `RESOURCE_PROGRAM_NO_PROCS` | `0x52451100` | `executor.cpp` `Executor::run` | `proc_count == 0` |
 | `RESOURCE_PROGRAM_BODY_UNTERMINATED` | `0x52451200` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | ran off the blob with a block still open |
 | `RESOURCE_PROGRAM_CALLEE_RANGE` | `0x52451300` | `translate_proc.cpp` `processNonControl` | `calleeIndex >= procCount` |
-| `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` | `0x52451500` | `enter_program.cpp` `enterProgramCore` | `argCount != slot(0).argCount()` |
-| `RESOURCE_PROGRAM_ENTRY_DEPTH` | `0x52451600` | `enter_program.cpp` `enterProgramCore` | the entry procedure's out-of-window args exceed `total_depth` |
+| `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` | `0x52451500` | `executor.cpp` `Executor::run` | `argCount != slot(0).argCount()` |
+| `RESOURCE_PROGRAM_ENTRY_DEPTH` | `0x52451600` | `executor.cpp` `Executor::run` | the entry procedure's out-of-window args exceed `total_depth` |
 | `RESOURCE_PROGRAM_EXT_UNKNOWN` | `0x52451700` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | a wire byte past `LAST_CORE_OPCODE`: the extension range (§11) or a reserved code (§5.3) |
 | `RESOURCE_PROGRAM_EXT_UNSUPPORTED` | `0x52451800` | `Runtime::init`, and `translate_proc.cpp`'s `EXT` arm | a well-formed declaration asking for a capability this core doesn't implement |
 | `RESOURCE_PROGRAM_EXT_ABI` | `0x52451900` | `Runtime::init` | `ExtHooks::abiVersion` != `EXT_ABI_VERSION` |
 | `RESOURCE_PROGRAM_RESERVED_OPCODE` | `0x52451a00` | `Runtime::init` via `proc_scan.cpp`'s `scanBody` | one of the four core codes §5.3 reserves but hasn't assigned (124-127) |
 | `RESOURCE_EXHAUSTED_ARENA` | `0x52452100` | `assembler.cpp` `emit` | buffer full and nothing left to evict (§8) |
-| `RESOURCE_EXHAUSTED_STACK_BUDGET` | `0x52452200` | `enter_program.cpp`, both variants | the up-front §2 check; nothing was touched |
+| `RESOURCE_EXHAUSTED_STACK_BUDGET` | `0x52452200` | `executor.cpp`, both variants | the up-front §2 check; nothing was touched |
 | `RESOURCE_EXHAUSTED_TRANSLATOR_STACK` | `0x52452300` | `translate_proc.cpp` `checkStackFloor` | translator recursion reached the live floor |
 | `RESOURCE_EXHAUSTED_SCAN_STACK` | `0x52452400` | `proc_scan.cpp` `scanBody` | ditto, in the directory pre-pass |
 | `RESOURCE_LIMIT_WINDOW_RECLAIM` | `0x52453100` | `window.cpp` `discardWindow`/`restoreWindow` | reclaim past `Uoff<2,7>` — TOS depth over 131 |

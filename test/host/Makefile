@@ -40,7 +40,7 @@ SOURCES += ../../src/compiler/translate_control_flow.cpp
 # its only target-specific dependency is enterDispatch, which
 # test_enter_program.cpp fakes so the descriptor it is handed can be
 # inspected without booting an emulator.
-SOURCES += ../../src/runtime/enter_program.cpp
+SOURCES += ../../src/runtime/executor.cpp
 SOURCES += ../../src/runtime/runtime.cpp
 
 # 1test library

@@ -4,7 +4,7 @@ SOURCES += vectors.S
 
 SOURCES += ../../src/runtime/runtime.S
 SOURCES += ../../src/runtime/runtime.cpp
-SOURCES += ../../src/runtime/enter_program.cpp
+SOURCES += ../../src/runtime/executor.cpp
 SOURCES += ../../src/runtime/dispatch_abi.cpp
 
 # The compiler itself

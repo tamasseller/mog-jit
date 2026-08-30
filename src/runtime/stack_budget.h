@@ -8,13 +8,13 @@
  * exactly one of them:
  *
  *  - Reserved up front, for everything before enterDispatch: runtime init,
- *    program loading, the body scan. enterProgram sums these once and refuses
+ *    program loading, the body scan. Executor::run sums these once and refuses
  *    the program if the measured sp cannot cover them. Nothing is dynamic yet
  *    — the arena is empty — so stackLimit is the only floor.
  *
  *  - Checked per level, after enterDispatch. The stack and the code arena
  *    share one region, and the traffic is one-way: the arena never grows past
- *    the line enterProgram validated up front, while the stack may descend
+ *    the line Executor::run validated up front, while the stack may descend
  *    into whatever of that line's ground the arena has not actually taken. A
  *    guard checks itself against the arena's real top and publishes the lowest
  *    sp it will reach, so the arena can stop short of it for as long as the
@@ -32,9 +32,9 @@
 /* enterDispatch's own frame, from runtime.S. */
 #define ENTER_DISPATCH_FIXED_BYTES 36
 
-/* enterProgramCore's frame, excluding the Runtime it places (that is sized
+/* Executor::run's frame, excluding the Runtime it places (that is sized
  * separately from procCount). */
-#define ENTER_PROGRAM_CORE_FRAME_BYTES 88
+#define EXECUTOR_RUN_FRAME_BYTES 88
 
 /* translatorTrampoline's push {r0, r1, r2, lr} plus REALIGN_ENTER's worst
  * case, from runtime.S. */

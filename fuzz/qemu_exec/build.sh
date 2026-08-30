@@ -31,10 +31,11 @@ arm-none-eabi-g++ "${CXXFLAGS[@]}" \
     vectors.S \
     ../../src/runtime/runtime.S \
     ../../src/runtime/runtime.cpp \
-    ../../src/runtime/enter_program.cpp \
+    ../../src/runtime/executor.cpp \
     ../../src/runtime/dispatch_abi.cpp \
     ../../src/compiler/window.cpp \
     ../../src/compiler/ext.cpp \
+    ../../src/compiler/ext_default.cpp \
     ../../src/compiler/accstate.cpp \
     ../../src/compiler/arithmetic.cpp \
     ../../src/compiler/assembler.cpp \
