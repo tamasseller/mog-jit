@@ -1,21 +1,20 @@
 /* Local copy of jit-armv6m/src/linker.ld with larger rom *and* ram regions:
  * a real translator plus the real dispatch/eviction runtime, linked together
  * with every TEST in this directory, does not fit the shared script's 4KB rom
- * (sized for the old memcpy-only mock). 64KB is what the lm3s811evb model
- * actually decodes as flash when the image arrives via `-kernel` — measured;
- * fuzz/qemu_exec's own 40KB ceiling is a property of `-device loader`, not of
- * the machine.
+ * (sized for the old memcpy-only mock). 256KB is the microbit model's own
+ * nRF51 flash; fuzz/qemu_exec's 40KB ceiling is a property of `-device
+ * loader`, not of the machine.
  *
- * ram is 8KB because that is the model's real SRAM (this test's own Makefile
- * passes `-m 8k` for the same reason). src/vectors.S takes its initial sp from
- * _stack_top, which is defined here rather than re-derived from LENGTH(ram)
- * there — so the two have to move together. Keep in sync with
- * jit-armv6m/src/linker.ld's own .init_array/.data/.bss/_stack_top handling if
- * that one ever changes. */
+ * ram stays at 8KB though the model has 16KB: _stack_top sets the whole
+ * excursion budget, so test_stack_budget.cpp's numbers move with it.
+ * src/vectors.S takes its initial sp from _stack_top, which is defined here
+ * rather than re-derived from LENGTH(ram) there — so the two have to move
+ * together. Keep in sync with jit-armv6m/src/linker.ld's own
+ * .init_array/.data/.bss/_stack_top handling if that one ever changes. */
 
 MEMORY
 {
-    rom : ORIGIN = 0x00000000, LENGTH = 0x10000
+    rom : ORIGIN = 0x00000000, LENGTH = 0x40000
     ram : ORIGIN = 0x20000000, LENGTH = 0x2000
 }
 

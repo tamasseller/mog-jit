@@ -93,11 +93,11 @@ include ../../vendor/ultimate-makefile/Makefile.ultimate
 $(OBJDIR)/$(abspath ../../src/runtime/runtime.S).o: $(abspath ../../src/runtime/dispatch_abi.h)
 
 qemu-test: $(OUTPUT)
-	qemu-system-arm -M lm3s811evb -m 8k -nographic -monitor none \
+	qemu-system-arm -M microbit -nographic -monitor none \
 	    -semihosting-config enable=on,target=native -kernel $(OUTPUT)
 
 qemu-debug: $(OUTPUT)
-	qemu-system-arm -M lm3s811evb -m 8k -nographic -monitor none -s -S \
+	qemu-system-arm -M microbit -nographic -monitor none -s -S \
 	    -semihosting-config enable=on,target=native -kernel $(OUTPUT)
 
 BUDGET_H := ../../src/runtime/stack_budget.h
