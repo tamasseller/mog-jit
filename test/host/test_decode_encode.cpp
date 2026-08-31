@@ -79,7 +79,7 @@ TEST(EncodeConstSmallImmFitsOneByte)
     uint32_t len = 0;
     encodeInstr(CONST(15), bytes, len, sizeof(bytes));
     CHECK(len == 1);
-    CHECK(bytes[0] == 108 + 15);
+    CHECK(bytes[0] == 112 + 15);
 }
 
 TEST(EncodeConstLargeImmUsesLeb128Form)
@@ -88,7 +88,7 @@ TEST(EncodeConstLargeImmUsesLeb128Form)
     uint32_t len = 0;
     encodeInstr(CONST(16), bytes, len, sizeof(bytes));
     CHECK(len == 2);
-    CHECK(bytes[0] == 107);
+    CHECK(bytes[0] == 111);
     CHECK(bytes[1] == 16);
 }
 
@@ -130,7 +130,7 @@ TEST(EncodeProgramNoHeaderTableEachArgCountSitsDirectlyBeforeItsOwnBody)
     uint8_t bytes[16];
     uint32_t len = encodeProgram(procs, 2, bytes, sizeof(bytes));
 
-    const uint8_t expected[] = {2, 0, 100, 0, 108 + 1, 100};
+    const uint8_t expected[] = {2, 0, 104, 0, 112 + 1, 104};
     CHECK(len == sizeof(expected));
     CHECK(memcmp(bytes, expected, sizeof(expected)) == 0);
 }
@@ -203,12 +203,13 @@ static const Op SPEC_ARITH[10] = {Op::ADD, Op::SUB, Op::RSUB, Op::MUL, Op::AND, 
 static const Combo SPEC_ARITH_MODE[5] = {Combo::REG_ACC, Combo::REG_REG, Combo::PEEK_PEEK, Combo::POP_ACC, Combo::IMM_ACC};
 static const Op SPEC_CMP[10] = {Op::EQ, Op::NE, Op::LT_S, Op::LE_S, Op::GT_S, Op::GE_S, Op::LT_U, Op::LE_U, Op::GT_U, Op::GE_U};
 static const Combo SPEC_CMP_MODE[4] = {Combo::REG_ACC, Combo::POP_ACC, Combo::IMM_ACC, Combo::IMM_ACC};
-static const Op SPEC_MISC[18] = {
+static const Op SPEC_MISC[22] = {
     Op::NEG, Op::NOT, Op::CLZ, Op::REVBITS,               // 90-93
-    Op::BLOCK_END, Op::LOOP, Op::BR_TABLE, Op::BR_TABLE,  // 94-97
-    Op::BR_TABLE, Op::CALL, Op::RETURN, Op::TRAP,         // 98-101
-    Op::TRAP, Op::PUSH, Op::POP, Op::LOAD,                // 102-105
-    Op::STORE, Op::CONST,                                  // 106-107
+    Op::SXTB, Op::SXTH, Op::UXTB, Op::UXTH,               // 94-97
+    Op::BLOCK_END, Op::LOOP, Op::BR_TABLE, Op::BR_TABLE,  // 98-101
+    Op::BR_TABLE, Op::CALL, Op::RETURN, Op::TRAP,         // 102-105
+    Op::TRAP, Op::PUSH, Op::POP, Op::LOAD,                // 106-109
+    Op::STORE, Op::CONST,                                  // 110-111
 };
 // Which assigned opcodes carry a trailing LEB128 (§5.4).
 static bool specHasTrailingOperand(uint32_t code)
@@ -222,7 +223,7 @@ static bool specHasTrailingOperand(uint32_t code)
     {
         return (code - 50) % 4 == 0 || (code - 50) % 4 == 3;
     }
-    return code == 98 || code == 99 || code == 102 || code == 105 || code == 106 || code == 107;
+    return code == 102 || code == 103 || code == 106 || code == 109 || code == 110 || code == 111;
 }
 
 TEST(DecodeTableAgreesWithTheSpecsOwnFormulas)
@@ -232,7 +233,7 @@ TEST(DecodeTableAgreesWithTheSpecsOwnFormulas)
     // libgcc. Here on the host division is free, so re-derive the spec's
     // formulas and check the table reproduces them for every assigned
     // opcode — op, combo, and whether an operand trails.
-    for(uint32_t code = 0; code <= 123; code++)
+    for(uint32_t code = 0; code <= 127; code++)
     {
         // A 2-byte LEB128 tail, so a decoder that wrongly expects an
         // operand (or wrongly skips one) lands on the wrong `next`.
@@ -251,7 +252,7 @@ TEST(DecodeTableAgreesWithTheSpecsOwnFormulas)
             expectOp = SPEC_CMP[(code - 50) / 4];
             expectCombo = SPEC_CMP_MODE[(code - 50) % 4];
         }
-        else if(code <= 107)
+        else if(code <= 111)
         {
             expectOp = SPEC_MISC[code - 90];
         }
@@ -271,14 +272,14 @@ TEST(DecodeSuppliesTheImplicitAuxValuesTheSpecPromises)
     // The forms whose auxiliary value comes from the opcode itself rather
     // than a trailing operand (§5.2's IMM_SMALL, BR_TABLE#1/#2, TRAP#0,
     // CONST#0..15) — the ones a table has to carry as constants.
-    const uint8_t brTable1[] = {96}, brTable2[] = {97}, trap0[] = {101};
+    const uint8_t brTable1[] = {100}, brTable2[] = {101}, trap0[] = {105};
     CHECK(decodeInstr(brTable1, 1, 0).instr.imm == 1);
     CHECK(decodeInstr(brTable2, 1, 0).instr.imm == 2);
     CHECK(decodeInstr(trap0, 1, 0).instr.imm == 0);
 
     for(uint32_t i = 0; i < 16; i++)
     {
-        const uint8_t small[] = {(uint8_t)(108 + i)};
+        const uint8_t small[] = {(uint8_t)(112 + i)};
         DecodedInstr d = decodeInstr(small, 1, 0);
         CHECK(d.instr.op == Op::CONST);
         CHECK(d.instr.imm == (int32_t)i);
@@ -301,7 +302,7 @@ TEST(EveryAssignedOpcodeSurvivesAnEncodeDecodeCycle)
     // a zero comparison operand), so a non-canonical input re-encodes to a
     // shorter form. What must hold is that the *instruction* is a fixed
     // point: decode, encode, decode again, and nothing has changed.
-    for(uint32_t code = 0; code <= 123; code++)
+    for(uint32_t code = 0; code <= 127; code++)
     {
         const uint8_t bytes[] = {(uint8_t)code, 0x81, 0x01, 0x00};
         DecodedInstr first = decodeInstr(bytes, sizeof(bytes), 0);

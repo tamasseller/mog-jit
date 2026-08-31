@@ -221,25 +221,23 @@ TEST(ScanProcBodyReportsAnOpcodeTheExtensionDeclines)
     CHECK(r.failCode == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
 
-TEST(TheCoreReservedOpcodesAreNeverOfferedToAnExtension)
+TEST(TheTopOfCoreOpcodeSpaceIsNeverOfferedToAnExtension)
 {
-    // The boundary bug this pins: 124-127 are reserved to the CORE
-    // (isa-core.md §5.3) and the extension range starts at 128 (§5.1), so
-    // an extension must never get a chance to claim one. GREEDY accepts
-    // every byte it is shown, so if the gate used "> LAST_CORE_OPCODE"
-    // instead of ">= EXT_OPCODE_BASE" these would scan clean and let an
-    // extension squat on core opcode space.
+    // The boundary this pins: the core assigns every byte up to 127 and the
+    // extension range starts at 128 (isa-core.md §5.1). GREEDY accepts every
+    // byte it is shown, so an off-by-one in the gate would let it squat on
+    // core opcode space — here the four CONST small forms just below it.
     ExtScope ext(&GREEDY);
     for(uint8_t code = 124; code < 128; code++)
     {
-        const uint8_t bytes[] = {code};
+        const uint8_t bytes[] = {code, 104 /* RETURN */};
         BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
-        CHECK(!r.ok);
-        CHECK(r.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE);
+        CHECK(r.ok);
+        CHECK(r.failCode == 0);
     }
 
     // ...and 128 is the first byte it legitimately does get.
-    const uint8_t first[] = {0x80, 100 /* RETURN */};
+    const uint8_t first[] = {0x80, 104 /* RETURN */};
     BodyScanResult r = scanProcBody(first, sizeof(first), 0);
     CHECK(r.ok);
     CHECK(r.failCode == 0);

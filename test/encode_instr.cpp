@@ -91,7 +91,7 @@ void encodeInstr(const Instr &instr, uint8_t *out, uint32_t &outLen, uint32_t ou
         }
     }
 
-    if(op >= Op::NEG && op <= Op::REVBITS)
+    if(op >= Op::NEG && op <= Op::UXTH)
     {
         putByte((uint8_t)(90 + ((uint32_t)op - (uint32_t)Op::NEG)), out, outLen, outCapacity);
         return;
@@ -100,34 +100,18 @@ void encodeInstr(const Instr &instr, uint8_t *out, uint32_t &outLen, uint32_t ou
     switch(op)
     {
     case Op::BLOCK_END:
-        putByte(94, out, outLen, outCapacity);
+        putByte(98, out, outLen, outCapacity);
         return;
     case Op::LOOP:
-        putByte(95, out, outLen, outCapacity);
+        putByte(99, out, outLen, outCapacity);
         return;
     case Op::BR_TABLE:
         if(instr.imm == 1)
         {
-            putByte(96, out, outLen, outCapacity);
+            putByte(100, out, outLen, outCapacity);
             return;
         }
         if(instr.imm == 2)
-        {
-            putByte(97, out, outLen, outCapacity);
-            return;
-        }
-        putByte(98, out, outLen, outCapacity);
-        encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
-        return;
-    case Op::CALL:
-        putByte(99, out, outLen, outCapacity);
-        encodeLeb128(instr.calleeIndex, out, outLen, outCapacity);
-        return;
-    case Op::RETURN:
-        putByte(100, out, outLen, outCapacity);
-        return;
-    case Op::TRAP:
-        if(instr.imm == 0)
         {
             putByte(101, out, outLen, outCapacity);
             return;
@@ -135,27 +119,43 @@ void encodeInstr(const Instr &instr, uint8_t *out, uint32_t &outLen, uint32_t ou
         putByte(102, out, outLen, outCapacity);
         encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
         return;
-    case Op::PUSH:
+    case Op::CALL:
         putByte(103, out, outLen, outCapacity);
+        encodeLeb128(instr.calleeIndex, out, outLen, outCapacity);
         return;
-    case Op::POP:
+    case Op::RETURN:
         putByte(104, out, outLen, outCapacity);
         return;
+    case Op::TRAP:
+        if(instr.imm == 0)
+        {
+            putByte(105, out, outLen, outCapacity);
+            return;
+        }
+        putByte(106, out, outLen, outCapacity);
+        encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
+        return;
+    case Op::PUSH:
+        putByte(107, out, outLen, outCapacity);
+        return;
+    case Op::POP:
+        putByte(108, out, outLen, outCapacity);
+        return;
     case Op::LOAD:
-        putByte(105, out, outLen, outCapacity);
+        putByte(109, out, outLen, outCapacity);
         encodeLeb128(instr.target, out, outLen, outCapacity);
         return;
     case Op::STORE:
-        putByte(106, out, outLen, outCapacity);
+        putByte(110, out, outLen, outCapacity);
         encodeLeb128(instr.target, out, outLen, outCapacity);
         return;
     case Op::CONST:
         if(instr.imm >= 0 && instr.imm <= 15)
         {
-            putByte((uint8_t)(108 + instr.imm), out, outLen, outCapacity);
+            putByte((uint8_t)(112 + instr.imm), out, outLen, outCapacity);
             return;
         }
-        putByte(107, out, outLen, outCapacity);
+        putByte(111, out, outLen, outCapacity);
         encodeLeb128((uint32_t)instr.imm, out, outLen, outCapacity);
         return;
     default:

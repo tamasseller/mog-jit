@@ -42,13 +42,6 @@ static void GUARDED_scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &
     {
         if(bytes[pc] > LAST_CORE_OPCODE)
         {
-            if(bytes[pc] < EXT_OPCODE_BASE)
-            {
-                stop = true; // foundEnd stays false — caller reports !ok
-                failCode = RESOURCE_PROGRAM_RESERVED_OPCODE;
-                return;
-            }
-
             uint32_t decl = 0;
             if(extDecodeLength(bytes, maxBytes, pc, decl) == 0)
             {

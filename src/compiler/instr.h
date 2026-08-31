@@ -21,7 +21,7 @@ enum class Op : uint8_t
     CALL,
     ADD, SUB, RSUB, MUL, AND, OR, XOR, SHL, SHR, ASR,
     EQ, NE, LT_S, LE_S, GT_S, GE_S, LT_U, LE_U, GT_U, GE_U,
-    NEG, NOT, CLZ, REVBITS,
+    NEG, NOT, CLZ, REVBITS, SXTB, SXTH, UXTB, UXTH,
     BLOCK_END, LOOP, BR_TABLE,
     EXT, // one registered extension's opcode (isa-core.md §11); see ext.h
 };

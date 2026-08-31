@@ -310,6 +310,14 @@ void emitUnary(Assembler &e, Op op, uint32_t dest, uint32_t src)
         e.emit(ArmV6M::mvns(R((uint16_t)dest), R((uint16_t)src)));
         return;
     }
+    if(op == Op::SXTB || op == Op::SXTH || op == Op::UXTB || op == Op::UXTH)
+    {
+        const R d((uint16_t)dest), m((uint16_t)src);
+        e.emit(op == Op::SXTB ? ArmV6M::sxtb(d, m)
+            : (op == Op::SXTH ? ArmV6M::sxth(d, m)
+            : (op == Op::UXTB ? ArmV6M::uxtb(d, m) : ArmV6M::uxth(d, m))));
+        return;
+    }
 
     assert(src == ACC_REG); // GCOV_EXCL_LINE — clzHelper/revbitsHelper hardcode ACC_REG, caller's job to flush there first
 

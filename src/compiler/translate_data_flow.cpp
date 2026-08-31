@@ -179,6 +179,10 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
 
             case Op::NEG:
             case Op::NOT:
+            case Op::SXTB:
+            case Op::SXTH:
+            case Op::UXTB:
+            case Op::UXTH:
             {
                 FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
                 uint32_t dest = fold.redirectReg(ACC_REG);
