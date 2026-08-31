@@ -1566,7 +1566,7 @@ uint32_t extBody(uint8_t *out)
     const Instr prelude[] = {CONST(3), PUSH(), CONST(4), PUSH()};
     uint32_t n = encodeBody(prelude, 4, out, 16);
     out[n++] = 0x80;
-    out[n++] = 100; // RETURN
+    out[n++] = 104; // RETURN
     return n;
 }
 
@@ -1579,7 +1579,7 @@ uint32_t deepExtBody(uint8_t *out)
         CONST(4), PUSH(), CONST(5), PUSH()};
     uint32_t n = encodeBody(prelude, 10, out, 48);
     out[n++] = 0x80;
-    out[n++] = 100; // RETURN
+    out[n++] = 104; // RETURN
     return n;
 }
 
@@ -1743,7 +1743,7 @@ uint32_t windowBody(uint8_t *out, uint32_t loadSlot)
         LOAD(loadSlot)};
     uint32_t n = encodeBody(prelude, 9, out, 48);
     out[n++] = 0x80;
-    out[n++] = 100; // RETURN
+    out[n++] = 104; // RETURN
     return n;
 }
 

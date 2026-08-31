@@ -1225,7 +1225,7 @@ in the arena — the next victim, evicted before running once.
 
 `LANDING_RESOURCE_ERROR` is a failure mode this target introduces, distinct
 from anything isa-core.md §9's static guarantees cover. The tag is the
-discriminator; `value` names which of fourteen ways it happened, as a
+discriminator; `value` names which of thirteen ways it happened, as a
 `RESOURCE_*` code from `runtime/resource_codes.h` (`0x5245` signature, class
 nibble, reason nibble, low byte reserved for a future detail payload).
 `TRAPPED` carries the ISA's own `TRAP #code` value unchanged.
@@ -1245,7 +1245,6 @@ unencodable at any size, this backend cannot compile it at all.
 | `RESOURCE_PROGRAM_ENTRY_DEPTH` | `0x52451600` | `executor.cpp` `Executor::run` | the entry procedure's out-of-window args exceed `total_depth` |
 | `RESOURCE_PROGRAM_EXT_UNKNOWN` | `0x52451700` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | a wire byte past `LAST_CORE_OPCODE`: the extension range (§11) or a reserved code (§5.3) |
 | `RESOURCE_PROGRAM_EXT_UNSUPPORTED` | `0x52451800` | `Runtime::loadProgram`, and `translate_proc.cpp`'s `EXT` arm | a declaration asking for a capability this core doesn't implement, or one the emitted code then contradicts (halfword overrun, `tosDelta` mismatch) |
-| `RESOURCE_PROGRAM_RESERVED_OPCODE` | `0x52451a00` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | one of the four core codes §5.3 reserves but hasn't assigned (124-127) |
 | `RESOURCE_EXHAUSTED_ARENA` | `0x52452100` | `assembler.cpp` `emit` | buffer full and nothing left to evict (§8) |
 | `RESOURCE_EXHAUSTED_STACK_BUDGET` | `0x52452200` | `executor.cpp`, both variants | the up-front §2 check; nothing was touched |
 | `RESOURCE_EXHAUSTED_TRANSLATOR_STACK` | `0x52452300` | `translate_proc.cpp` `checkStackFloor` | translator recursion reached the live floor |
@@ -1667,13 +1666,12 @@ The `fuzz/seeds` corpus keeps a regression seed for each fixed finding, so
 ## 18. Extension mechanism
 
 isa-core.md §11 gives wire bytes **≥128** to one registered extension. The
-core never interprets them. Note the two boundaries are not the same one,
-which is the easy mistake here:
+core never interprets them. The core assigns every one of its own 128 codes
+(§5.2), so there is a single boundary:
 
 | bytes | owner | a program using one |
 |---|---|---|
-| 0-123 | core, assigned (§5.2) | translated |
-| 124-127 | **core, reserved** (§5.3) — four codes it hasn't assigned yet | `RESERVED_OPCODE`: wants a newer core. Never offered to an extension, which would otherwise let one squat on core opcode space. |
+| 0-127 | core (§5.2) | translated |
 | ≥128 | the registered extension (§5.1, §11) | `EXT_UNKNOWN` if nothing claims it |
 
 The core needs exactly two things per extension opcode:

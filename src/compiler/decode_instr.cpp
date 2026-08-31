@@ -50,30 +50,35 @@ constexpr Entry TABLE[] = {
     JITC_CMP_ROWS(Op::LE_S), JITC_CMP_ROWS(Op::GT_S), JITC_CMP_ROWS(Op::GE_S),
     JITC_CMP_ROWS(Op::LT_U), JITC_CMP_ROWS(Op::LE_U), JITC_CMP_ROWS(Op::GT_U),
     JITC_CMP_ROWS(Op::GE_U),
+    // 90-97: unary (§4.3)
     row(Op::NEG, Combo::NONE, AUX_NONE),       // 90
     row(Op::NOT, Combo::NONE, AUX_NONE),       // 91
     row(Op::CLZ, Combo::NONE, AUX_NONE),       // 92
     row(Op::REVBITS, Combo::NONE, AUX_NONE),   // 93
-    row(Op::BLOCK_END, Combo::NONE, AUX_NONE), // 94
-    row(Op::LOOP, Combo::NONE, AUX_NONE),      // 95
-    row(Op::BR_TABLE, Combo::NONE, AUX_ONE),   // 96
-    row(Op::BR_TABLE, Combo::NONE, AUX_TWO),   // 97
-    row(Op::BR_TABLE, Combo::NONE, AUX_EXT),   // 98
-    row(Op::CALL, Combo::NONE, AUX_EXT),       // 99
-    row(Op::RETURN, Combo::NONE, AUX_NONE),    // 100
-    row(Op::TRAP, Combo::NONE, AUX_NONE),      // 101
-    row(Op::TRAP, Combo::NONE, AUX_EXT),       // 102
-    row(Op::PUSH, Combo::NONE, AUX_NONE),      // 103
-    row(Op::POP, Combo::NONE, AUX_NONE),       // 104
-    row(Op::LOAD, Combo::NONE, AUX_EXT),       // 105
-    row(Op::STORE, Combo::NONE, AUX_EXT),      // 106
-    row(Op::CONST, Combo::NONE, AUX_EXT),      // 107
+    row(Op::SXTB, Combo::NONE, AUX_NONE),      // 94
+    row(Op::SXTH, Combo::NONE, AUX_NONE),      // 95
+    row(Op::UXTB, Combo::NONE, AUX_NONE),      // 96
+    row(Op::UXTH, Combo::NONE, AUX_NONE),      // 97
+    row(Op::BLOCK_END, Combo::NONE, AUX_NONE), // 98
+    row(Op::LOOP, Combo::NONE, AUX_NONE),      // 99
+    row(Op::BR_TABLE, Combo::NONE, AUX_ONE),   // 100
+    row(Op::BR_TABLE, Combo::NONE, AUX_TWO),   // 101
+    row(Op::BR_TABLE, Combo::NONE, AUX_EXT),   // 102
+    row(Op::CALL, Combo::NONE, AUX_EXT),       // 103
+    row(Op::RETURN, Combo::NONE, AUX_NONE),    // 104
+    row(Op::TRAP, Combo::NONE, AUX_NONE),      // 105
+    row(Op::TRAP, Combo::NONE, AUX_EXT),       // 106
+    row(Op::PUSH, Combo::NONE, AUX_NONE),      // 107
+    row(Op::POP, Combo::NONE, AUX_NONE),       // 108
+    row(Op::LOAD, Combo::NONE, AUX_EXT),       // 109
+    row(Op::STORE, Combo::NONE, AUX_EXT),      // 110
+    row(Op::CONST, Combo::NONE, AUX_EXT),      // 111
 };
 
 #undef JITC_ARITH_ROWS
 #undef JITC_CMP_ROWS
 
-constexpr uint32_t SMALL_CONST_BASE = 108;
+constexpr uint32_t SMALL_CONST_BASE = 112;
 
 static_assert(sizeof(TABLE) / sizeof(TABLE[0]) == SMALL_CONST_BASE,
     "decode table must cover exactly opcodes 0..SMALL_CONST_BASE-1 (isa-core.md §5.2)");

@@ -508,6 +508,36 @@ const arith: RtlProgram = {
     ],
 }
 
+/** The signed opcodes and the four extend ops (isa-core.md §4.1-§4.3) —
+ *  the shapes the DSL's own signed types lower to. Every value is chosen so
+ *  the signed and unsigned answers differ, so a divergence here is a wrong
+ *  result rather than an equal one reached differently. */
+const signedAndExtend: RtlProgram = {
+    procedures: [
+        {
+            argCount: 0,
+            body: ret([
+                { op: "CONST", imm: 0xffffff90 },     // -112
+                { op: "SXTB" },                        // still -112
+                { op: "PUSH" },
+                { op: "CONST", imm: 0xffffff90 },
+                { op: "UXTB" },                        // 0x90 = 144
+                { op: "ASR", combo: "IMM_ACC", imm: 2 },
+                { op: "PUSH" },
+                { op: "CONST", imm: 0xdeadbeef },
+                { op: "SXTH" },
+                { op: "ASR", combo: "IMM_ACC", imm: 4 },
+                { op: "LT_S", combo: "POP_ACC" },      // signed: differs from LT_U
+                { op: "PUSH" },
+                { op: "CONST", imm: 0xdeadbeef },
+                { op: "UXTH" },
+                { op: "GE_S", combo: "POP_ACC" },
+                { op: "ADD", combo: "POP_ACC" },
+            ]),
+        },
+    ],
+}
+
 // ── regressions for what qemu_exec actually found ───────────────────────
 //
 // Each of these was a wrong answer (or a hang) from the emitted code, on a
@@ -739,6 +769,7 @@ const authored: [string, RtlProgram][] = [
     ["nested_trap", nestedTrap],
     ["deep_nested_trap", deepNestedTrap],
     ["arith", arith],
+    ["signed_and_extend", signedAndExtend],
     ["long_branch_span", longBranchSpan],
     ["long_loop_back_edge", longLoopBackEdge],
     ["literal_pool_pressure", literalPoolPressure],

@@ -173,18 +173,17 @@ TEST(ScanProcBodyRejectsAnExtensionRangeOpcode)
     CHECK(r.failCode == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
 
-TEST(ScanProcBodyRejectsAReservedCoreOpcodeAsItsOwnReason)
+TEST(ScanProcBodyAcceptsTheTopOfCoreOpcodeSpace)
 {
-    // 124-127 are reserved to the CORE (isa-core.md §5.3), not extension
-    // space — the extension range starts at 128. So this is NOT an unknown
-    // extension opcode: it says the program wants a core that assigns these
-    // and this one doesn't, and no registered extension can change that.
+    // 124-127 are the last four CONST small forms (isa-core.md §5.2) — the
+    // core now assigns all 128 codes, so the byte just below the extension
+    // range is ordinary core, not a hole.
     for(uint8_t code = 124; code < 128; code++)
     {
-        const uint8_t bytes[] = {code};
+        const uint8_t bytes[] = {code, 104 /* RETURN */};
         BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
-        CHECK(!r.ok);
-        CHECK(r.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE);
+        CHECK(r.ok);
+        CHECK(r.failCode == 0);
     }
 }
 

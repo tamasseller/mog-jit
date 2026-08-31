@@ -39,6 +39,7 @@ SOURCES += test_eviction.cpp
 SOURCES += test_stack_budget.cpp
 SOURCES += test_ext_rawmem.cpp
 SOURCES += test_cancel.cpp
+SOURCES += test_extend_ops.cpp
 SOURCES += stack_paint.cpp
 SOURCES += semihosting_output.cpp
 SOURCES += cxx_stubs.cpp

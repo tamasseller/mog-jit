@@ -13,7 +13,7 @@ uint32_t decodeLeb128(const uint8_t *bytes, uint32_t offset, uint32_t &next);
 bool decodeLeb128Checked(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset,
     uint32_t &value, uint32_t &next);
 
-constexpr uint32_t LAST_CORE_OPCODE = 123;
+constexpr uint32_t LAST_CORE_OPCODE = 127;
 constexpr uint32_t EXT_OPCODE_BASE = 128;
 
 uint32_t extDecodeLength(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t &decl);
