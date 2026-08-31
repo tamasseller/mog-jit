@@ -54,7 +54,7 @@ arm-none-eabi-g++ "${CXXFLAGS[@]}" \
     "$QEMU_EXEC/semihost.cpp" \
     "$QEMU_EXEC/cxx_stubs.cpp" \
     ext_sampstream.cpp \
-    generated/samples.cpp \
+    generated/check_samples.cpp \
     generated/check_data.cpp \
     check_runner.cpp \
     -o "$ELF"
@@ -67,4 +67,4 @@ qemu-system-arm -M microbit -nographic -monitor none -serial none \
     -semihosting-config enable=on,target=native \
     -kernel "$ELF" > "$OUT" 2>&1 || true
 
-npx ts-node --transpile-only compare-check.ts generated/expected.json "$OUT"
+npx ts-node --transpile-only compare-check.ts generated/check_expected.json "$OUT"

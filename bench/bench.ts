@@ -29,9 +29,15 @@ interface Expected
     vmSteps: number
 }
 
+interface Counts
+{
+    insns: number
+    cycles: number
+}
+
 interface Run
 {
-    regions: Record<Region, number>
+    regions: Record<Region, Counts>
     tags: Record<string, number>
 }
 
@@ -119,7 +125,7 @@ function runImage(elf: string): Run
     const proc = spawnSync("qemu-system-arm", [
         "-M", "microbit", "-nographic", "-monitor", "none", "-serial", "none",
         "-semihosting-config", "enable=on,target=native",
-        "-plugin", [PLUGIN, ...args, `out=${log}`].join(","),
+        "-plugin", [PLUGIN, ...args, "cycles=on", `out=${log}`].join(","),
         "-kernel", elf,
     ], {encoding: "utf8", timeout: 120_000})
 
@@ -129,17 +135,17 @@ function runImage(elf: string): Run
 
     if(!existsSync(log)) fail(`${elf}: the plugin wrote no log — did it load?`)
 
-    const regions = {} as Record<Region, number>
+    const regions = {} as Record<Region, Counts>
 
     for(const line of readFileSync(log, "utf8").split("\n"))
     {
-        const m = /^REGION (\S+) insns=(\d+) entries=(\d+)(.*)$/.exec(line.trim())
+        const m = /^REGION (\S+) insns=(\d+) cycles=(\d+) entries=(\d+)(.*)$/.exec(line.trim())
         if(m === null) continue
 
-        if(m[4]!.includes("UNCLOSED")) fail(`${elf}: region ${m[1]} never closed`)
-        if(m[3] !== "1") fail(`${elf}: region ${m[1]} ran ${m[3]} times, expected once`)
+        if(m[5]!.includes("UNCLOSED")) fail(`${elf}: region ${m[1]} never closed`)
+        if(m[4] !== "1") fail(`${elf}: region ${m[1]} ran ${m[4]} times, expected once`)
 
-        regions[m[1] as Region] = Number(m[2])
+        regions[m[1] as Region] = {insns: Number(m[2]), cycles: Number(m[3])}
     }
 
     for(const r of REGIONS)
@@ -175,11 +181,11 @@ function stackUsage(suPath: string, fn: string): number | undefined
 function main(): void
 {
     const outDir = process.argv[2] ?? `${process.env.TMPDIR ?? "/tmp"}/ppl-bench`
-    const expected: Expected = JSON.parse(readFileSync(`${__dirname}/generated/expected.json`, "utf8"))
+    const expected: Expected = JSON.parse(readFileSync(`${__dirname}/generated/bench_expected.json`, "utf8"))
 
     const samples = BENCH_N2 - BENCH_N1
-    const rows: {level: Level; mog: number; ref: number; translate: number;
-        refStack: number | undefined; run: Run}[] = []
+    const rows: {level: Level; mog: number; ref: number; mogCy: number; refCy: number;
+        translate: number; refStack: number | undefined; run: Run}[] = []
 
     for(const level of LEVELS)
     {
@@ -221,9 +227,11 @@ function main(): void
 
         rows.push({
             level,
-            mog: (r.mog_n2 - r.mog_n1) / samples,
-            ref: (r.ref_n2 - r.ref_n1) / samples,
-            translate: r.mog_n0 - r.calibration,
+            mog: (r.mog_n2.insns - r.mog_n1.insns) / samples,
+            ref: (r.ref_n2.insns - r.ref_n1.insns) / samples,
+            mogCy: (r.mog_n2.cycles - r.mog_n1.cycles) / samples,
+            refCy: (r.ref_n2.cycles - r.ref_n1.cycles) / samples,
+            translate: r.mog_n0.insns - r.calibration.insns,
             refStack: stackUsage(`${outDir}/kernels_ref.${level}.su`, "refPulseTrigger"),
             run,
         })
@@ -236,7 +244,8 @@ function main(): void
     const first = rows[0]!
     for(const row of rows.slice(1))
     {
-        if(row.mog !== first.mog || row.translate !== first.translate)
+        if(row.mog !== first.mog || row.mogCy !== first.mogCy
+            || row.translate !== first.translate)
         {
             fail(`the JIT-side numbers moved between images (${first.level}: `
                 + `${first.mog}/sample, ${row.level}: ${row.mog}/sample) — nothing that `
@@ -252,23 +261,23 @@ function main(): void
     console.log(`${BENCH_N1} vs ${BENCH_N2} samples, differenced; `
         + `${expected.eventCount} triggers; every configuration agrees with the reference VM.\n`)
 
-    console.log(`| level | insns/sample | vs JIT | kernel .text | stack (GCC) |`)
-    console.log(`|---|---|---|---|---|`)
-    console.log(`| **JIT** | **${first.mog.toFixed(2)}** | 1.00x | `
-        + `${mogCodeBytes} emitted + ${expected.bytecodeBytes} bytecode | `
-        + `${first.run.tags.MOG_STACK} measured |`)
+    console.log(`| level | cycles/sample | vs JIT | insns/sample | kernel .text | stack (GCC) |`)
+    console.log(`|---|---|---|---|---|---|`)
+    console.log(`| **JIT** | **${first.mogCy.toFixed(2)}** | 1.00x | `
+        + `${first.mog.toFixed(2)} | `
+        + `${mogCodeBytes} emitted + ${expected.bytecodeBytes} bytecode | — |`)
 
     for(const row of rows)
     {
         const size = symbolSize(`${outDir}/bench.${row.level}.elf`, "refPulseTrigger")
-        console.log(`| ${row.level} | ${row.ref.toFixed(2)} | `
-            + `${(first.mog / row.ref).toFixed(2)}x | ${size} | `
+        console.log(`| ${row.level} | ${row.refCy.toFixed(2)} | `
+            + `${(first.mogCy / row.refCy).toFixed(2)}x | ${row.ref.toFixed(2)} | ${size} | `
             + `${row.refStack ?? "?"} |`)
     }
 
     const t = first.run.tags
-    const best = Math.min(...rows.map(r => r.ref))
-    const os = rows.find(r => r.level === "Os")!.ref
+    const best = Math.min(...rows.map(r => r.refCy))
+    const os = rows.find(r => r.level === "Os")!.refCy
 
     console.log(``)
     console.log(`## Cost of the JIT, once`)
@@ -304,16 +313,19 @@ function main(): void
     console.log(`## Against docs/design.md`)
     console.log(``)
     console.log(`- §14 predicts throughput "within a small constant factor (roughly 2-4x) of `
-        + `equivalent -Os C". Measured here: **${(first.mog / os).toFixed(2)}x** against -Os, `
-        + `${(first.mog / best).toFixed(2)}x against the best level (-O2/-O3).`)
+        + `equivalent -Os C". Measured here: **${(first.mogCy / os).toFixed(2)}x** against `
+        + `-Os, ${(first.mogCy / best).toFixed(2)}x against the best level — in modelled `
+        + `Cortex-M0 cycles, which is what that claim is about.`)
     console.log(`- §14 predicts 1-3x opcode expansion for arithmetic-heavy code, 4-6x amortized `
         + `with control flow. This workload is almost all control flow and expands `
         + `${(mogCodeBytes / expected.bytecodeBytes).toFixed(2)}x by bytes `
         + `(${mogCodeBytes} emitted from ${expected.bytecodeBytes} bytecode).`)
     console.log(`- §15 estimates the whole JIT at 4-10 KB flash. Measured: ~${fixed} bytes.`)
     console.log(``)
-    console.log(`One workload, one core, instruction counts rather than cycles. `
-        + `See bench/README.md before quoting any of this.`)
+    console.log(`One workload, one core. Cycles are modelled from ARM DDI 0432C's timings `
+        + `over the exact executed instruction stream, not measured on silicon; `
+        + `instruction counts beside them are exact. See bench/README.md before quoting `
+        + `any of this.`)
     console.log(``)
 }
 

@@ -158,7 +158,7 @@ function main(): void
         vmSteps: result.steps,
     }
 
-    writeFileSync(`${outDir}/expected.json`, JSON.stringify(expected, null, 2) + "\n")
+    writeFileSync(`${outDir}/bench_expected.json`, JSON.stringify(expected, null, 2) + "\n")
 
     console.log(`generated: bytecode=${envelope.length}B procs=${procCount} `
         + `totalDepth=${stats.totalDepth} triggers=${wantCount} `

@@ -34,7 +34,7 @@ REGIONS=(
 
 PLUGIN_ARG="$(pwd)/bench_plugin.so"
 for r in "${REGIONS[@]}"; do PLUGIN_ARG="$PLUGIN_ARG,$r"; done
-PLUGIN_ARG="$PLUGIN_ARG,out=$LOG"
+PLUGIN_ARG="$PLUGIN_ARG,cycles=on,out=$LOG"
 
 qemu-system-arm -M microbit -nographic -monitor none -serial none \
     -semihosting-config enable=on,target=native \
@@ -43,14 +43,27 @@ qemu-system-arm -M microbit -nographic -monitor none -serial none \
 
 cat "$LOG"
 
+# 200 iterations of `subs`/`bne`, plus the setup `movs`:
+#   instructions  1 + 2*200                          = 401
+#   cycles        1 + 200*1 + 199*3 (taken) + 1*1    = 799
+# The marker pairs are identical in both regions, so differencing removes
+# them from each figure without either having to be known.
 awk '
-/^REGION calibration/ { for(i=1;i<=NF;i++) if($i ~ /^insns=/) { sub(/insns=/,"",$i); cal=$i } }
-/^REGION knownloop/   { for(i=1;i<=NF;i++) if($i ~ /^insns=/) { sub(/insns=/,"",$i); loop=$i } }
+function val(field,   i, v) {
+    for(i = 1; i <= NF; i++) if($i ~ "^" field "=") { v = $i; sub(field "=", "", v); return v }
+    return ""
+}
+/^REGION calibration/ { calI = val("insns"); calC = val("cycles") }
+/^REGION knownloop/   { loopI = val("insns"); loopC = val("cycles") }
 END {
-    if(cal == "" || loop == "") { print "FAIL: a region never reported"; exit 1 }
-    diff = loop - cal
-    want = 401
-    printf "calibration=%d knownloop=%d difference=%d expected=%d\n", cal, loop, diff, want
-    if(diff != want) { print "FAIL: the plugin is not counting what it claims"; exit 1 }
+    if(calI == "" || loopI == "") { print "FAIL: a region never reported"; exit 1 }
+
+    di = loopI - calI
+    dc = loopC - calC
+    printf "instructions: %d (expected 401)\n", di
+    printf "cycles:       %d (expected 799)\n", dc
+
+    if(di != 401) { print "FAIL: the instruction counter is not counting what it claims"; exit 1 }
+    if(dc != 799) { print "FAIL: the cycle model is not counting what it claims"; exit 1 }
     print "PASS"
 }' "$LOG"

@@ -1,7 +1,7 @@
 # bench — measuring the JIT against C
 
-Status: end to end on one workload. The harness is complete; two of the
-three workloads are not, and neither is cycle weighting.
+Status: end to end on one workload. The harness is complete, cycle
+weighting included; two of the three workloads are not.
 
 ```sh
 bench/plugin/selftest.sh   # is the counter counting what it claims?
@@ -16,27 +16,30 @@ npx ts-node --transpile-only bench/bench.ts
 agreeing with the reference VM on the return value and on every trigger
 event:
 
-| level | insns/sample | vs JIT | kernel .text | stack (GCC) |
-|---|---|---|---|---|
-| **JIT** | **19.05** | 1.00x | 150 emitted + 81 bytecode | — |
-| O0 | 36.28 | 0.52x | 148 | 32 |
-| O1 | 12.59 | 1.51x | 156 | 40 |
-| O2 | 12.54 | 1.52x | 156 | 32 |
-| O3 | 12.54 | 1.52x | 156 | 32 |
-| Os | 16.88 | 1.13x | 116 | 32 |
-| Og | 14.21 | 1.34x | 112 | 20 |
+| level | cycles/sample | vs JIT | insns/sample | kernel .text | stack (GCC) |
+|---|---|---|---|---|---|
+| **JIT** | **27.47** | 1.00x | 19.05 | 150 emitted + 81 bytecode | — |
+| O0 | 64.52 | 0.43x | 36.28 | 148 | 32 |
+| O1 | 17.30 | 1.59x | 12.59 | 156 | 40 |
+| O2 | 17.88 | 1.54x | 12.54 | 156 | 32 |
+| O3 | 17.88 | 1.54x | 12.54 | 156 | 32 |
+| Os | 26.96 | 1.02x | 16.88 | 116 | 32 |
+| Og | 19.92 | 1.38x | 14.21 | 112 | 20 |
 
 Cold start is 21218 instructions, paid once per procedure. The fixed
 footprint is ~9.8 KB of `.text` for translator plus runtime.
 
 Against docs/design.md, on this one workload:
 
-- §14 predicts throughput within "roughly 2-4x" of `-Os` C. Measured 1.13x
-  against `-Os`, 1.52x against `-O2`/`-O3` — better than the estimate.
+- §14 predicts throughput within "roughly 2-4x" of `-Os` C. Measured 1.02x
+  against `-Os`, 1.59x against the best level — better than the estimate.
 - §14 predicts 4-6x opcode expansion amortized with control flow. This
   workload is almost entirely control flow and expands 1.85x by bytes.
 - §15 estimates 4-10 KB flash for the whole JIT. Measured ~9.8 KB, at the
   top of the range but inside it.
+
+Note `-O1` beats `-O2`/`-O3` in cycles while losing on instruction count —
+fewer instructions laid out so that more of its branches are taken.
 
 Two things GCC does here that the JIT structurally cannot, both visible in
 the disassembly and both legitimate: it fuses `run >= 12 && run <= 60` into
@@ -44,18 +47,38 @@ a single `subs`/`cmp`/`bhi` range test, and it hoists the event ring's count
 into a stack slot across the whole loop where the emitted code reloads it
 per trigger.
 
-## Why instructions, not cycles
+## Where the cycle figures come from
 
 QEMU is not cycle-accurate, and the microbit model's Cortex-M0 has no DWT
-cycle counter to read. What QEMU can report exactly is how many
-instructions executed, which is a fair comparison on its own terms: the
-JIT-emitted Thumb and the compiled kernels run on the same emulated core, so
-whatever the model omits, it omits from both sides equally.
+cycle counter to read, so nothing here is a measured cycle. Two numbers are
+reported instead, and they are different kinds of thing:
 
-A weighted Cortex-M0 cycle estimate on top of the count is a later
-refinement, and one that has to state its assumptions — notably which
-multiplier variant the core has, since the architecture permits both a
-1-cycle and a 32-cycle `MUL`.
+**Instructions are exact.** QEMU reports precisely what executed, and that
+is already a fair comparison on its own terms — the JIT-emitted Thumb and
+the compiled kernels run on the same emulated core, so whatever the model
+omits it omits from both sides equally.
+
+**Cycles are modelled**, by weighting that exact instruction stream with ARM
+DDI 0432C's timings. This is worth doing on a Cortex-M0 specifically and
+would not be on a bigger core: no cache, no branch prediction, no store
+buffer, zero-wait-state memory, so the timing genuinely is a static table
+plus one dynamic term. Loads and stores cost 2, `LDM`/`STM`/`PUSH`/`POP`
+cost 1 per register plus 1, `BL` 4, `BX`/`BLX` 3, everything else 1.
+
+The one dynamic term is the taken-branch pipeline refill, and it is
+observed rather than guessed: a conditional branch is costed at 1
+statically, and the +2 is added only when the next translated block does
+not start at the previous block's fall-through address. A not-taken branch
+lands exactly on fall-through and costs nothing extra.
+
+It matters. The JIT materializes pooled literals where C keeps values in
+registers, so it issues proportionally more loads; weighting them moved the
+`-O2` ratio from 1.52x to 1.54x and the `-Os` ratio from 1.13x to 1.02x.
+
+`MUL` is a knob (`mul=` plugin argument, default 1) because Cortex-M0
+permits both a 1-cycle and a 32-cycle multiplier and the choice is
+implementation defined. No workload here has reached a `MUL` yet; the IQ
+demodulator will, and the report must state which variant it assumed.
 
 ## Why every number is a difference
 
@@ -134,9 +157,11 @@ transcription of the same machine, at both sample counts — a workload that
 agreed at one length and not the other would give a per-sample figure with
 no meaning.
 
-`plugin/selftest.sh` gates the counter: a region around a loop of exactly
+`plugin/selftest.sh` gates both counters: a region around a loop of exactly
 known length against a region around nothing, so the marker bias cancels
-rather than being assumed. It is 2 instructions per region, measured.
+rather than being assumed. 401 instructions, and 799 cycles — `movs` once,
+`subs` 200 times, then 199 taken `bne` at 3 and one untaken at 1, which is
+what pins the taken-branch detection specifically.
 
 ## Reproducibility
 
