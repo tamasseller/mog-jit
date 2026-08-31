@@ -1849,3 +1849,49 @@ bytecode stack plus one helper frame. Nothing verifies the number: too
 small and the static reservation stops being a bound, so prove it the way
 the core proves its own (§3) — `-Wstack-usage=0` promoted to an error, or
 hand-written naked Thumb.
+
+---
+
+## 19. Asynchronous cancellation
+
+`Executor::cancel` ends a running excursion from outside it — a timeout, a
+watchdog, a communication loop deciding a user-supplied program has had long
+enough. `LANDING_CANCELLED` joins §12's three tags, carrying whatever code
+the canceller passed.
+
+It works because the entry machinery already publishes everything needed:
+`enterDispatch` parks the landing address in the sentinel's `codePtr` and
+the sp to land on in its `bodyPtr` (§9), which is exactly what `trapHelper`
+and `runtimeBail` read. Cancellation reuses both, changing only the tag.
+
+**Why a trampoline.** Exception return pops the stacked frame to a sp of the
+hardware's choosing, which is where the interrupted code was, not where the
+landing needs it. So the hijacked frame's stacked PC points at
+`asyncAbortTrampoline` — `mov sp, r1` / `bx r3` — with r0-r3 preloaded from
+the frame. Two instructions, because r0-r3 are the four registers exception
+entry stacks.
+
+**Why nothing is left behind.** The whole `Runtime`, dispatch table included,
+is a stack-local of `Executor::run`, and the arena cursor is restored by
+`~CodeArena::Excursion` in that same frame. The landing is a normal return
+out of `enterDispatch`, so `run`'s own epilogue executes either way. A cancel
+landing mid-translation abandons `translateProc`'s frames exactly the way
+`RESOURCE_EXHAUSTED_ARENA` already does, and no compiled code survives a
+`run()` to be left inconsistent.
+
+**Two guards, two windows.** `Executor::live` is null outside `run`, which is
+what stops a cancel dereferencing a `Runtime` whose frame is gone. The
+sentinel's landing sp covers the windows *inside* `run` where there is no
+excursion yet or no longer: `enterDispatch` writes it after the landing
+address, and `.Lresume` clears it before the pops take sp off it. Both
+windows are bounded and end on their own, so `cancel` returning false is an
+ordinary answer and a canceller simply retries.
+
+**ARMv7-M.** The stacked xPSR's IT/ICI bits belong to an instruction that
+will never resume, and exception return would apply them to the trampoline's
+own two instructions. `Executor::cancel` clears them. On ARMv6-M those bits
+are reserved and zero, so the mask is a no-op — which is the point: one
+unconditional AND rather than an architecture test. It is not covered by any
+test, and cannot be: QEMU takes interrupts only at translation-block
+boundaries and never splits one inside an IT block, so a Cortex-M3 model
+reports IT state zero even when the stacked PC is demonstrably mid-block.

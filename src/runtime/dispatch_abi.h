@@ -14,6 +14,7 @@
 #define LANDING_SUCCESS 0u        /* value = the entry procedure's own result */
 #define LANDING_TRAP 1u           /* value = the bytecode TRAP's own code, at any call depth */
 #define LANDING_RESOURCE_ERROR 2u /* value = one of resource_codes.h's own RESOURCE_* codes */
+#define LANDING_CANCELLED 3u      /* value = whatever the canceller passed to Executor::cancel */
 
 #ifndef __ASSEMBLER__
 
@@ -33,6 +34,7 @@ extern const uint16_t brTableJumpHelper[];       /* runtime.S */
 extern const uint16_t returnHelperFromStackReclaim[]; /* runtime.S */
 extern const uint16_t trapHelper[];              /* runtime.S */
 extern const uint16_t extThunkHelper[];          /* runtime.S */
+extern const uint16_t asyncAbortTrampoline[];    /* runtime.S */
 extern uint64_t enterDispatch(void* dispatchTable, Runtime *runtime, const EntryArgs *entryArgs); /* runtime.S */
 }
 

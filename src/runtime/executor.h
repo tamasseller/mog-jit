@@ -5,6 +5,8 @@
 
 #include "code_arena.h"
 
+class Runtime;
+
 /* How an excursion ended: `trapped` is one of dispatch_abi.h's LANDING_* tags,
  * and `value` is what that tag says it is. */
 struct ProgramResult
@@ -21,7 +23,11 @@ class Executor
 {
     CodeArena arena;
 
-    inline explicit Executor(const CodeArena &arena): arena(arena) { }
+    /* The excursion cancel() may hijack, or null between runs. Written by
+     * run() either side of enterDispatch and read from interrupt context. */
+    Runtime *volatile live;
+
+    inline explicit Executor(const CodeArena &arena): arena(arena), live(nullptr) { }
 
 public:
     /* The arena is a region of its own and the stack never reaches it. */
@@ -40,6 +46,19 @@ public:
     }
 
     ProgramResult run(const uint8_t *programBytes, uint32_t programSize, uint32_t *args, uint32_t argCount);
+
+    /* Ends the running excursion from outside it, by rewriting the ARM
+     * exception frame at `exceptionFrame` so the return from that exception
+     * lands on the same place a TRAP does. `code` becomes ProgramResult::value
+     * under LANDING_CANCELLED. Callable from an exception handler that
+     * preempted this Executor's own run(); the application owns getting there
+     * and, under an RTOS, any coordination beyond it.
+     *
+     * False means there was nothing to cancel — no run() in flight, or one
+     * that has not entered its excursion yet or has already left it. That is
+     * an ordinary answer, not an error: those windows are bounded and end on
+     * their own, so a canceller retries on its next tick. */
+    bool cancel(uint32_t exceptionFrame, uint32_t code);
 };
 
 #endif /* JIT_ARMV6M_RUNTIME_EXECUTOR_H_ */

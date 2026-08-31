@@ -83,6 +83,10 @@ ProgramResult enter(uint32_t *args, uint32_t argCount, const uint8_t *bytes, uin
 /* Stands in for runtime.S. Returns LANDING_SUCCESS with a recognisable
  * value, so a TEST can tell "the guard let this through" from "the guard
  * rejected it" without depending on anything the entry procedure computes. */
+/* Executor::cancel reads its address to write into a hijacked exception
+ * frame; on the host there is no runtime.S to take it from. */
+extern "C" const uint16_t asyncAbortTrampoline[1] = {0};
+
 extern "C" uint64_t enterDispatch(void*, Runtime *runtime, const EntryArgs *entryArgs)
 {
     (void)runtime;

@@ -179,6 +179,20 @@ extThunkHelper:
     mov  sp, r3
     pop  {pc}
 
+/*
+ * r0: value to report, r1: sp to land on, r2: landing tag, r3: landing address
+ *
+ * Where Executor::cancel points a hijacked exception frame's stacked PC. The
+ * landing cannot be entered directly: exception return pops the frame to a sp
+ * of the hardware's choosing, and these are the two instructions that put sp
+ * back to the one enterDispatch parked in the sentinel.
+ */
+.thumb_func
+.global asyncAbortTrampoline
+asyncAbortTrampoline:
+    mov  sp, r1
+    bx   r3
+
 .thumb_func
 .global translatorTrampoline
 translatorTrampoline:
@@ -284,6 +298,12 @@ enterDispatch:
     // Resumption after bailout or regular return.
 .Lresume:
     mov   r1, r2
+
+    // Disarm cancellation before the pops take sp off the landing sp
+    mov   r3, r8
+    subs  r3, #DISPATCH_SENTINEL_OFFSET
+    movs  r2, #0
+    str   r2, [r3, #8]
 
     // Fill all callee_saved regs and load the stored lr into pc for return
     pop   {r4, r5, r6, r7}                  

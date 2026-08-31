@@ -134,6 +134,52 @@ ProgramResult Executor::run(const uint8_t *programBytes, uint32_t programSize, u
     EntryArgs entryArgs;
     buildEntryArgs(&entryArgs, args, declared);
 
+    live = runtime;
     uint64_t packed = enterDispatch(&runtime->slot(0), runtime, &entryArgs);
+    live = nullptr;
+
     return ProgramResult{ (uint32_t)packed, (uint32_t)(packed >> 32) };
+}
+
+/* ARMv6-M/ARMv7-M exception frame, in words. An FP frame puts its own
+ * registers above these, so the offsets hold there too. */
+enum { FRAME_R0 = 0, FRAME_R1, FRAME_R2, FRAME_R3, FRAME_R12, FRAME_LR, FRAME_PC, FRAME_XPSR };
+
+/* IT[1:0] at 26:25 and IT[7:2] at 15:10 — the ARMv7-M IT/ICI state of the
+ * instruction this frame will never return to, which exception return would
+ * otherwise apply to the trampoline's own two instructions. Reserved and zero
+ * on ARMv6-M, so the mask costs nothing there. Deliberately clear of bit 24
+ * (T), bit 9 (the stack-alignment adjustment exception return undoes) and
+ * bits 8:0. */
+static constexpr uint32_t XPSR_IT_MASK = 0x0600fc00u;
+
+bool Executor::cancel(uint32_t exceptionFrame, uint32_t code)
+{
+    Runtime *runtime = live;
+
+    if(!runtime)
+    {
+        return false;
+    }
+
+    /* enterDispatch writes the landing before the sp, and .Lresume clears the
+     * sp again on the way out, so this one word answers both halves of "is
+     * there an excursion to land on". */
+    const uint32_t landingSp = runtime->savedSp();
+
+    if(!landingSp)
+    {
+        return false;
+    }
+
+    uint32_t *frame = (uint32_t *)(uintptr_t)exceptionFrame;
+
+    frame[FRAME_R0] = code;
+    frame[FRAME_R1] = landingSp;
+    frame[FRAME_R2] = LANDING_CANCELLED;
+    frame[FRAME_R3] = runtime->sentinelLandingAddress();
+    frame[FRAME_PC] = (uint32_t)(uintptr_t)asyncAbortTrampoline & ~1u;
+    frame[FRAME_XPSR] &= ~XPSR_IT_MASK;
+
+    return true;
 }

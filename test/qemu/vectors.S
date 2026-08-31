@@ -25,7 +25,7 @@ stacktop: .word _stack_top   // linker-provided RAM top; tracks the ram region's
 .word hang
 .word hang
 .word hang      // PendSV
-.word hang      // SysTick
+.word sysTickHandler
 
 .thumb_func
 reset:
@@ -60,6 +60,9 @@ ctorDone:
 
     bl main
     b hang
+
+.weak sysTickHandler         // only test_cancel.cpp defines a real one
+.thumb_set sysTickHandler, hang
 
 .thumb_func
 hang:   b .
