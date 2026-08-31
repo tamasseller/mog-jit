@@ -28,6 +28,25 @@ _stack_top = ORIGIN(ram) + LENGTH(ram);
 SECTIONS
 {
     .text : { *(.text*) } > rom
+
+    /* The input samples are pinned, not merely placed.
+     *
+     * Every SAMPLE_AT the translator emits materializes this buffer's
+     * address, and Assembler::materializeImm32 chooses between a pooled
+     * literal and a two-instruction immediate sequence *by the value* — so
+     * where the array lands changes how many instructions the inner loop
+     * costs. Left in ordinary .rodata it moves with .text, and .text moves
+     * with the reference kernels' optimization level, which made the JIT's
+     * own per-sample figure differ by a whole instruction between images
+     * that were supposed to differ only in the C side. Measured, not
+     * theorised: 19.05 against 18.05 instructions per sample at -O0 versus
+     * -O1.
+     *
+     * Pinning it well clear of the image (~21KB) removes the confound and
+     * costs nothing — the driver asserts the JIT-side numbers now match
+     * across all six images, which is what makes them reproducible. */
+    .samples 0x00030000 : { KEEP(*(.samples)) } > rom
+
     .rodata : { *(.rodata*) } > rom
 
     .init_array : {
