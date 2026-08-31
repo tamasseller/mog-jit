@@ -30,6 +30,7 @@ addr() { arm-none-eabi-nm "$ELF" | awk -v s="$1" '$3 == s {print $1}'; }
 REGIONS=(
     "region=calibration:$(addr bench_enter_calibration):$(addr bench_exit_calibration)"
     "region=knownloop:$(addr bench_enter_knownloop):$(addr bench_exit_knownloop)"
+    "region=knownmem:$(addr bench_enter_knownmem):$(addr bench_exit_knownmem)"
 )
 
 PLUGIN_ARG="$(pwd)/bench_plugin.so"
@@ -43,27 +44,31 @@ qemu-system-arm -M microbit -nographic -monitor none -serial none \
 
 cat "$LOG"
 
-# 200 iterations of `subs`/`bne`, plus the setup `movs`:
-#   instructions  1 + 2*200                          = 401
-#   cycles        1 + 200*1 + 199*3 (taken) + 1*1    = 799
-# The marker pairs are identical in both regions, so differencing removes
-# them from each figure without either having to be known.
+# Expected figures are derived in selftest.cpp, beside the assembly they
+# describe. The marker pairs are identical in every region, so differencing
+# against the empty one removes them without either bias having to be known.
 awk '
 function val(field,   i, v) {
     for(i = 1; i <= NF; i++) if($i ~ "^" field "=") { v = $i; sub(field "=", "", v); return v }
     return ""
 }
+function check(what, got, want,   ok) {
+    ok = (got == want)
+    printf "%-18s %6d  expected %6d  %s\n", what, got, want, ok ? "ok" : "MISMATCH"
+    return ok
+}
 /^REGION calibration/ { calI = val("insns"); calC = val("cycles") }
 /^REGION knownloop/   { loopI = val("insns"); loopC = val("cycles") }
+/^REGION knownmem/    { memI  = val("insns"); memC  = val("cycles") }
 END {
-    if(calI == "" || loopI == "") { print "FAIL: a region never reported"; exit 1 }
+    if(calI == "" || loopI == "" || memI == "") { print "FAIL: a region never reported"; exit 1 }
 
-    di = loopI - calI
-    dc = loopC - calC
-    printf "instructions: %d (expected 401)\n", di
-    printf "cycles:       %d (expected 799)\n", dc
+    bad = 0
+    if(!check("loop instructions", loopI - calI, 401)) bad = 1
+    if(!check("loop cycles",       loopC - calC, 799)) bad = 1
+    if(!check("mem instructions",  memI  - calI, 6))   bad = 1
+    if(!check("mem cycles",        memC  - calC, 10))  bad = 1
 
-    if(di != 401) { print "FAIL: the instruction counter is not counting what it claims"; exit 1 }
-    if(dc != 799) { print "FAIL: the cycle model is not counting what it claims"; exit 1 }
+    if(bad) { print "FAIL: the plugin is not counting what it claims"; exit 1 }
     print "PASS"
 }' "$LOG"

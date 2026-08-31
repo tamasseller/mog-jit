@@ -157,11 +157,16 @@ transcription of the same machine, at both sample counts — a workload that
 agreed at one length and not the other would give a per-sample figure with
 no meaning.
 
-`plugin/selftest.sh` gates both counters: a region around a loop of exactly
-known length against a region around nothing, so the marker bias cancels
-rather than being assumed. 401 instructions, and 799 cycles — `movs` once,
-`subs` 200 times, then 199 taken `bne` at 3 and one untaken at 1, which is
-what pins the taken-branch detection specifically.
+`plugin/selftest.sh` gates both counters, against two hand-written
+sequences whose cost is exact by construction, each differenced against a
+region around nothing so the marker bias cancels rather than being assumed.
+One covers the branch model — 401 instructions and 799 cycles, being `movs`
+once, `subs` 200 times, then 199 taken `bne` at 3 and one untaken at 1,
+which is the split a model charging every conditional branch alike would
+get wrong. The other covers the memory and multi-register weights — 6
+instructions and 10 cycles across `sub sp`/`push`/`ldr`/`str`/`pop`/`add
+sp` — because those are what actually moved the reported ratios, and the
+loop touches no memory at all.
 
 ## Reproducibility
 
