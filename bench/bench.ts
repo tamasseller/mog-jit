@@ -6,7 +6,8 @@
 
 import {execFileSync, spawnSync} from "node:child_process"
 import {readFileSync, existsSync} from "node:fs"
-import {BENCH_N0, BENCH_N1, BENCH_N2} from "./bench-config"
+import {BENCH_N1, BENCH_N2} from "./bench-config"
+import {WORKLOADS} from "./workloads/index"
 
 const LEVELS = ["O0", "O1", "O2", "O3", "Os", "Og"] as const
 type Level = (typeof LEVELS)[number]
@@ -20,13 +21,35 @@ const PLUGIN = `${__dirname}/plugin/bench_plugin.so`
 interface Expected
 {
     workload: string
+    kernel: string
     result: number
-    eventHash: number
+    stateHash: number
     eventCount: number
     bytecodeBytes: number
     totalDepth: number
     maxCallDepth: number
     vmSteps: number
+}
+
+interface Row
+{
+    level: Level
+    mog: number
+    ref: number
+    mogCy: number
+    refCy: number
+    translate: number
+    refStack: number | undefined
+    kernelBytes: number
+    run: Run
+}
+
+interface Measured
+{
+    expected: Expected
+    rows: Row[]
+    jit: Row
+    mogCodeBytes: number
 }
 
 interface Counts
@@ -178,18 +201,20 @@ function stackUsage(suPath: string, fn: string): number | undefined
     return undefined
 }
 
-function main(): void
+/** Runs one workload's six images and returns its rows, having refused to
+ *  return anything at all unless every configuration agreed with the
+ *  reference VM. */
+function measure(outDir: string, workload: string): Measured
 {
-    const outDir = process.argv[2] ?? `${process.env.TMPDIR ?? "/tmp"}/ppl-bench`
-    const expected: Expected = JSON.parse(readFileSync(`${__dirname}/generated/bench_expected.json`, "utf8"))
+    const expected: Expected = JSON.parse(
+        readFileSync(`${__dirname}/generated/${workload}_expected.json`, "utf8"))
 
     const samples = BENCH_N2 - BENCH_N1
-    const rows: {level: Level; mog: number; ref: number; mogCy: number; refCy: number;
-        translate: number; refStack: number | undefined; run: Run}[] = []
+    const rows: Row[] = []
 
     for(const level of LEVELS)
     {
-        const elf = `${outDir}/bench.${level}.elf`
+        const elf = `${outDir}/bench.${workload}.${level}.elf`
         if(!existsSync(elf)) fail(`${elf} is missing — run bench/build.sh first`)
 
         const run = runImage(elf)
@@ -199,31 +224,19 @@ function main(): void
          * sides that disagree about the answer is not a measurement. */
         if(run.tags.DONE === undefined) fail(`${elf}: the image never reached DONE`)
 
-        if(run.tags.MOG_RESULT !== expected.result)
+        const agree = (tag: string, want: number, whose: string): void =>
         {
-            fail(`${level}: the JIT returned ${run.tags.MOG_RESULT}, `
-                + `the reference VM ${expected.result}`)
+            if(run.tags[tag] !== want)
+            {
+                fail(`${workload}/${level}: ${whose} gives `
+                    + `0x${run.tags[tag]?.toString(16)}, the reference VM 0x${want.toString(16)}`)
+            }
         }
 
-        if(run.tags.REF_RESULT !== expected.result)
-        {
-            fail(`${level}: the compiled kernel returned ${run.tags.REF_RESULT}, `
-                + `the reference VM ${expected.result}`)
-        }
-
-        if(run.tags.MOG_HASH !== expected.eventHash)
-        {
-            fail(`${level}: the JIT's trigger events hash to `
-                + `0x${run.tags.MOG_HASH?.toString(16)}, the reference VM's to `
-                + `0x${expected.eventHash.toString(16)}`)
-        }
-
-        if(run.tags.REF_HASH !== expected.eventHash)
-        {
-            fail(`${level}: the compiled kernel's trigger events hash to `
-                + `0x${run.tags.REF_HASH?.toString(16)}, the reference VM's to `
-                + `0x${expected.eventHash.toString(16)}`)
-        }
+        agree("MOG_RESULT", expected.result, "the JIT's return value")
+        agree("REF_RESULT", expected.result, "the compiled kernel's return value")
+        agree("MOG_HASH", expected.stateHash, "the JIT's output and trigger events")
+        agree("REF_HASH", expected.stateHash, "the compiled kernel's output and trigger events")
 
         rows.push({
             level,
@@ -232,7 +245,8 @@ function main(): void
             mogCy: (r.mog_n2.cycles - r.mog_n1.cycles) / samples,
             refCy: (r.ref_n2.cycles - r.ref_n1.cycles) / samples,
             translate: r.mog_n0.insns - r.calibration.insns,
-            refStack: stackUsage(`${outDir}/kernels_ref.${level}.su`, "refPulseTrigger"),
+            refStack: stackUsage(`${outDir}/kernels_ref.${workload}.${level}.su`, expected.kernel),
+            kernelBytes: symbolSize(elf, expected.kernel),
             run,
         })
     }
@@ -241,91 +255,97 @@ function main(): void
      * identical across the six images. It is a free consistency check on
      * the whole measurement, and the one thing that would catch the plugin
      * or the markers behaving differently from run to run. */
-    const first = rows[0]!
+    const jit = rows[0]!
     for(const row of rows.slice(1))
     {
-        if(row.mog !== first.mog || row.mogCy !== first.mogCy
-            || row.translate !== first.translate)
+        if(row.mog !== jit.mog || row.mogCy !== jit.mogCy || row.translate !== jit.translate)
         {
-            fail(`the JIT-side numbers moved between images (${first.level}: `
-                + `${first.mog}/sample, ${row.level}: ${row.mog}/sample) — nothing that `
+            fail(`${workload}: the JIT-side numbers moved between images (${jit.level}: `
+                + `${jit.mogCy}/sample, ${row.level}: ${row.mogCy}/sample) — nothing that `
                 + `should affect them changed, so the measurement is not reproducible`)
         }
     }
 
-    const elf0 = `${outDir}/bench.${first.level}.elf`
-    const mogCodeBytes = first.run.tags.MOG_CODE_BYTES!
-    const fixed = fixedFootprintBytes(elf0)
+    return {expected, rows, jit, mogCodeBytes: jit.run.tags.MOG_CODE_BYTES!}
+}
 
-    console.log(`\n# ${expected.workload}\n`)
-    console.log(`${BENCH_N1} vs ${BENCH_N2} samples, differenced; `
-        + `${expected.eventCount} triggers; every configuration agrees with the reference VM.\n`)
+function report(m: Measured): void
+{
+    const {expected, rows, jit, mogCodeBytes} = m
+
+    console.log(`\n## ${expected.workload}\n`)
+    console.log(`${expected.eventCount} triggers over ${BENCH_N2} samples; `
+        + `bytecode ${expected.bytecodeBytes} B, operand stack ${expected.totalDepth} words.\n`)
 
     console.log(`| level | cycles/sample | vs JIT | insns/sample | kernel .text | stack (GCC) |`)
     console.log(`|---|---|---|---|---|---|`)
-    console.log(`| **JIT** | **${first.mogCy.toFixed(2)}** | 1.00x | `
-        + `${first.mog.toFixed(2)} | `
-        + `${mogCodeBytes} emitted + ${expected.bytecodeBytes} bytecode | — |`)
+    console.log(`| **JIT** | **${jit.mogCy.toFixed(2)}** | 1.00x | ${jit.mog.toFixed(2)} | `
+        + `${mogCodeBytes} emitted | — |`)
 
     for(const row of rows)
     {
-        const size = symbolSize(`${outDir}/bench.${row.level}.elf`, "refPulseTrigger")
         console.log(`| ${row.level} | ${row.refCy.toFixed(2)} | `
-            + `${(first.mogCy / row.refCy).toFixed(2)}x | ${row.ref.toFixed(2)} | ${size} | `
-            + `${row.refStack ?? "?"} |`)
+            + `${(jit.mogCy / row.refCy).toFixed(2)}x | ${row.ref.toFixed(2)} | `
+            + `${row.kernelBytes} | ${row.refStack ?? "?"} |`)
     }
 
-    const t = first.run.tags
-    const best = Math.min(...rows.map(r => r.refCy))
-    const os = rows.find(r => r.level === "Os")!.refCy
+    console.log(``)
+    console.log(`Cold start ${jit.translate} instructions. JIT excursion peaks at `
+        + `${jit.run.tags.MOG_STACK} bytes of stack, of which a translate-only run accounts `
+        + `for ${jit.run.tags.MOG_TRANSLATE_STACK}; the compiled kernel peaks at `
+        + `${jit.run.tags.REF_STACK}.`)
+}
 
-    console.log(``)
-    console.log(`## Cost of the JIT, once`)
-    console.log(``)
-    console.log(`- cold start: ${first.translate} instructions to translate this procedure `
-        + `and set up the excursion, paid once`)
-    console.log(`- fixed footprint: ~${fixed} bytes of .text (translator + runtime). `
-        + `Approximate — attribution is by symbol name, not a link map.`)
-    console.log(``)
-    console.log(`## Stack`)
-    console.log(``)
+function main(): void
+{
+    const outDir = process.argv[2] ?? `${process.env.TMPDIR ?? "/tmp"}/ppl-bench`
+    const names = WORKLOADS.map(w => w.name)
 
-    /* The two JIT figures being equal is the result, not a copy-paste: the
-     * N=0 phase does translation and no sample work, the N2 phase does
-     * both, and they reach the same depth. */
-    if(t.MOG_STACK === t.MOG_TRANSLATE_STACK)
+    const all = names.map(name => measure(outDir, name))
+
+    console.log(`# jit-armv6m against C on Cortex-M0\n`)
+    console.log(`${BENCH_N1} vs ${BENCH_N2} samples, differenced. Every configuration of `
+        + `every workload agrees with the reference VM on its return value and on every `
+        + `byte it wrote.`)
+
+    for(const m of all) report(m)
+
+    const fixed = fixedFootprintBytes(`${outDir}/bench.${names[0]}.O0.elf`)
+
+    console.log(`\n## Against docs/design.md\n`)
+    console.log(`| workload | vs -Os | vs best | expansion | bytecode |`)
+    console.log(`|---|---|---|---|---|`)
+
+    for(const m of all)
     {
-        console.log(`- JIT excursion peaks at ${t.MOG_STACK} bytes, and a translate-only run `
-            + `reaches exactly the same depth — so the peak is set by the translator, not by `
-            + `running the program. The program's own operand stack is `
-            + `${expected.totalDepth} words (validator totalDepth).`)
-    }
-    else
-    {
-        console.log(`- JIT excursion peaks at ${t.MOG_STACK} bytes, of which a translate-only `
-            + `run accounts for ${t.MOG_TRANSLATE_STACK}. Program operand stack: `
-            + `${expected.totalDepth} words.`)
+        const os = m.rows.find(r => r.level === "Os")!.refCy
+        const best = Math.min(...m.rows.map(r => r.refCy))
+
+        console.log(`| ${m.expected.workload} | ${(m.jit.mogCy / os).toFixed(2)}x | `
+            + `${(m.jit.mogCy / best).toFixed(2)}x | `
+            + `${(m.mogCodeBytes / m.expected.bytecodeBytes).toFixed(2)}x | `
+            + `${m.expected.bytecodeBytes} B |`)
     }
 
-    console.log(`- compiled kernel peaks at ${t.REF_STACK} bytes measured, against GCC's own `
-        + `-fstack-usage figure for the kernel function alone (table above).`)
-    console.log(``)
-    console.log(`## Against docs/design.md`)
+    const vsOs = all.map(m => m.jit.mogCy / m.rows.find(r => r.level === "Os")!.refCy)
+    const vsBest = all.map(m => m.jit.mogCy / Math.min(...m.rows.map(r => r.refCy)))
+    const span = (xs: number[]): string =>
+        `${Math.min(...xs).toFixed(2)}x to ${Math.max(...xs).toFixed(2)}x`
+
     console.log(``)
     console.log(`- §14 predicts throughput "within a small constant factor (roughly 2-4x) of `
-        + `equivalent -Os C". Measured here: **${(first.mogCy / os).toFixed(2)}x** against `
-        + `-Os, ${(first.mogCy / best).toFixed(2)}x against the best level — in modelled `
-        + `Cortex-M0 cycles, which is what that claim is about.`)
-    console.log(`- §14 predicts 1-3x opcode expansion for arithmetic-heavy code, 4-6x amortized `
-        + `with control flow. This workload is almost all control flow and expands `
-        + `${(mogCodeBytes / expected.bytecodeBytes).toFixed(2)}x by bytes `
-        + `(${mogCodeBytes} emitted from ${expected.bytecodeBytes} bytecode).`)
-    console.log(`- §15 estimates the whole JIT at 4-10 KB flash. Measured: ~${fixed} bytes.`)
+        + `equivalent -Os C". Measured ${span(vsOs)} against -Os — at or below the bottom `
+        + `of that range — and ${span(vsBest)} against each workload's best level.`)
+    console.log(`- §14 predicts 1-3x opcode expansion for arithmetic-heavy code and 4-6x `
+        + `amortized with control flow; the expansion column is bytes of emitted Thumb per `
+        + `byte of bytecode.`)
+    console.log(`- §15 estimates the whole JIT at 4-10 KB flash. Measured ~${fixed} bytes of `
+        + `.text for translator plus runtime, approximate — attribution is by symbol name, `
+        + `not a link map.`)
     console.log(``)
-    console.log(`One workload, one core. Cycles are modelled from ARM DDI 0432C's timings `
-        + `over the exact executed instruction stream, not measured on silicon; `
-        + `instruction counts beside them are exact. See bench/README.md before quoting `
-        + `any of this.`)
+    console.log(`Cycles are modelled from ARM DDI 0432C's timings over the exact executed `
+        + `instruction stream, assuming the single-cycle multiplier; instruction counts `
+        + `beside them are exact. See bench/README.md before quoting any of this.`)
     console.log(``)
 }
 

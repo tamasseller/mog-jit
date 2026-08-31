@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 OUT="${TMPDIR:-/tmp}/ppl-bench-code"
 ENVELOPE="${TMPDIR:-/tmp}/ppl-bench-envelope.bin"
 
-npx ts-node --transpile-only gen-envelope.ts "$ENVELOPE"
+npx ts-node --transpile-only gen-envelope.ts "$ENVELOPE" "${1:-pulse-trigger}"
 
 cat > "${TMPDIR:-/tmp}/ppl-bench-samples-stub.cpp" <<'EOF'
 #include "ext_sampstream.h"

@@ -1,51 +1,66 @@
 # bench — measuring the JIT against C
 
-Status: end to end on one workload. The harness is complete, cycle
-weighting included; two of the three workloads are not.
+All three workloads are in and measured. Run:
 
 ```sh
-bench/plugin/selftest.sh   # is the counter counting what it claims?
-bench/check.sh             # do the extension's two halves agree?
-bench/build.sh             # six images, one per optimization level
+bench/plugin/selftest.sh                              # is the counter honest?
+bench/check.sh                                        # do the extension's halves agree?
+npx ts-node --transpile-only bench/check-workload.ts  # do the workloads agree?
+bench/build.sh                                        # 18 images
 npx ts-node --transpile-only bench/bench.ts
 ```
 
-## Results so far
+## Results
 
-`pulse-trigger`, 2048 vs 4096 samples differenced, all seven configurations
-agreeing with the reference VM on the return value and on every trigger
-event:
+2048 vs 4096 samples differenced. Every configuration of every workload
+agrees with the reference VM on its return value and on every byte it wrote.
 
-| level | cycles/sample | vs JIT | insns/sample | kernel .text | stack (GCC) |
-|---|---|---|---|---|---|
-| **JIT** | **27.47** | 1.00x | 19.05 | 150 emitted + 81 bytecode | — |
-| O0 | 64.52 | 0.43x | 36.28 | 148 | 32 |
-| O1 | 17.30 | 1.59x | 12.59 | 156 | 40 |
-| O2 | 17.88 | 1.54x | 12.54 | 156 | 32 |
-| O3 | 17.88 | 1.54x | 12.54 | 156 | 32 |
-| Os | 26.96 | 1.02x | 16.88 | 116 | 32 |
-| Og | 19.92 | 1.38x | 14.21 | 112 | 20 |
+| workload | JIT cycles/sample | vs -Os | vs best level | emitted / bytecode |
+|---|---|---|---|---|
+| pulse-trigger | 27.47 | 1.02x | 1.59x | 150 B / 81 B |
+| iq-preamble | 19.23 | 2.06x | 2.38x | 210 B / 109 B |
+| median5 | 151.00 | 1.99x | 2.20x | 298 B / 231 B |
 
-Cold start is 21218 instructions, paid once per procedure. The fixed
-footprint is ~9.8 KB of `.text` for translator plus runtime.
+Against docs/design.md: §14 predicted throughput within "roughly 2-4x" of
+`-Os` C, and the measured 1.02x-2.06x sits at or below the bottom of that
+range; against each workload's best level it is 1.59x-2.38x. §15 estimated
+4-10 KB of flash for the whole JIT, and ~9.8 KB is inside it. Cold start is
+21k-49k instructions depending on program size, paid once per procedure.
 
-Against docs/design.md, on this one workload:
+The three workloads are chosen to be different shapes, and they behave like
+it:
 
-- §14 predicts throughput within "roughly 2-4x" of `-Os` C. Measured 1.02x
-  against `-Os`, 1.59x against the best level — better than the estimate.
-- §14 predicts 4-6x opcode expansion amortized with control flow. This
-  workload is almost entirely control flow and expands 1.85x by bytes.
-- §15 estimates 4-10 KB flash for the whole JIT. Measured ~9.8 KB, at the
-  top of the range but inside it.
+**pulse-trigger** — a two-state machine with hysteresis, on unsigned ADC
+codes. Almost no arithmetic, and the closest result: 1.02x against `-Os`.
 
-Note `-O1` beats `-O2`/`-O3` in cycles while losing on instruction count —
-fewer instructions laid out so that more of its branches are taken.
+**iq-preamble** — quadrature demodulation of a tone sampled at four times
+its frequency, where the mixer coefficients are [1,0,-1,0] and [0,1,0,-1],
+so there is no multiply in the demodulator at all. `I^2 + Q^2` against a
+squared threshold avoids a square root the ISA does not have. This is the
+only workload that reaches a `MUL`, and the only one whose accumulators
+need the DSL's signed types for `>>` to mean ASR.
 
-Two things GCC does here that the JIT structurally cannot, both visible in
-the disassembly and both legitimate: it fuses `run >= 12 && run <= 60` into
-a single `subs`/`cmp`/`bhi` range test, and it hoists the event ring's count
-into a stack slot across the whole loop where the emitted code reloads it
-per trigger.
+**median5** — Knuth's nine-comparator sorting network, verified
+exhaustively over all 120 permutations rather than eyeballed. Cortex-M0 has
+no IT blocks, so each compare-exchange is a real branch on both sides;
+neither gets to hide the work in a conditional move.
+
+### Where the JIT loses, concretely
+
+**Registers, on median5.** 35 of its 147 emitted instructions are
+SP-relative spill and fill — the 4-register TOS window against seven live
+locals (the validator reports `totalDepth` 9). GCC has eight low registers
+here and spills far less. This is the workload with the worst ratio against
+`-O2`, and that is why.
+
+**Range fusion and hoisting, on pulse-trigger.** GCC fuses
+`run >= 12 && run <= 60` into one `subs`/`cmp`/`bhi`, and hoists the event
+ring's count into a stack slot across the whole loop where the emitted code
+reloads it per trigger. Both visible in the disassembly, both legitimate.
+
+Where the JIT wins is `-O0`, by better than 2x on every workload — which is
+worth stating only because "received bytecode is slower than compiled C" is
+not unconditionally true.
 
 ## Where the cycle figures come from
 
@@ -77,8 +92,10 @@ registers, so it issues proportionally more loads; weighting them moved the
 
 `MUL` is a knob (`mul=` plugin argument, default 1) because Cortex-M0
 permits both a 1-cycle and a 32-cycle multiplier and the choice is
-implementation defined. No workload here has reached a `MUL` yet; the IQ
-demodulator will, and the report must state which variant it assumed.
+implementation defined. Only `iq-preamble` reaches one, twice per detection
+window rather than per sample, so even the 32-cycle variant would move its
+figure by well under a cycle per sample — but the report says which it
+assumed rather than leaving it to be discovered.
 
 ## Why every number is a difference
 
@@ -95,21 +112,22 @@ The same subtraction against an `N=0` phase gives the cold-start cost.
 
 ## What is not being claimed
 
-**The stack figures are not comparable as printed.** The JIT excursion peaks
-at 1544 bytes and a translate-only run reaches exactly the same depth, so
-that number is the *translator's* peak, not the cost of running the program
-— the program's own operand stack is 6 words. The compiled kernel's 128
-bytes is an ordinary call frame. Separating the JIT's steady-state
-execution depth from its translation depth would need a repaint from inside
-`Executor::run`, which there is no hook for.
+**The stack figures are not comparable as printed.** On every workload the
+JIT excursion and a translate-only run reach exactly the same depth, so
+those 1.1-1.5 KB are the *translator's* peak and not the cost of running
+the program — the programs' own operand stacks are 6 to 9 words. The
+compiled kernels' 128 bytes is an ordinary call frame. Separating the JIT's
+steady-state execution depth from its translation depth would need a
+repaint from inside `Executor::run`, which there is no hook for.
 
 **The fixed-footprint figure is approximate.** It sums `.text` by symbol
 name prefix, not from a link map.
 
-**One workload proves one thing.** This is the branchy, comparison-heavy
-case. The arithmetic-heavy case (IQ demodulation) and the compare-heavy
-nonlinear case (median filter) are the two that would move these ratios,
-and both need the DSL's signed types.
+**Three workloads on one core.** Every number here is Cortex-M0 with
+zero-wait-state memory and the single-cycle multiplier assumed. Nothing has
+been measured on silicon, and nothing has been measured on a core with a
+cache or a branch predictor, where the model this suite uses would not
+apply at all.
 
 ## The sample-stream extension
 

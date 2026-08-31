@@ -19,15 +19,16 @@
 
 import {proc, ir, type Procedure} from "../../../packages/machine/src/index"
 import {SAMP_IN_SAMPLES, IN_MASK} from "../sampstream_ext"
+import type {Sink, Workload} from "./workload"
 
-export const HI = 2600
-export const LO = 1400
-export const MIN_WIDTH = 12
-export const MAX_WIDTH = 60
+const HI = 2600
+const LO = 1400
+const MIN_WIDTH = 12
+const MAX_WIDTH = 60
 
-export const TRIGGER_KIND = 1
+const TRIGGER_KIND = 1
 
-export function pulseTriggerProc(): Procedure
+function body(): Procedure
 {
     return proc(["n"], ir`
 u32 i = 0;
@@ -69,7 +70,7 @@ return i;
  * a slow baseline wander underneath so the hysteresis is doing real work
  * rather than seeing an ideal square wave.
  */
-export function pulseTriggerSamples(): Int16Array
+function samples(): Int16Array
 {
     const s = new Int16Array(SAMP_IN_SAMPLES)
 
@@ -102,8 +103,7 @@ export function pulseTriggerSamples(): Int16Array
  * the generator: this is what the C kernel is a transcription of, and all
  * three have to be read against each other when one of them disagrees.
  */
-export function pulseTriggerReference(input: Int16Array, n: number,
-    onTrigger: (index: number) => void): number
+function reference(input: Int16Array, n: number, sink: Sink): number
 {
     let state = 0
     let run = 0
@@ -126,11 +126,27 @@ export function pulseTriggerReference(input: Int16Array, n: number,
 
             if(s < LO)
             {
-                if(run >= MIN_WIDTH && run <= MAX_WIDTH) onTrigger(i)
+                if(run >= MIN_WIDTH && run <= MAX_WIDTH) sink.trigger(i, TRIGGER_KIND)
                 state = 0
             }
         }
     }
 
     return n
+}
+
+export const pulseTrigger: Workload = {
+    name: "pulse-trigger",
+    kernel: "refPulseTrigger",
+    params: {
+        PULSE_HI: HI,
+        PULSE_LO: LO,
+        PULSE_MIN_WIDTH: MIN_WIDTH,
+        PULSE_MAX_WIDTH: MAX_WIDTH,
+        PULSE_TRIGGER_KIND: TRIGGER_KIND,
+    },
+    proc: body,
+    samples,
+    reference,
+    step: 1,
 }

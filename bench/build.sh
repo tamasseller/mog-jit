@@ -21,10 +21,12 @@ cd "$(dirname "$0")"
 QEMU_EXEC=../fuzz/qemu_exec
 OUT_DIR="${BENCH_OUT_DIR:-${TMPDIR:-/tmp}/ppl-bench}"
 LEVELS=(-O0 -O1 -O2 -O3 -Os -Og)
+WORKLOADS=("$@")
+if [ ${#WORKLOADS[@]} -eq 0 ]; then
+    WORKLOADS=(pulse-trigger iq-preamble median5)
+fi
 
 mkdir -p "$OUT_DIR" generated
-
-npx ts-node --transpile-only gen-bench.ts generated
 
 # Kept in step with test/qemu/Makefile's. The -ffixed-r8..r11 reservations
 # and -DNDEBUG are the two that matter: runtime.S and every
@@ -67,24 +69,34 @@ FIXED_SOURCES=(
     bench_runner.cpp
 )
 
-for level in "${LEVELS[@]}"; do
-    tag="${level#-}"
-    obj="$OUT_DIR/kernels_ref.$tag.o"
-    elf="$OUT_DIR/bench.$tag.elf"
+# One image per (workload, level). Each workload gets its own input samples
+# rather than sharing one array: what fraction of each branch is taken is
+# the dominant term in every number here, so a signal compromised to suit
+# three workloads at once would make all three less meaningful.
+for workload in "${WORKLOADS[@]}"; do
+    npx ts-node --transpile-only gen-bench.ts generated "$workload"
 
-    # The reference kernels are the only thing whose level moves, and they
-    # are compiled separately so the .su file is attributable to them alone.
-    arm-none-eabi-g++ "${COMMON[@]}" "$level" -fstack-usage \
-        -c kernels_ref.cpp -o "$obj" # .su lands beside the object
+    for level in "${LEVELS[@]}"; do
+        tag="${level#-}"
+        obj="$OUT_DIR/kernels_ref.$workload.$tag.o"
+        elf="$OUT_DIR/bench.$workload.$tag.elf"
 
-    # vectors.S first on the link line — nothing else pins the vector table
-    # to address 0.
-    arm-none-eabi-g++ "${COMMON[@]}" -Os \
-        -static -nostartfiles -specs=nosys.specs -T linker.ld \
-        "${FIXED_SOURCES[@]}" "$obj" \
-        -o "$elf"
+        # The reference kernels are the only thing whose level moves, and
+        # they are compiled separately so the .su file is attributable to
+        # them alone. The .su lands beside the object.
+        arm-none-eabi-g++ "${COMMON[@]}" "$level" -fstack-usage \
+            -c kernels_ref.cpp -o "$obj"
 
-    printf '%-6s %s\n' "$tag" "$(arm-none-eabi-size "$elf" | tail -1)"
+        # vectors.S first on the link line — nothing else pins the vector
+        # table to address 0.
+        arm-none-eabi-g++ "${COMMON[@]}" -Os \
+            -static -nostartfiles -specs=nosys.specs -T linker.ld \
+            "${FIXED_SOURCES[@]}" "$obj" \
+            -o "$elf"
+
+        printf '  %-14s %-3s %s bytes text\n' "$workload" "$tag" \
+            "$(arm-none-eabi-size "$elf" | tail -1 | awk '{print $1}')"
+    done
 done
 
-echo "built ${#LEVELS[@]} images in $OUT_DIR"
+echo "built $(( ${#LEVELS[@]} * ${#WORKLOADS[@]} )) images in $OUT_DIR"

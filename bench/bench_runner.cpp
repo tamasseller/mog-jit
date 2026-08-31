@@ -25,7 +25,6 @@
 #include "bench_marks.h"
 #include "bench_stack.h"
 #include "ext_sampstream.h"
-#include "kernels_ref.h"
 #include "generated/bench_data.h"
 
 BENCH_REGION_MARKERS(calibration)
@@ -63,15 +62,25 @@ static uint32_t runMog(uint32_t n)
     return r.value;
 }
 
-/* FNV-1a over the event ring and its count. The host computes the same walk
- * over the reference VM's own ring, so both sides are hashing a value they
- * arrived at independently. */
-static uint32_t eventHash()
+/* FNV-1a over everything a workload can touch: the output stream, then the
+ * event ring, then the count. One number covers a filter and a trigger
+ * alike, so no workload can quietly go unchecked for lack of a hash that
+ * looks at what it writes. The host computes the same walk over the
+ * reference VM's own state, so both sides are hashing a value they arrived
+ * at independently. */
+static uint32_t stateHash()
 {
     uint32_t h = 2166136261u;
 
-    const uint32_t words = SAMP_EVENTS + 1;
-    for (uint32_t i = 0; i < words; i++)
+    for (uint32_t i = 0; i < SAMP_OUT_SAMPLES; i++)
+    {
+        const uint16_t v = (uint16_t)g_sampOut[i];
+
+        h = (h ^ (v & 0xff)) * 16777619u;
+        h = (h ^ ((v >> 8) & 0xff)) * 16777619u;
+    }
+
+    for (uint32_t i = 0; i <= SAMP_EVENTS; i++)
     {
         const uint32_t v = i < SAMP_EVENTS ? g_sampEvents.entries[i] : g_sampEvents.count;
 
@@ -151,26 +160,26 @@ int main()
     bench_exit_mog_n2();
 
     const uint32_t mogStack = benchStackUsedBytes();
-    const uint32_t mogHash = eventHash();
+    const uint32_t mogHash = stateHash();
 
     sampStreamReset();
     bench_enter_ref_n0();
-    refPulseTrigger(BENCH_N0);
+    REF_KERNEL(BENCH_N0);
     bench_exit_ref_n0();
 
     sampStreamReset();
     bench_enter_ref_n1();
-    refPulseTrigger(BENCH_N1);
+    REF_KERNEL(BENCH_N1);
     bench_exit_ref_n1();
 
     sampStreamReset();
     benchPaintStack();
     bench_enter_ref_n2();
-    const uint32_t refResult = refPulseTrigger(BENCH_N2);
+    const uint32_t refResult = REF_KERNEL(BENCH_N2);
     bench_exit_ref_n2();
 
     const uint32_t refStack = benchStackUsedBytes();
-    const uint32_t refHash = eventHash();
+    const uint32_t refHash = stateHash();
 
     semihostWriteTagged("MOG_RESULT:", mogResult);
     semihostWriteTagged("REF_RESULT:", refResult);

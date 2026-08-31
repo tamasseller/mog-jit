@@ -1337,6 +1337,19 @@ and the call shuffle as the main structural overheads. Neither is a real
 disadvantage: `-Os` C pays the first too, and the second is comparable to
 any real calling convention's bookkeeping.
 
+**Measured** (`bench/`, three DSP workloads on the microbit model, modelled
+Cortex-M0 cycles over the exact executed instruction stream): 1.02-2.06×
+against `-Os` C and 1.59-2.38× against each workload's best level — at or
+below the bottom of the range above. Byte expansion of emitted Thumb over
+bytecode came out 1.29-1.93×, i.e. the 4-6× guess for control-flow-heavy
+code was pessimistic; a nine-comparator sorting network, the most
+control-flow-dense of the three, expands least.
+
+Where the gap is widest the cause is this design's own 4-register window:
+in that same sorting network, 35 of 147 emitted instructions are SP-relative
+spill and fill against seven live locals, where GCC has eight low registers
+to work with. `bench/README.md` carries the rest.
+
 The Appendix's data point: a leaf loop-and-comparison procedure (14 bytecode
 opcodes / 24 bytes, excluding the structural `LOOP` marker) comes in at 21
 native instructions (42 bytes) with no fusion, 16 (32 bytes) with
@@ -1370,6 +1383,11 @@ Comparable in spirit to small threaded-code Forth kernels (famously 2-6 KB).
 This does more work per opcode than a threaded dispatcher, but the opcode
 count and addressing-mode space are both small and heavily templated,
 keeping the emitter compact.
+
+**Measured**: ~9.8 KB of `.text` for translator plus runtime in `bench/`'s
+images, at the top of the estimate but inside it. Attribution there is by
+symbol name rather than from a link map, so treat it as the right order of
+magnitude and not a budget.
 
 ---
 ## Appendix - Worked Example: `leb128_len`
