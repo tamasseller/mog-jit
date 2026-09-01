@@ -11,10 +11,12 @@ g++ -std=c++17 -O1 -g \
     -fno-sanitize=shift-base \
     -m32 \
     -DPPL_FUZZ_LIBFUZZER_BUILD \
-    -I ../src/compiler -I ../src/runtime \
+    -I ../src/compiler -I ../src/runtime -I ../test \
     repro.cpp \
     harness.cpp \
     ../src/compiler/{ext,ext_default,window,accstate,assembler,arithmetic,shape,abi_strategy,decode_instr,proc_scan,translate_proc,translate_data_flow,translate_control_flow}.cpp \
+    ../test/ext_rawmem.cpp \
+    rawmem_helper_host.cpp \
     ../src/runtime/runtime.cpp \
     -o repro_driver
 

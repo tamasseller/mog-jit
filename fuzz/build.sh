@@ -14,11 +14,13 @@ g++ -std=c++17 -O1 -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -fno-sanitize=shift-base \
     -m32 \
-    -I ../src/compiler -I ../src/runtime \
+    -I ../src/compiler -I ../src/runtime -I ../test \
     harness.cpp \
     ../src/compiler/window.cpp \
     ../src/compiler/ext.cpp \
     ../src/compiler/ext_default.cpp \
+    ../test/ext_rawmem.cpp \
+    rawmem_helper_host.cpp \
     ../src/compiler/accstate.cpp \
     ../src/compiler/assembler.cpp \
     ../src/compiler/arithmetic.cpp \

@@ -82,6 +82,20 @@ Everything else is comparable, traps at any call depth included —
 outcomes, so nothing is encoded in the result value for the two that are
 compared (`docs/target-profile.md`).
 
+## The extension
+
+Both halves carry one registered extension, the raw-memory test extension:
+`rawmem_ext.ts` is the reference half, `../test/ext_rawmem.cpp` (plus
+`ext_rawmem_helper.S`, and `rawmem_helper_host.cpp` standing in for it on a
+host that cannot assemble Thumb) the target half. Without it every EXT
+opcode is rejected at load and the whole seam — `ExtSite`'s window and acc
+services, the hand-written MEMMOVE helper, `extThunkHelper`'s AAPCS reach —
+is unreachable by either fuzzer.
+
+Its buffer is static on the target and outlives one program in a batch, so
+`exec_runner.cpp` zeroes it per program and every reference-side caller
+calls `reset()` before `run`.
+
 ## Seeds
 
 `make_seeds.ts` owns `seeds/` — it is the only thing that writes there.

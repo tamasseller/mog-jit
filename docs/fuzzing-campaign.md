@@ -799,3 +799,104 @@ translator's.
   mechanism's own cleanup (`docs/TODO.md`) should settle first.
 - Non-terminating programs, and `EXT` opcodes in the fuzzer — unchanged from
   the first campaign.
+
+---
+
+# Third campaign — the extension seam
+
+`fuzz/rawmem_ext.ts` had existed since the extension mechanism's cleanup as
+a finished reference half, wired into nothing. Neither fuzz half registered
+an extension, so `EXT` was rejected at load in both and every `ExtSite`
+service, the hand-written MEMMOVE helper and `extThunkHelper` were reachable
+only from fixed unit tests. Wiring it in is what this campaign is.
+
+## Scale
+
+| | |
+|---|---|
+| Crash campaign, before the extension | 2.64M executions, 336k validator-approved, **0 crashes** |
+| Execution sweep, before the extension | 3,000 inputs, 2,999 compared, **0 mismatches, 0 hangs** |
+| Seeds, before → after | 40 (38 comparable) → 48 (46 comparable), **0 mismatches** either way |
+| Crash campaign, after the extension | assert at ~30k executions — §1 below |
+| Execution sweep, after the extension | 1,200 inputs, 1,140 compared, **0 mismatches, 0 hangs** |
+
+The pre-extension halves are clean. Everything below came from the seam.
+
+## 1. An extension opcode cannot declare that it destroys `acc`
+
+**Symptom.** Two faces of one cause. On the host, on a validator-approved
+program, at about 30k executions:
+
+```
+fuzz_driver: accstate.cpp:11: jitc::Shape jitc::AccState::peek() const:
+  Assertion `kind != Kind::Poisoned' failed.
+```
+
+On emulated ARM, the same shape under `-DNDEBUG` returns the wrong number:
+
+```
+CONST #0x10; PUSH; CONST #0x20; PUSH; CONST #0x28; PUSH
+CONST #0xabcd
+EXT MEMMOVE
+RETURN
+        reference VM:  RETURN 0x00000000
+        emitted Thumb: RETURN 0x00000018
+```
+
+**Why the program is legal.** §11.2's effect declaration has four fields —
+TOS delta, peak transient depth, terminates, call-shaped — and says nothing
+about `acc`. `ExtOpEffect` has since grown two: `readsAcc` and `writesAcc`.
+Neither is a *kill*. `validate.ts` is explicit that an op declaring neither
+"passes acc's liveness through unchanged", and `vm.ts` reads the same two
+flags in the same order. So `EXT MEMMOVE; RETURN` validates with `acc` live
+and the reference VM has an answer for it.
+
+Meanwhile `ExtSite` offers `accInvalidate()` — and an extension reaching a
+helper has no alternative, because r0 is an argument register from the first
+`pop` onward. `ext_rawmem.cpp` calls it in all three of MEMMOVE, MEMCMP and
+SLICECMP. MEMCMP and SLICECMP recover with `accIsNowIn(ACC_REG)` and declare
+`writesAcc`; MEMMOVE has nothing to put there, and no way to say so.
+
+**Which side is wrong: neither implementation.** The translator does exactly
+what the extension declared. `validate.ts` and `vm.ts` do exactly what
+§11.2 declares. The vocabulary is missing a third direction, and this is the
+mirror of the first campaign's §9b, whose fix was `writesAcc` "since an
+extension op that assigns `acc` had no way to say so" (design.md §17). An op
+that *destroys* `acc` is in the same position, one campaign later.
+
+**Not confined to the test extension.** `CODEC_EFFECTS`' `ENTER`,
+`ENTER_NEXT`, `OPEN_LIST`, `CLONE_RD`, `CLONE_WR` and `SEEK` declare neither
+flag and their `exec()` leaves `state.acc` alone — the reference preserves
+it across all six. Every one of them is stream/handle work that a
+jit-armv6m emitter would reach through `cHelperCall`, which clobbers r0. The
+first codec extension emitter written against this seam inherits the bug.
+
+**Open.** It needs an ISA spec decision — a third direction in §11.2, and
+whether "declares neither" should keep meaning "preserves `acc`" or change
+to "leaves it undefined". Either answer changes which programs are legal, so
+it is not a translator patch.
+
+Until it lands, a crash campaign aborts about 30 seconds in: the mutator
+reaches `EXT MEMMOVE` followed by something that reads `acc` almost
+immediately. The seed sweep is unaffected — the eight `ext_*` seeds are all
+comparable and all match.
+
+## Coverage added
+
+- The raw-memory extension registered in both halves: `../test/ext_rawmem.cpp`
+  plus `ext_rawmem_helper.S` on the target, `rawmem_helper_host.cpp` standing
+  in for that helper on the host, which cannot assemble Thumb but never
+  executes what it emits. `exec_runner.cpp` zeroes `g_rawMem` per program,
+  since a batch shares one static buffer and the reference VM does not.
+- Eight `ext_*` seeds: all six load/store widths against masked and
+  misaligned addresses, MEMMOVE overlapping and empty, MEMCMP's equal and
+  differing paths, SLICECMP's transient push, extension operands past the
+  window, an extension site inside a loop body, and one across a `CALL` in a
+  `BR_TABLE` arm.
+
+## Still not covered
+
+- Non-terminating programs, unchanged from the first campaign.
+- Extension opcodes carrying real operands: rawmem's are all single-byte, so
+  `extDecodeLength`'s LEB128 path and the operand-bearing shapes
+  `test/host/test_ext.cpp` covers by stub are still unfuzzed.

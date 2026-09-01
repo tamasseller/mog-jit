@@ -19,8 +19,9 @@
 
 import * as fs from "fs"
 import * as path from "path"
-import { decodeLeb128, decodeBody, encodeJitEnvelope, validateProgram } from "../../packages/machine/src/index"
+import { decodeLeb128, decodeBody, encodeJitEnvelope, extInstr, validateProgram } from "../../packages/machine/src/index"
 import type { RtlInstr, RtlProc, RtlProgram } from "../../packages/machine/src/index"
+import { rawMemExtension } from "./rawmem_ext"
 
 const SEED_DIR = path.join(__dirname, "seeds")
 
@@ -34,10 +35,12 @@ const SEED_DIR = path.join(__dirname, "seeds")
  *  too, so that guess could not be made reliably. */
 const STAGING_DIR = path.join(__dirname, "seeds_raw")
 
+const EXT = rawMemExtension()
+
 function write(name: string, program: RtlProgram): void
 {
-    const stats = validateProgram(program) // throws rather than emit a seed the harness would discard
-    const bytes = encodeJitEnvelope(program)
+    const stats = validateProgram(program, EXT) // throws rather than emit a seed the harness would discard
+    const bytes = encodeJitEnvelope(program, EXT)
     fs.writeFileSync(path.join(SEED_DIR, name), bytes)
     console.log(`wrote seeds/${name} (${bytes.length} bytes, ${program.procedures.length} proc, `
         + `totalDepth ${stats.totalDepth}, maxCallDepth ${stats.maxCallDepth})`)
@@ -538,6 +541,244 @@ const signedAndExtend: RtlProgram = {
     ],
 }
 
+// ── the extension seam ──────────────────────────────────────────────────
+//
+// The raw-memory test extension (rawmem_ext.ts / test/ext_rawmem.cpp) is
+// the only extension either half carries, and until these existed no EXT
+// instruction had ever been fuzzed: ExtSite's window and acc services, the
+// hand-written MEMMOVE helper and extThunkHelper's AAPCS reach were all
+// covered by fixed unit tests alone. Addresses are deliberately past the
+// buffer and off alignment, since masking and aligning is the whole safety
+// argument the emitted code carries instead of a bounds check.
+
+const st = (addr: number, value: number, op: string): RtlInstr[] => [
+    { op: "CONST", imm: addr }, { op: "PUSH" },
+    { op: "CONST", imm: value },
+    extInstr(op, []),
+]
+
+const ld = (addr: number, op: string): RtlInstr[] => [
+    { op: "CONST", imm: addr },
+    extInstr(op, []),
+]
+
+/** All six load/store widths, each addressed so the mask and the
+ *  align-down both do something. */
+const extLoadStore: RtlProgram = {
+    procedures: [
+        {
+            argCount: 0,
+            body: ret([
+                ...st(0x40, 0x11223344, "ST32"),
+                ...st(0x445, 0xaabbccdd, "ST16"),   // 0x445 masks to 0x45, aligns to 0x44
+                ...st(0x803, 0xee, "ST8"),          // masks to 0x03
+                ...ld(0x41, "LD8"),                 // 0x33
+                { op: "PUSH" },
+                ...ld(0x42, "LD16"),                // aligns to 0x42 → 0x1122
+                { op: "ADD", combo: "POP_ACC" },
+                { op: "PUSH" },
+                ...ld(0x443, "LD32"),               // masks to 0x43, aligns to 0x40
+                { op: "XOR", combo: "POP_ACC" },
+                { op: "PUSH" },
+                ...ld(0x1003, "LD8"),               // masks to 0x03
+                { op: "ADD", combo: "POP_ACC" },
+            ]),
+        },
+    ],
+}
+
+/** MEMMOVE: three operands off the stack, none of them acc, through the
+ *  hand-written Thumb helper. Its destination range overlaps its source,
+ *  which the forward byte copy makes defined rather than divergent. acc is
+ *  re-established by the CONST after it — MEMMOVE leaves it undefined. */
+const extMemmove: RtlProgram = {
+    procedures: [
+        {
+            argCount: 0,
+            body: ret([
+                ...st(0x10, 0x01020304, "ST32"),
+                ...st(0x14, 0x05060708, "ST32"),
+                { op: "CONST", imm: 0x10 }, { op: "PUSH" },   // src
+                { op: "CONST", imm: 0x12 }, { op: "PUSH" },   // dst start
+                { op: "CONST", imm: 0x1a }, { op: "PUSH" },   // dst end
+                extInstr("MEMMOVE", []),
+                ...ld(0x14, "LD32"),
+                { op: "PUSH" },
+                ...ld(0x18, "LD32"),
+                { op: "ADD", combo: "POP_ACC" },
+            ]),
+        },
+    ],
+}
+
+/** An empty destination range — end at or below start copies nothing —
+ *  and a source that wraps the mask on the way. */
+const extMemmoveEmpty: RtlProgram = {
+    procedures: [
+        {
+            argCount: 0,
+            body: ret([
+                ...st(0x20, 0x99887766, "ST32"),
+                { op: "CONST", imm: 0x3fe }, { op: "PUSH" },  // src, wraps
+                { op: "CONST", imm: 0x30 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x30 }, { op: "PUSH" },   // end == start
+                extInstr("MEMMOVE", []),
+                { op: "CONST", imm: 0x3fc }, { op: "PUSH" },
+                { op: "CONST", imm: 0x30 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x38 }, { op: "PUSH" },
+                extInstr("MEMMOVE", []),
+                ...ld(0x30, "LD32"),
+                { op: "PUSH" },
+                ...ld(0x34, "LD32"),
+                { op: "XOR", combo: "POP_ACC" },
+            ]),
+        },
+    ],
+}
+
+/** MEMCMP: three operands, and the first extension op here to reach a
+ *  helper through extThunkHelper's AAPCS realignment rather than a raw
+ *  BLX. Both an equal and a differing range, so the early-out and the
+ *  run-to-end path both run. */
+const extMemcmp: RtlProgram = {
+    procedures: [
+        {
+            argCount: 0,
+            body: ret([
+                ...st(0x50, 0x04030201, "ST32"),
+                ...st(0x60, 0x04030201, "ST32"),
+                ...st(0x70, 0x04ff0201, "ST32"),
+                { op: "CONST", imm: 0x50 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x54 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x60 }, { op: "PUSH" },
+                extInstr("MEMCMP", []),                       // equal → 0
+                { op: "PUSH" },
+                { op: "CONST", imm: 0x50 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x54 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x70 }, { op: "PUSH" },
+                extInstr("MEMCMP", []),                       // differs at byte 2
+                { op: "SUB", combo: "POP_ACC" },
+            ]),
+        },
+    ],
+}
+
+/** SLICECMP: four operands, one more than the argument registers hold, so
+ *  the emitted code pushes the fourth and releases it again — the one op
+ *  whose maxTransient is not zero. */
+const extSliceCmp: RtlProgram = {
+    procedures: [
+        {
+            argCount: 0,
+            body: ret([
+                ...st(0x80, 0x04030201, "ST32"),
+                ...st(0x90, 0x04030201, "ST32"),
+                { op: "CONST", imm: 0x80 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x84 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x90 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x93 }, { op: "PUSH" },
+                extInstr("SLICECMP", []),                     // longer a → length difference
+                { op: "PUSH" },
+                { op: "CONST", imm: 0x80 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x84 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x90 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x94 }, { op: "PUSH" },
+                extInstr("SLICECMP", []),                     // equal
+                { op: "ADD", combo: "POP_ACC" },
+            ]),
+        },
+    ],
+}
+
+/** Every ExtSite stack service reached past the window: the operands sit
+ *  deep enough that load/store/pop go through spillOffset rather than a
+ *  register, which is where an off-by-one costs the whole answer. */
+const extSpilledOperands: RtlProgram = {
+    procedures: [
+        {
+            argCount: 0,
+            body: ret([
+                { op: "CONST", imm: 0x101 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x202 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x303 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x404 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x505 }, { op: "PUSH" },
+                { op: "CONST", imm: 0xa0 }, { op: "PUSH" },   // address, spilled
+                { op: "CONST", imm: 0x5a5a1234 },
+                extInstr("ST32", []),
+                ...ld(0xa0, "LD32"),
+                { op: "ADD", combo: "REG_ACC", target: 0 },
+                { op: "ADD", combo: "REG_ACC", target: 4 },
+            ]),
+        },
+    ],
+}
+
+/** EXT inside a loop body, so the window and acc state cross a back edge
+ *  with an extension site in between: a running checksum written into the
+ *  buffer and read back on the next iteration. */
+const extInLoop: RtlProgram = {
+    procedures: [
+        {
+            argCount: 1,
+            body: [
+                { op: "CONST", imm: 0 }, { op: "PUSH" },
+                { op: "LOOP" },
+                    { op: "LOAD", target: 0 },
+                    { op: "BLOCK_END" },
+                    { op: "LOAD", target: 0 }, { op: "SHL", combo: "IMM_ACC", imm: 2 }, { op: "PUSH" },
+                    { op: "LOAD", target: 1 }, { op: "ADD", combo: "REG_ACC", target: 0 },
+                    extInstr("ST32", []),
+                    { op: "LOAD", target: 0 }, { op: "SHL", combo: "IMM_ACC", imm: 2 },
+                    extInstr("LD32", []),
+                    { op: "STORE", target: 1 },
+                    { op: "LOAD", target: 0 }, { op: "SUB", combo: "IMM_ACC", imm: 1 }, { op: "STORE", target: 0 },
+                    { op: "BLOCK_END" },
+                { op: "CONST", imm: 0 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x10 }, { op: "PUSH" },
+                { op: "CONST", imm: 0 }, { op: "PUSH" },
+                extInstr("MEMCMP", []),
+                { op: "RETURN" },
+            ],
+        },
+    ],
+}
+
+/** An extension site in a callee, and one in a BR_TABLE arm of the
+ *  caller: the buffer is the only state that survives the call, so a
+ *  clobbered window register shows up as a wrong answer rather than a
+ *  crash. */
+const extAcrossCall: RtlProgram = {
+    procedures: [
+        {
+            argCount: 0,
+            body: ret([
+                { op: "CONST", imm: 0 }, { op: "PUSH" },       // §8.7's slot, reserved ahead of the dispatch
+                { op: "CONST", imm: 0xc0 }, { op: "PUSH" },
+                { op: "CONST", imm: 0x0f0f0f0f },
+                extInstr("ST32", []),
+                { op: "CONST", imm: 1 },
+                { op: "BR_TABLE", imm: 2 },
+                    { op: "CONST", imm: 0 }, { op: "STORE", target: 0 }, { op: "BLOCK_END" },
+                    { op: "CONST", imm: 0xc0 }, { op: "CALL", calleeIndex: 1 }, { op: "STORE", target: 0 },
+                    { op: "BLOCK_END" },
+                { op: "LOAD", target: 0 },
+            ]),
+        },
+        {
+            argCount: 1,
+            body: ret([
+                { op: "LOAD", target: 0 },
+                extInstr("LD32", []),
+                { op: "PUSH" },
+                { op: "LOAD", target: 0 }, { op: "ADD", combo: "IMM_ACC", imm: 2 },
+                extInstr("LD8", []),
+                { op: "ADD", combo: "POP_ACC" },
+            ]),
+        },
+    ],
+}
+
 // ── regressions for what qemu_exec actually found ───────────────────────
 //
 // Each of these was a wrong answer (or a hang) from the emitted code, on a
@@ -770,6 +1011,14 @@ const authored: [string, RtlProgram][] = [
     ["deep_nested_trap", deepNestedTrap],
     ["arith", arith],
     ["signed_and_extend", signedAndExtend],
+    ["ext_load_store", extLoadStore],
+    ["ext_memmove", extMemmove],
+    ["ext_memmove_empty", extMemmoveEmpty],
+    ["ext_memcmp", extMemcmp],
+    ["ext_slicecmp", extSliceCmp],
+    ["ext_spilled_operands", extSpilledOperands],
+    ["ext_in_loop", extInLoop],
+    ["ext_across_call", extAcrossCall],
     ["long_branch_span", longBranchSpan],
     ["long_loop_back_edge", longLoopBackEdge],
     ["literal_pool_pressure", literalPoolPressure],

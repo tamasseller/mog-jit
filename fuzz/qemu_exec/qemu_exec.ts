@@ -21,6 +21,11 @@ import { spawnSync } from "child_process"
 import { decodeJitEnvelope, encodeJitProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "../../../packages/machine/src/index"
 import type { RtlProgram } from "../../../packages/machine/src/index"
 import { entryArgsFor } from "../entry_args"
+// The one extension both halves carry, so an EXT instruction is a
+// comparable outcome rather than a bail (rawmem_ext.ts, test/ext_rawmem.cpp).
+import { rawMemExtension } from "../rawmem_ext"
+
+const EXT = rawMemExtension()
 
 const HERE = __dirname
 const ELF = path.join(HERE, "exec_runner.elf")
@@ -72,13 +77,13 @@ function classify(file: string): Candidate | null
     let program: RtlProgram
     try
     {
-        const decoded = decodeJitEnvelope(raw)
+        const decoded = decodeJitEnvelope(raw, 0, EXT)
         if(decoded.next !== raw.length) { skip("trailing bytes"); return null }
         program = decoded.program
     }
     catch { skip("does not decode"); return null }
 
-    try { validateProgram(program) }
+    try { validateProgram(program, EXT) }
     catch { skip("does not validate"); return null }
 
     // Re-encoded, not passed through: encodeJitProgram always writes the
@@ -96,7 +101,7 @@ function classify(file: string): Candidate | null
     // program. Re-encoding keeps the program's own coverage and drops only
     // the forged header.
     let bytes: Buffer
-    try { bytes = Buffer.from(encodeJitProgram(program)) }
+    try { bytes = Buffer.from(encodeJitProgram(program, EXT)) }
     catch { skip("does not re-encode"); return null }
     if(bytes.length === 0 || bytes.length > PROGRAM_MAX) { skip(`size (>${PROGRAM_MAX}B or empty)`); return null }
 
@@ -109,7 +114,8 @@ function classify(file: string): Candidate | null
     let expected: Expected
     try
     {
-        const result = run(program, undefined, entryArgs, REFERENCE_MAX_STEPS)
+        EXT.reset() // the target zeroes its own buffer per program
+        const result = run(program, EXT, entryArgs, REFERENCE_MAX_STEPS)
 
         // A trap at any call depth is comparable: runtime.S's trapHelper
         // unwinds the whole excursion and reports through
