@@ -38,10 +38,15 @@ inline int32_t refSampleAt(uint32_t index)
 }
 
 /* The same load seen as a word, for a workload whose own comparisons are
- * unsigned — pulse-trigger works on raw ADC codes. */
+ * unsigned — pulse-trigger works on raw ADC codes.
+ *
+ * Written out rather than wrapping refSampleAt. At -O0 nothing inlines, so
+ * a wrapper would cost the reference a second call on every sample and
+ * make that column a measurement of this file's layering instead of the
+ * loop — worth 12 instructions per sample when it was tried. */
 inline uint32_t refSampleAtU(uint32_t index)
 {
-    return (uint32_t)refSampleAt(index);
+    return (uint32_t)(int32_t)g_sampIn[index & (SAMP_IN_SAMPLES - 1)];
 }
 
 /* Mirrors OUT_AT, truncation included: the emitted STRH stores the low
@@ -84,10 +89,11 @@ __attribute__((noinline)) uint32_t refPulseTrigger(uint32_t n)
 
             if (s < PULSE_LO)
             {
-                /* `&`, not `&&`, matching the DSL body: the machine has no
-                 * short-circuit form, and letting the reference skip the
-                 * second comparison would be a difference in the work done,
-                 * not in how well it was compiled. */
+                /* `&`, not `&&`, matching the DSL body: both comparisons
+                 * always run, on both sides. Short-circuiting one side and
+                 * not the other would be a difference in the work done
+                 * rather than in how well it was compiled, and would make
+                 * the ratio depend on how often the first test fails. */
                 if ((run >= PULSE_MIN_WIDTH) & (run <= PULSE_MAX_WIDTH))
                 {
                     refTrigger(PULSE_TRIGGER_KIND, i);

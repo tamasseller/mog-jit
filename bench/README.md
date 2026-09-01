@@ -17,7 +17,7 @@ agrees with the reference VM on its return value and on every byte it wrote.
 
 | workload | JIT cycles/sample | vs -Os | vs best level | emitted / bytecode |
 |---|---|---|---|---|
-| pulse-trigger | 27.47 | 1.02x | 1.59x | 150 B / 81 B |
+| pulse-trigger | 27.46 | 1.02x | 1.59x | 150 B / 81 B |
 | iq-preamble | 19.23 | 2.06x | 2.38x | 210 B / 109 B |
 | median5 | 151.00 | 1.99x | 2.20x | 298 B / 231 B |
 
@@ -145,7 +145,9 @@ suite compares emitted Thumb against C doing the same work, and an op
 reaching its data through `ExtSite::cHelperCall` would spend a dozen
 instructions on the seam that the C side spends none on — the numbers would
 then describe the seam, not the JIT. `kernels_ref.cpp`'s accessors are
-`inline` for the same reason, and its `&` is deliberately not `&&`.
+`inline` for the same reason, and its `&` is deliberately not `&&` — both
+comparisons run on both sides, so the ratio does not depend on how often
+the first test happens to fail.
 
 **The index lives in the program, not in the extension.** A stateful
 `next_sample()` would keep its cursor in extension memory, costing a pooled
