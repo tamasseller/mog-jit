@@ -40,6 +40,20 @@ static void GUARDED_scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &
 
     while(pc < maxBytes)
     {
+        if(bytes[pc] >= MISC_BASE && bytes[pc] <= LAST_CORE_OPCODE)
+        {
+            /* An escape's operand shape is defined only when its sub-code is
+             * assigned (§5.3), so an unassigned one cannot even be skipped. */
+            uint32_t sub = 0, next = 0;
+            if(!decodeLeb128Checked(bytes, maxBytes, pc + 1, sub, next)
+                || !miscSubCodeAssigned(bytes[pc], sub))
+            {
+                stop = true;
+                failCode = RESOURCE_PROGRAM_RESERVED_OPCODE;
+                return;
+            }
+        }
+
         if(bytes[pc] > LAST_CORE_OPCODE)
         {
             uint32_t decl = 0;

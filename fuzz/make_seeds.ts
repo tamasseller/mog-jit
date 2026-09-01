@@ -496,16 +496,20 @@ const deepNestedTrap: RtlProgram = {
     ],
 }
 
-/** PEEK_PEEK plus POP: the two combos that read the operand stack in
- *  place, which none of the register-combo shapes cover. */
+/** PEEK_PEEK and POP_ACC: the two combos that read the operand stack
+ *  rather than a register, which none of the register-combo shapes cover.
+ *  PEEK_PEEK clobbers acc (it writes back in place), so the LOAD is what
+ *  re-establishes it — isa-core.md §8.7. */
 const arith: RtlProgram = {
     procedures: [
         {
             argCount: 0,
             body: ret([
                 { op: "CONST", imm: 5 }, { op: "PUSH" },
-                { op: "CONST", imm: 3 }, { op: "ADD", combo: "PEEK_PEEK" },
-                { op: "POP" },
+                { op: "CONST", imm: 3 }, { op: "ADD", combo: "PEEK_PEEK" }, // k0 = 8
+                { op: "CONST", imm: 4 }, { op: "PUSH" },                    // k1 = 4
+                { op: "LOAD", target: 0 },
+                { op: "ADD", combo: "POP_ACC" },                            // 8 + 4
             ]),
         },
     ],

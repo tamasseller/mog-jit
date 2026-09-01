@@ -1225,7 +1225,7 @@ in the arena — the next victim, evicted before running once.
 
 `LANDING_RESOURCE_ERROR` is a failure mode this target introduces, distinct
 from anything isa-core.md §9's static guarantees cover. The tag is the
-discriminator; `value` names which of thirteen ways it happened, as a
+discriminator; `value` names which of fourteen ways it happened, as a
 `RESOURCE_*` code from `runtime/resource_codes.h` (`0x5245` signature, class
 nibble, reason nibble, low byte reserved for a future detail payload).
 `TRAPPED` carries the ISA's own `TRAP #code` value unchanged.
@@ -1243,7 +1243,8 @@ unencodable at any size, this backend cannot compile it at all.
 | `RESOURCE_PROGRAM_FRAME` | `0x52451400` | `executor.cpp` `Executor::run` | §1.1's frame does not verify: truncated, corrupt, or another contract version |
 | `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` | `0x52451500` | `executor.cpp` `Executor::run` | `argCount != slot(0).argCount()` |
 | `RESOURCE_PROGRAM_ENTRY_DEPTH` | `0x52451600` | `executor.cpp` `Executor::run` | the entry procedure's out-of-window args exceed `total_depth` |
-| `RESOURCE_PROGRAM_EXT_UNKNOWN` | `0x52451700` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | a wire byte past `LAST_CORE_OPCODE`: the extension range (§11) or a reserved code (§5.3) |
+| `RESOURCE_PROGRAM_EXT_UNKNOWN` | `0x52451700` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | a wire byte past `LAST_CORE_OPCODE`: the extension range (§11), and nothing claimed it |
+| `RESOURCE_PROGRAM_RESERVED_OPCODE` | `0x52451900` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | one of isa-core.md §5.3's escapes naming a sub-code nothing has assigned — including `FALLTHROUGH`, which is assigned but unimplemented |
 | `RESOURCE_PROGRAM_EXT_UNSUPPORTED` | `0x52451800` | `Runtime::loadProgram`, and `translate_proc.cpp`'s `EXT` arm | a declaration asking for a capability this core doesn't implement, or one the emitted code then contradicts (halfword overrun, `tosDelta` mismatch) |
 | `RESOURCE_EXHAUSTED_ARENA` | `0x52452100` | `assembler.cpp` `emit` | buffer full and nothing left to evict (§8) |
 | `RESOURCE_EXHAUSTED_STACK_BUDGET` | `0x52452200` | `executor.cpp`, both variants | the up-front §2 check; nothing was touched |
@@ -1262,9 +1263,12 @@ figures and checked before use; the two `EXHAUSTED_*_STACK` codes are the
 *translator's own* C recursion against a live floor, not the compiled
 program's operand stack. And malformed wire bytes stay asserted rather
 than reported, the convention `decode_instr.h` and `proc_scan.h` already
-document: `PROGRAM_BODY_UNTERMINATED`, `PROGRAM_CALLEE_RANGE` and
-`PROGRAM_EXT_UNKNOWN` are the three checks that exist because the walk
-needs them anyway, not the start of a validating decoder. What used to be
+document: `PROGRAM_BODY_UNTERMINATED`, `PROGRAM_CALLEE_RANGE`,
+`PROGRAM_EXT_UNKNOWN` and `PROGRAM_RESERVED_OPCODE` are the checks that
+exist because the walk needs them anyway, not the start of a validating
+decoder. The last of those is forced rather than chosen: an unassigned
+escape sub-code has no defined operand shape and therefore no length, so
+the walk cannot step over one even if it wanted to. What used to be
 unreportable here is the truncated envelope: `parseProgramHeader` runs
 before there is anywhere to report to, so §1.1's frame is checked ahead of
 it and `PROGRAM_FRAME` is what a short or wrong buffer comes back as.
@@ -1689,7 +1693,8 @@ core never interprets them. The core assigns every one of its own 128 codes
 
 | bytes | owner | a program using one |
 |---|---|---|
-| 0-127 | core (§5.2) | translated |
+| 0-124 | core (§5.2) | translated |
+| 125-127 | core's own escapes (§5.3) | translated if the sub-code is assigned, else `RESERVED_OPCODE` |
 | ≥128 | the registered extension (§5.1, §11) | `EXT_UNKNOWN` if nothing claims it |
 
 The core needs exactly two things per extension opcode:

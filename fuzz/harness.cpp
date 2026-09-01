@@ -400,7 +400,9 @@ int main(int argc, char **argv)
         }
     }
     if(argc > 2) g_sockPath = argv[2];
-    if(corpus.empty()) corpus.push_back({0x00, 0x6b, 0x25, 0x64}); // argCount=0, CONST(37);RETURN
+    // Whole envelope, as LLVMFuzzerTestOneInput expects: max_call_depth=0,
+    // total_depth=0, proc_count=1, then argCount=0 and CONST(37);RETURN.
+    if(corpus.empty()) corpus.push_back({0x00, 0x00, 0x01, 0x00, 0x6c, 0x25, 0x66});
 
     // time() alone gave every worker of a parallel campaign the same seed:
     // N workers started in the same second explored one identical sequence

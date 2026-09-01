@@ -88,13 +88,10 @@ TEST(BrTableInLoopBodyWithZero)
 // ---- LOOP nested inside a BR_TABLE case — the mirror image of
 // BrTableInLoopBody*. Selector and n both travel packed into this program's
 // single argument: selector in bits[15:8], n in bits[7:0]. Case 0 runs a full
-// sum(1..n) LOOP using two extra PUSHed locals, then POPs them off again
-// before the case's own BLOCK_END so tos returns to its pre-brTable value (1),
-// matching case 1 (which never touches tos) — POP() mirrors PUSH() by loading
-// the popped slot's own value back into acc, so total is pushed *before*
-// counter: the first POP discards counter's spent (zero) value, and the second
-// POP is the one that lands the real result in acc, which the case then STOREs
-// to the result slot k1 — acc itself cannot cross a BR_TABLE's merge point
+// sum(1..n) LOOP using two extra PUSHed locals; the case's own BLOCK_END is
+// what returns tos to its pre-brTable value (1), matching case 1 (which never
+// touches tos). The running total is what the case LOADs back and STOREs to
+// the result slot k1 — acc itself cannot cross a BR_TABLE's merge point
 // (isa-core.md §8.7), so a value-producing dispatch delivers through a slot.
 // Body lives in corpus_programs.h.
 TEST(LoopInBrTableCaseZero)

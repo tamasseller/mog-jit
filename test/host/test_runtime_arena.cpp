@@ -322,7 +322,7 @@ uint32_t extProgram(uint8_t *out)
     out[0] = 0x01;
     out[1] = 0x00;
     out[2] = 0x80;
-    out[3] = 104; // RETURN
+    out[3] = 102; // RETURN
     return 4;
 }
 } // namespace

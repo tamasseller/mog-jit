@@ -242,7 +242,7 @@ TEST(executorRunRejectsAProgramWithNoProcedures)
 }
 
 /* max_call_depth=0 total_depth=0 proc_count=1 arg_count=0 body=[0x80, RETURN] */
-static const uint8_t kExtLiteral[] = {0x00, 0x00, 0x01, 0x00, 0x80, 104};
+static const uint8_t kExtLiteral[] = {0x00, 0x00, 0x01, 0x00, 0x80, 102};
 
 /* The frame is checked before anything else looks at the bytes, so every one
  * of these must come back with nothing entered. The expected hash is spelled
@@ -282,8 +282,8 @@ TEST(TheFrameHashIsTheNumberTheProducerMustReproduce)
     // 0x80 rather than a core opcode, so a byte with its high bit set goes
     // through the mixer: nothing else here would catch one side widening it
     // as signed.
-    const uint8_t vector[] = {0x00, 0x00, 0x01, 0x00, 0x80, 104};
-    CHECK(programFrameHash(vector, sizeof(vector)) == 0x9A66u);
+    const uint8_t vector[] = {0x00, 0x00, 0x01, 0x00, 0x80, 102};
+    CHECK(programFrameHash(vector, sizeof(vector)) == 0xDC7Du);
 }
 
 TEST(TheExtensionArgumentIsWhatInstallsTheExtension)

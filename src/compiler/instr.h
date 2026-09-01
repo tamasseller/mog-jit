@@ -16,12 +16,13 @@ namespace jitc
 
 enum class Op : uint8_t
 {
-    CONST, LOAD, STORE, PUSH, POP,
+    CONST, LOAD, STORE, PUSH,
     RETURN, TRAP,
     CALL,
     ADD, SUB, RSUB, MUL, AND, OR, XOR, SHL, SHR, ASR,
     EQ, NE, LT_S, LE_S, GT_S, GE_S, LT_U, LE_U, GT_U, GE_U,
-    NEG, NOT, CLZ, REVBITS, SXTB, SXTH, UXTB, UXTH,
+    NEG, NOT, SXTB, SXTH, UXTB, UXTH, // §5.2's own unary range, in its order
+    CLZ, REVBITS,                     // §5.3's MISC_UNARY sub-codes
     BLOCK_END, LOOP, BR_TABLE,
     EXT, // one registered extension's opcode (isa-core.md §11); see ext.h
 };
@@ -72,11 +73,6 @@ constexpr Instr STORE(uint32_t target)
 constexpr Instr PUSH()
 {
     return Instr{Op::PUSH};
-}
-
-constexpr Instr POP()
-{
-    return Instr{Op::POP};
 }
 
 constexpr Instr bare(Op op)

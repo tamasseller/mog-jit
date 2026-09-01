@@ -169,14 +169,6 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
                 pc = afterInstr;
                 break;
 
-            case Op::POP:
-                a.emit(ArmV6M::mov(ArmV6M::AnyReg(ACC_REG), ArmV6M::AnyReg(this->window.topReg()))); // materialize now — a bare POP can't safely stay PENDING
-                this->accState.setClean(ACC_REG);
-                this->window.finishPop(a); // must run after the read above — same register
-
-                pc = afterInstr;
-                break;
-
             case Op::NEG:
             case Op::NOT:
             case Op::SXTB:

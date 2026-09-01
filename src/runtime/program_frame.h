@@ -12,7 +12,7 @@
 
 /* Bump when the wire contract changes: an older producer's programs then stop
  * verifying instead of being misread. */
-#define PROGRAM_CONTRACT_VERSION 1u
+#define PROGRAM_CONTRACT_VERSION 2u
 
 #define PROGRAM_FRAME_SEED (0x811C9DC5u ^ PROGRAM_CONTRACT_VERSION)
 

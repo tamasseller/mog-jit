@@ -607,7 +607,7 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
 }
 
 // The tests below cover the remaining paths in translate_proc.cpp's main
-// dispatch switch: POP, TRAP (both at the top level and inside an open
+// dispatch switch: TRAP (both at the top level and inside an open
 // block), out-of-window LOAD/STORE, a STORE not preceded by a foldable
 // producer, CONST's large-immediate/fold-into-STORE paths, REG_REG
 // (opRegWriteback) both in- and out-of-window, POP_ACC/PEEK_PEEK stack
@@ -615,26 +615,6 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
 // and REVBITS's helper-vector call (mirrored after ClzHelperViaFullPipeline
 // above) — the ordinary, "not the fused/aligned case" side of paths this
 // file's other tests already cover the fused side of.
-
-TEST(PopThroughFullPipeline)
-{
-    const Instr body[] = {CONST(5), PUSH(), POP(), bare(Op::RETURN)};
-    FakeRuntime<1> rt;
-    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
-    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 7);
-
-    const uint16_t expected[] = {
-        PROLOGUE_STUB,
-        ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(5)), // MOVS r7, #5  (CONST 5, folds straight into physReg(0) for the PUSH)
-        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0, r7   (POP: window top -> acc)
-        RETURN_VIA_LR,
-    };
-    for(uint32_t i = 0; i < halfwordCount; i++)
-    {
-        CHECK(rt.code()[i] == expected[i]);
-    }
-}
 
 TEST(TrapAtTopLevel)
 {
@@ -727,22 +707,21 @@ TEST(LoadFromOutOfWindowSlot)
 
 TEST(StoreStandaloneInWindowWhenNotPrecededByAFoldableProducer)
 {
-    // POP doesn't peek-fold a following STORE (only CONST/LOAD/unary/
+    // PUSH doesn't peek-fold a following STORE (only CONST/LOAD/unary/
     // arithmetic do) — this is the switch's own bare `case Op::STORE`
     // dispatch, not the far-more-common fold path this file's other
     // tests exercise via peekStoreFold.
-    const Instr body[] = {CONST(9), PUSH(), POP(), STORE(0), bare(Op::RETURN)};
+    const Instr body[] = {CONST(9), PUSH(), STORE(0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
     rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 10);
+    CHECK(halfwordCount == 9);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
         ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)), // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(0))
         ArmV6M::movs(ArmV6M::LoReg(6), ArmV6M::Imm<8>(9)), // MOVS r6, #9  (CONST 9, into physReg(1) for the PUSH)
-        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(6)), // MOV r0, r6  (POP: window top -> acc)
-        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)), // MOV r7, r0  (STORE(0): standalone, not preceded by a foldable producer)
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(6)), // MOV r7, r6  (STORE(0): standalone, not preceded by a foldable producer)
         ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0, r7  (RETURN's own acc flush, resyncing from the STORE's target)
         RETURN_VIA_LR,
     };
@@ -907,11 +886,10 @@ TEST(PeekPeekStackComboThroughFullPipeline)
     // PEEK_PEEK's dest is the stack top itself (physReg(tos-1) = r7 here),
     // computed in place with no tos change — CONST(3) materializes
     // straight into r7 for the PUSH rather than acc, since accState.flush
-    // targets the push's own destination register directly. POP() then
-    // moves that live value from its window slot (r7) into acc (r0),
-    // exactly the MOV the fused CONST/LOAD paths elsewhere in this file
-    // never need.
-    const Instr body[] = {CONST(3), PUSH(), CONST(6), opStack(Op::AND, Combo::PEEK_PEEK), POP(), bare(Op::RETURN)};
+    // targets the push's own destination register directly. LOAD(0) then
+    // moves that live value from its window slot (r7) into acc (r0) —
+    // nothing follows it to fold into, so RETURN's flush materializes it.
+    const Instr body[] = {CONST(3), PUSH(), CONST(6), opStack(Op::AND, Combo::PEEK_PEEK), LOAD(0), bare(Op::RETURN)};
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
@@ -923,7 +901,7 @@ TEST(PeekPeekStackComboThroughFullPipeline)
         ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(3)), // MOVS r7, #3  (CONST 3, into physReg(0) for the PUSH)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(6)), // MOVS r0, #6  (CONST 6, into acc)
         ArmV6M::ands(ArmV6M::LoReg(7), ArmV6M::LoReg(0)),  // ANDS r7, r0  (PEEK_PEEK: r7 &= acc, in place)
-        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0, r7   (POP: window top -> acc)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0, r7   (LOAD(0): window slot -> acc, at RETURN's flush)
         RETURN_VIA_LR,
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -1566,7 +1544,7 @@ uint32_t extBody(uint8_t *out)
     const Instr prelude[] = {CONST(3), PUSH(), CONST(4), PUSH()};
     uint32_t n = encodeBody(prelude, 4, out, 16);
     out[n++] = 0x80;
-    out[n++] = 104; // RETURN
+    out[n++] = 102; // RETURN
     return n;
 }
 
@@ -1579,7 +1557,7 @@ uint32_t deepExtBody(uint8_t *out)
         CONST(4), PUSH(), CONST(5), PUSH()};
     uint32_t n = encodeBody(prelude, 10, out, 48);
     out[n++] = 0x80;
-    out[n++] = 104; // RETURN
+    out[n++] = 102; // RETURN
     return n;
 }
 
@@ -1743,7 +1721,7 @@ uint32_t windowBody(uint8_t *out, uint32_t loadSlot)
         LOAD(loadSlot)};
     uint32_t n = encodeBody(prelude, 9, out, 48);
     out[n++] = 0x80;
-    out[n++] = 104; // RETURN
+    out[n++] = 102; // RETURN
     return n;
 }
 

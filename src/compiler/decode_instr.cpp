@@ -50,38 +50,42 @@ constexpr Entry TABLE[] = {
     JITC_CMP_ROWS(Op::LE_S), JITC_CMP_ROWS(Op::GT_S), JITC_CMP_ROWS(Op::GE_S),
     JITC_CMP_ROWS(Op::LT_U), JITC_CMP_ROWS(Op::LE_U), JITC_CMP_ROWS(Op::GT_U),
     JITC_CMP_ROWS(Op::GE_U),
-    // 90-97: unary (§4.3)
+    // 90-95: unary (§4.3)
     row(Op::NEG, Combo::NONE, AUX_NONE),       // 90
     row(Op::NOT, Combo::NONE, AUX_NONE),       // 91
-    row(Op::CLZ, Combo::NONE, AUX_NONE),       // 92
-    row(Op::REVBITS, Combo::NONE, AUX_NONE),   // 93
-    row(Op::SXTB, Combo::NONE, AUX_NONE),      // 94
-    row(Op::SXTH, Combo::NONE, AUX_NONE),      // 95
-    row(Op::UXTB, Combo::NONE, AUX_NONE),      // 96
-    row(Op::UXTH, Combo::NONE, AUX_NONE),      // 97
-    row(Op::BLOCK_END, Combo::NONE, AUX_NONE), // 98
-    row(Op::LOOP, Combo::NONE, AUX_NONE),      // 99
-    row(Op::BR_TABLE, Combo::NONE, AUX_ONE),   // 100
-    row(Op::BR_TABLE, Combo::NONE, AUX_TWO),   // 101
-    row(Op::BR_TABLE, Combo::NONE, AUX_EXT),   // 102
-    row(Op::CALL, Combo::NONE, AUX_EXT),       // 103
-    row(Op::RETURN, Combo::NONE, AUX_NONE),    // 104
-    row(Op::TRAP, Combo::NONE, AUX_NONE),      // 105
-    row(Op::TRAP, Combo::NONE, AUX_EXT),       // 106
-    row(Op::PUSH, Combo::NONE, AUX_NONE),      // 107
-    row(Op::POP, Combo::NONE, AUX_NONE),       // 108
-    row(Op::LOAD, Combo::NONE, AUX_EXT),       // 109
-    row(Op::STORE, Combo::NONE, AUX_EXT),      // 110
-    row(Op::CONST, Combo::NONE, AUX_EXT),      // 111
+    row(Op::SXTB, Combo::NONE, AUX_NONE),      // 92
+    row(Op::SXTH, Combo::NONE, AUX_NONE),      // 93
+    row(Op::UXTB, Combo::NONE, AUX_NONE),      // 94
+    row(Op::UXTH, Combo::NONE, AUX_NONE),      // 95
+    row(Op::BLOCK_END, Combo::NONE, AUX_NONE), // 96
+    row(Op::LOOP, Combo::NONE, AUX_NONE),      // 97
+    row(Op::BR_TABLE, Combo::NONE, AUX_ONE),   // 98
+    row(Op::BR_TABLE, Combo::NONE, AUX_TWO),   // 99
+    row(Op::BR_TABLE, Combo::NONE, AUX_EXT),   // 100
+    row(Op::CALL, Combo::NONE, AUX_EXT),       // 101
+    row(Op::RETURN, Combo::NONE, AUX_NONE),    // 102
+    row(Op::TRAP, Combo::NONE, AUX_NONE),      // 103
+    row(Op::TRAP, Combo::NONE, AUX_EXT),       // 104
+    row(Op::PUSH, Combo::NONE, AUX_NONE),      // 105
+    row(Op::LOAD, Combo::NONE, AUX_EXT),       // 106
+    row(Op::STORE, Combo::NONE, AUX_EXT),      // 107
+    row(Op::CONST, Combo::NONE, AUX_EXT),      // 108
 };
 
 #undef JITC_ARITH_ROWS
 #undef JITC_CMP_ROWS
 
-constexpr uint32_t SMALL_CONST_BASE = 112;
-
 static_assert(sizeof(TABLE) / sizeof(TABLE[0]) == SMALL_CONST_BASE,
     "decode table must cover exactly opcodes 0..SMALL_CONST_BASE-1 (isa-core.md §5.2)");
+
+/** `MISC_UNARY`'s assigned sub-codes, in sub-code order (isa-core.md §5.3). */
+static constexpr Op MISC_UNARY_OPS[] = {Op::REVBITS, Op::CLZ};
+static constexpr uint32_t MISC_UNARY_COUNT = sizeof(MISC_UNARY_OPS) / sizeof(MISC_UNARY_OPS[0]);
+
+bool miscSubCodeAssigned(uint32_t code, uint32_t sub)
+{
+    return code == MISC_UNARY && sub < MISC_UNARY_COUNT;
+}
 
 uint32_t decodeLeb128(const uint8_t *bytes, uint32_t offset, uint32_t &next)
 {
@@ -156,7 +160,18 @@ DecodedInstr decodeInstr(const uint8_t *bytes, uint32_t bytesLen, uint32_t offse
         return {instr, offset + len};
     }
 
-    assert(code <= LAST_CORE_OPCODE); // GCOV_EXCL_LINE — unreachable: 124-127 are core-reserved (§5.3), rejected by the walk
+    assert(code <= LAST_CORE_OPCODE); // GCOV_EXCL_LINE — unreachable: the extension branch above took every higher byte
+
+    if(code >= MISC_BASE)
+    {
+        // An unassigned sub-code has no defined operand shape, so it has no
+        // length either — the walk rejects it before anything gets here.
+        uint32_t next;
+        uint32_t sub = decodeLeb128(bytes, pos, next);
+        assert(miscSubCodeAssigned(code, sub)); // GCOV_EXCL_LINE — unreachable: rejected by the walk
+        instr.op = MISC_UNARY_OPS[sub];
+        return {instr, next};
+    }
 
     if(code >= SMALL_CONST_BASE)
     {

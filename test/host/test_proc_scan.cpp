@@ -175,16 +175,51 @@ TEST(ScanProcBodyRejectsAnExtensionRangeOpcode)
 
 TEST(ScanProcBodyAcceptsTheTopOfCoreOpcodeSpace)
 {
-    // 124-127 are the last four CONST small forms (isa-core.md §5.2) — the
-    // core now assigns all 128 codes, so the byte just below the extension
-    // range is ordinary core, not a hole.
-    for(uint8_t code = 124; code < 128; code++)
+    // 109-124 are the CONST small forms (isa-core.md §5.2), so the last one
+    // below §5.3's escapes is ordinary core, not a hole.
+    const uint8_t bytes[] = {124 /* CONST #15 */, 102 /* RETURN */};
+    BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
+    CHECK(r.ok);
+    CHECK(r.failCode == 0);
+}
+
+TEST(ScanProcBodyAcceptsAnAssignedEscapeSubCode)
+{
+    // MISC_UNARY #1 is CLZ (isa-core.md §5.3) — two bytes, and the walk has
+    // to step over both.
+    const uint8_t bytes[] = {126, 1 /* CLZ */, 102 /* RETURN */};
+    BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
+    CHECK(r.ok);
+    CHECK(r.failCode == 0);
+    CHECK(r.needsLRSave); // CLZ reaches a helper
+}
+
+TEST(ScanProcBodyRejectsAnUnassignedEscapeSubCode)
+{
+    // An unassigned sub-code has no defined operand shape, so it has no
+    // length either — the walk cannot skip it and must stop. That includes
+    // FALLTHROUGH (MISC_CF #0), which §5.3 assigns but nothing implements.
+    const uint8_t cases[][3] = {
+        {125, 0, 102}, // MISC_CF #0 — FALLTHROUGH, not implemented
+        {125, 1, 102}, // MISC_CF, reserved
+        {126, 2, 102}, // MISC_UNARY, past its assigned sub-codes
+        {127, 0, 102}, // MISC_BINARY, entirely reserved
+    };
+    for(uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
     {
-        const uint8_t bytes[] = {code, 104 /* RETURN */};
-        BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
-        CHECK(r.ok);
-        CHECK(r.failCode == 0);
+        BodyScanResult r = scanProcBody(cases[i], 3, 0);
+        CHECK(!r.ok);
+        CHECK(r.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE);
     }
+}
+
+TEST(ScanProcBodyRejectsAnEscapeWithNoSubCodeAtAll)
+{
+    // Truncated right after the escape byte: there is no sub-code to read.
+    const uint8_t bytes[] = {126};
+    BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
+    CHECK(!r.ok);
+    CHECK(r.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE);
 }
 
 TEST(ScanProcBodyRejectsAnExtensionOpcodeAfterAValidPrefix)

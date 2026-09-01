@@ -105,7 +105,7 @@ static const Instr peekPeekProc0[] = {
     CONST(12), PUSH(),                 // k=0 = 12
     CONST(10),                          // acc = 10 (pending)
     opStack(Op::AND, Combo::PEEK_PEEK), // k0 := 10 & 12 = 8; acc poisoned
-    POP(), bare(Op::RETURN),
+    LOAD(0), bare(Op::RETURN),
 };
 
 TEST(PeekPeekTwoOperandInPlace)
