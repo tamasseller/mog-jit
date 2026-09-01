@@ -63,6 +63,7 @@
 #include "executor.h"
 #include "dispatch_abi.h"
 #include "resource_codes.h"
+#include "ext_rawmem.h"
 
 /* Exactly linker.ld's own rom ORIGIN+LENGTH. BATCH_LIMIT is a window into
  * flash rather than all of it — the microbit model has far more, but the
@@ -191,6 +192,13 @@ int main(void)
          * ever meeting.
          *
          * interruptReserve 0: no interrupts are enabled in this image. */
+        /* The extension's buffer is static and outlives one program;
+         * the reference VM's is fresh per program. */
+        for(uint32_t b = 0; b < RAWMEM_BYTES; b++)
+        {
+            g_rawMem[b] = 0;
+        }
+
         ProgramResult r = Executor::split(
                 (uint32_t)(uintptr_t)g_codeArena, CODE_ARENA_BYTES,
                 /*stackLimit=*/(uint32_t)(uintptr_t)(g_codeArena + CODE_ARENA_BYTES),

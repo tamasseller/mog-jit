@@ -36,8 +36,13 @@ import type { RtlProgram } from "../../packages/machine/src/index"
 // execution oracle: if the two differed, this server's reference result
 // would not be the one qemu_exec.ts compares against.
 import { entryArgsFor } from "./entry_args"
+// The one extension both fuzz halves carry — target side in
+// test/ext_rawmem.cpp, linked into fuzz_driver and exec_runner.elf alike.
+import { rawMemExtension } from "./rawmem_ext"
 
 const SOCK_PATH = process.argv[2] || "/tmp/ppl-jit-oracle.sock"
+
+const EXT = rawMemExtension()
 
 // u8  valid          — 1 iff validateProgram accepted the decoded program
 //                       AND it stays within withinRealisticProfile's own
@@ -115,7 +120,7 @@ function handleRequest(payload: Buffer): Buffer
     let headerTotalDepth: number
     try
     {
-        const decoded = decodeJitEnvelope(payload)
+        const decoded = decodeJitEnvelope(payload, 0, EXT)
         program = decoded.program
         headerMaxCallDepth = decoded.maxCallDepth
         headerTotalDepth = decoded.totalDepth
@@ -146,7 +151,7 @@ function handleRequest(payload: Buffer): Buffer
         // produces one.
         const canonicalLength = encodeLeb128(headerMaxCallDepth).length
             + encodeLeb128(headerTotalDepth).length
-            + encodeProgram(program).length
+            + encodeProgram(program, EXT).length
         if(canonicalLength !== payload.length)
         {
             resp[1] = 1
@@ -162,7 +167,7 @@ function handleRequest(payload: Buffer): Buffer
     let stats
     try
     {
-        stats = validateProgram(program)
+        stats = validateProgram(program, EXT)
     }
     catch
     {
@@ -198,7 +203,8 @@ function handleRequest(payload: Buffer): Buffer
 
     try
     {
-        const result = run(program, undefined, entryArgsFor(program.procedures[0]!.argCount))
+        EXT.reset() // the harness runs one program per Runtime; the buffer must match
+        const result = run(program, EXT, entryArgsFor(program.procedures[0]!.argCount))
         resp[2] = 1
         resp[3] = result.ok ? 1 : 0
         resp.writeInt32LE(result.acc | 0, 4)

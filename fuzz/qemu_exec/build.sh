@@ -21,7 +21,7 @@ CXXFLAGS=(
     -std=gnu++17 -fno-exceptions -fno-rtti
     -ffixed-r8 -ffixed-r9 -ffixed-r10 -ffixed-r11
     -fno-use-cxa-atexit
-    -I ../../src/compiler -I ../../src/runtime -I .
+    -I ../../src/compiler -I ../../src/runtime -I ../../test -I .
 )
 
 # vectors.S first on the link line — nothing else pins the vector table to
@@ -36,6 +36,8 @@ arm-none-eabi-g++ "${CXXFLAGS[@]}" \
     ../../src/compiler/window.cpp \
     ../../src/compiler/ext.cpp \
     ../../src/compiler/ext_default.cpp \
+    ../../test/ext_rawmem.cpp \
+    ../../test/ext_rawmem_helper.S \
     ../../src/compiler/accstate.cpp \
     ../../src/compiler/arithmetic.cpp \
     ../../src/compiler/assembler.cpp \

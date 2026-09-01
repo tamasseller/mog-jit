@@ -34,6 +34,9 @@ import { spawnSync } from "child_process"
 import { decodeJitEnvelope, encodeJitProgram, validateProgram, run, StepLimitExceeded } from "../../../packages/machine/src/index"
 import type { RtlProgram } from "../../../packages/machine/src/index"
 import { entryArgsFor } from "../entry_args"
+import { rawMemExtension } from "../rawmem_ext"
+
+const EXT = rawMemExtension()
 
 const HANG_MODE = process.argv.includes("--hang")
 
@@ -52,11 +55,11 @@ interface Variant { program: RtlProgram; bytes: Buffer; expected: { trap: boolea
 function prepare(program: RtlProgram): Variant | null
 {
     let bytes: Buffer
-    try { bytes = Buffer.from(encodeJitProgram(program)) }
+    try { bytes = Buffer.from(encodeJitProgram(program, EXT)) }
     catch { return null }
     if(bytes.length === 0 || bytes.length > PROGRAM_MAX) return null
 
-    try { validateProgram(program) } catch { return null }
+    try { validateProgram(program, EXT) } catch { return null }
 
     // The same vector qemu_exec.ts uses, imported rather than reproduced:
     // a minimizer that fed the guest different arguments than the sweep did
@@ -65,7 +68,8 @@ function prepare(program: RtlProgram): Variant | null
 
     try
     {
-        const r = run(program, undefined, entryArgs)
+        EXT.reset()
+        const r = run(program, EXT, entryArgs)
         const value = (r.ok ? r.acc : (r.trapCode ?? 0)) >>> 0
         return { program, bytes, expected: { trap: !r.ok, value }, entryArgs }
     }
@@ -149,7 +153,7 @@ const inFile = args[0]
 const outFile = args[1] ?? (inFile ?? "").replace(/\.bin$/, "") + ".min.bin"
 if(!inFile) { console.error("usage: minimize_exec.ts [--hang] <file> [out]"); process.exit(1) }
 
-let best = prepare(decodeJitEnvelope(fs.readFileSync(inFile)).program)
+let best = prepare(decodeJitEnvelope(fs.readFileSync(inFile), 0, EXT).program)
 if(!best) { console.error("input is not a runnable, comparable program"); process.exit(1) }
 if(!reproduces([best])[0])
 {
