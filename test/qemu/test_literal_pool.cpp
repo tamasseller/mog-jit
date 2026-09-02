@@ -24,14 +24,14 @@ TEST(PooledLiteralViaBothRoutes)
 }
 
 // ---- A pooled load whose pool is flushed mid-procedure, with the flush's
-// branch-around actually executed. BR_TABLE N>2 forces the flush (its jump
-// table's raw halfwords must not land in a later scan window), so the pool
-// lands in the middle of the code and control has to jump over it to reach
-// the dispatch. The pooled value is read back afterwards from a local,
-// proving both the load and the jump-around worked.
+// branch-around actually executed. A jump-table BR_TABLE forces the flush
+// (its jump table's raw halfwords must not land in a later scan window), so
+// the pool lands in the middle of the code and control has to jump over it
+// to reach the dispatch. The pooled value is read back afterwards from a
+// local, proving both the load and the jump-around worked.
 static const Instr pooledFlushProc0[] = {
     CONST(0xDEADBEEF), PUSH(), // pooled — the chunk is open across the BR_TABLE
-    CONST(1), brTable(3),       // forces the flush, mid-code, before the table
+    CONST(1), brTable(2),       // forces the flush, mid-code, before the table
         CONST(100), bare(Op::BLOCK_END),
         CONST(200), bare(Op::BLOCK_END),
         CONST(300), bare(Op::BLOCK_END),

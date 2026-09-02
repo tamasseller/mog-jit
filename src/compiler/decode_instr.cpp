@@ -8,10 +8,10 @@ namespace jitc
 
 enum AuxKind : uint8_t
 {
-    AUX_NONE = 0, // no auxiliary value; stays 0
-    AUX_ONE = 1,  // implicit 1 (BR_TABLE#1)
-    AUX_TWO = 2,  // implicit 2 (BR_TABLE#2)
-    AUX_EXT = 3,  // trailing unsigned LEB128 (isa-core.md §5.4)
+    AUX_NONE = 0,   // no auxiliary value; stays 0
+    AUX_ONE = 1,    // implicit 1 (BR_TABLE#1)
+    AUX_EXT = 2,    // trailing unsigned LEB128 (isa-core.md §5.4)
+    AUX_EXT_BR = 3, // that LEB128 plus 2 — BR_TABLE's biased case count (§5.4)
 };
 
 
@@ -60,8 +60,8 @@ constexpr Entry TABLE[] = {
     row(Op::BLOCK_END, Combo::NONE, AUX_NONE), // 96
     row(Op::LOOP, Combo::NONE, AUX_NONE),      // 97
     row(Op::BR_TABLE, Combo::NONE, AUX_ONE),   // 98
-    row(Op::BR_TABLE, Combo::NONE, AUX_TWO),   // 99
-    row(Op::BR_TABLE, Combo::NONE, AUX_EXT),   // 100
+    row(Op::FALLTHROUGH, Combo::NONE, AUX_NONE), // 99
+    row(Op::BR_TABLE, Combo::NONE, AUX_EXT_BR), // 100
     row(Op::CALL, Combo::NONE, AUX_EXT),       // 101
     row(Op::RETURN, Combo::NONE, AUX_NONE),    // 102
     row(Op::TRAP, Combo::NONE, AUX_NONE),      // 103
@@ -78,12 +78,16 @@ constexpr Entry TABLE[] = {
 static_assert(sizeof(TABLE) / sizeof(TABLE[0]) == SMALL_CONST_BASE,
     "decode table must cover exactly opcodes 0..SMALL_CONST_BASE-1 (isa-core.md §5.2)");
 
-/** `MISC_UNARY`'s assigned sub-codes, in sub-code order (isa-core.md §5.3). */
+static_assert(TABLE[BLOCK_END_OPCODE].op == (uint8_t)Op::BLOCK_END,
+    "BLOCK_END_OPCODE must name the same code the table does");
+
+/** Each escape's assigned sub-codes, in sub-code order (isa-core.md §5.3). */
 static constexpr Op MISC_UNARY_OPS[] = {Op::REVBITS, Op::CLZ};
 static constexpr uint32_t MISC_UNARY_COUNT = sizeof(MISC_UNARY_OPS) / sizeof(MISC_UNARY_OPS[0]);
 
 bool miscSubCodeAssigned(uint32_t code, uint32_t sub)
 {
+    /* MISC_CF and MISC_BINARY have none yet. */
     return code == MISC_UNARY && sub < MISC_UNARY_COUNT;
 }
 
@@ -185,13 +189,13 @@ DecodedInstr decodeInstr(const uint8_t *bytes, uint32_t bytesLen, uint32_t offse
     instr.combo = (Combo)(entry.shape >> 2);
 
     uint32_t aux = entry.shape & 3u;
-    if(aux == AUX_EXT)
+    if(aux == AUX_EXT || aux == AUX_EXT_BR)
     {
         uint32_t next;
-        instr.imm = (int32_t)decodeLeb128(bytes, pos, next);
+        instr.imm = (int32_t)decodeLeb128(bytes, pos, next) + (aux == AUX_EXT_BR ? 2 : 0);
         return {instr, next};
     }
-    instr.imm = (int32_t)aux; // AUX_NONE leaves 0; AUX_ONE/AUX_TWO are BR_TABLE's implicit N
+    instr.imm = (int32_t)aux; // AUX_NONE leaves 0; AUX_ONE is BR_TABLE's implicit N
     return {instr, pos};
 }
 

@@ -143,7 +143,7 @@ const callInBranch: RtlProgram = {
             argCount: 1,
             body: [
                 { op: "LOAD", target: 0 },
-                { op: "BR_TABLE", imm: 2 },
+                { op: "BR_TABLE", imm: 1 },
                     { op: "CONST", imm: 1 }, { op: "CALL", calleeIndex: 1 }, { op: "STORE", target: 0 },
                     { op: "BLOCK_END" },
                     { op: "CONST", imm: 2 }, { op: "CALL", calleeIndex: 1 }, { op: "STORE", target: 0 },
@@ -179,32 +179,29 @@ const callInLoop: RtlProgram = {
     ],
 }
 
-/** A BR_TABLE whose every case leaves acc live, followed by code that
- *  needs its own producer because isa-core.md §8.7 drops acc at the merge
- *  regardless (§4.5's implicit default edge holds no instructions, so no
- *  value can be established on it). Worth a seed of its own: this is the
- *  region two crashes already came from, and a blind mutator rarely builds
- *  a live-in-every-case dispatch on its own. */
-const brTableDeadMerge: RtlProgram = {
+/** A jump-table BR_TABLE whose every case leaves acc live, so isa-core.md
+ *  §8.7 carries it across the merge and the RETURN reads it. Worth a seed
+ *  of its own: this is the region two crashes already came from, and a
+ *  blind mutator rarely builds a live-in-every-case dispatch on its own. */
+const brTableLiveMerge: RtlProgram = {
     procedures: [
         {
             argCount: 1,
             body: [
                 { op: "LOAD", target: 0 },
-                { op: "BR_TABLE", imm: 3 },
+                { op: "BR_TABLE", imm: 2 },
                     { op: "CONST", imm: 10 }, { op: "BLOCK_END" },
                     { op: "CONST", imm: 20 }, { op: "BLOCK_END" },
                     { op: "CONST", imm: 30 }, { op: "BLOCK_END" },
-                { op: "CONST", imm: 40 },
                 { op: "RETURN" },
             ],
         },
     ],
 }
 
-/** The same merge shape one level down: a BR_TABLE 1 (if-without-else)
- *  whose body leaves acc live while the skip edge cannot, so the merge is
- *  dead and the code after it carries its own producer. */
+/** The opposite: `BR_TABLE 1` shaped as an if-without-else, whose one real
+ *  case leaves acc live while the empty default case cannot — so the merge
+ *  is dead and the code after it carries its own producer. */
 const ifThenDeadMerge: RtlProgram = {
     procedures: [
         {
@@ -212,6 +209,7 @@ const ifThenDeadMerge: RtlProgram = {
             body: [
                 { op: "LOAD", target: 0 },
                 { op: "BR_TABLE", imm: 1 },
+                    { op: "BLOCK_END" },
                     { op: "CONST", imm: 99 }, { op: "BLOCK_END" },
                 { op: "CONST", imm: 11 },
                 { op: "RETURN" },
@@ -232,6 +230,7 @@ const fusedIfThenDeadMerge: RtlProgram = {
                 { op: "LOAD", target: 0 },
                 { op: "NE", combo: "IMM_ACC", imm: 0 },
                 { op: "BR_TABLE", imm: 1 },
+                    { op: "BLOCK_END" },
                     { op: "CONST", imm: 77 }, { op: "BLOCK_END" },
                 { op: "CONST", imm: 22 },
                 { op: "RETURN" },
@@ -289,6 +288,7 @@ const longBranchSpan: RtlProgram = {
             body: [
                 { op: "LOAD", target: 0 },
                 { op: "BR_TABLE", imm: 1 },
+                    { op: "BLOCK_END" },
                     ...repeat<RtlInstr>(60, i => [
                         { op: "CONST", imm: 0x10000 + i },
                         { op: "STORE", target: 0 },
@@ -408,7 +408,7 @@ const largeSwitch: RtlProgram = (() =>
 {
     const n = 100
     const body: RtlInstr[] = [{ op: "LOAD", target: 0 }, { op: "BR_TABLE", imm: n }]
-    for(let i = 0; i < n; i++)
+    for(let i = 0; i <= n; i++)
     {
         body.push({ op: "CONST", imm: i })
         body.push({ op: "STORE", target: 0 })
@@ -762,7 +762,7 @@ const extAcrossCall: RtlProgram = {
                 { op: "CONST", imm: 0x0f0f0f0f },
                 extInstr("ST32", []),
                 { op: "CONST", imm: 1 },
-                { op: "BR_TABLE", imm: 2 },
+                { op: "BR_TABLE", imm: 1 },
                     { op: "CONST", imm: 0 }, { op: "STORE", target: 0 }, { op: "BLOCK_END" },
                     { op: "CONST", imm: 0xc0 }, { op: "CALL", calleeIndex: 1 }, { op: "STORE", target: 0 },
                     { op: "BLOCK_END" },
@@ -790,13 +790,13 @@ const extAcrossCall: RtlProgram = {
 // murmur. Kept as seeds so `qemu_exec.ts seeds` is a standing check on all
 // three, and so the mutator starts from their shapes.
 
-/** `BR_TABLE 2` reached with a dispatch value of neither 0 nor 1, and no
- *  comparison to fuse: isa-core.md §4.5's implicit default. Folding it into
- *  case[1] runs the else-arm where the ISA runs neither arm.
+/** `BR_TABLE 2` reached with a dispatch value past its indexed cases, and
+ *  no comparison to fuse: isa-core.md §4.5 sends it to the default case,
+ *  where folding it into case[1] would run the last indexed arm instead.
  *
- *  The witness has to be a STORE to a slot rather than acc: §8.7 drops acc
- *  at the merge, so "which arm ran" is only observable through state a case
- *  writes. k0 stays at its pre-dispatch 0 exactly when neither arm ran. */
+ *  The witness is a STORE to a slot rather than acc, so "which case ran" is
+ *  observable however the merge's own liveness works out: k0 stays at its
+ *  pre-dispatch 0 exactly when the empty default case ran. */
 const brTable2Default: RtlProgram = {
     procedures: [
         {
@@ -807,6 +807,7 @@ const brTable2Default: RtlProgram = {
                 { op: "BR_TABLE", imm: 2 },
                     { op: "CONST", imm: 111 }, { op: "STORE", target: 0 }, { op: "BLOCK_END" },
                     { op: "CONST", imm: 222 }, { op: "STORE", target: 0 }, { op: "BLOCK_END" },
+                    { op: "BLOCK_END" },
                 { op: "LOAD", target: 0 },
                 { op: "RETURN" },
             ],
@@ -815,8 +816,8 @@ const brTable2Default: RtlProgram = {
 }
 
 /** The same question one arm down: `BR_TABLE 1` with a dispatch value past
- *  its case count. Correct all along (`acc != 0` and `acc >= 1` coincide at
- *  N == 1), and worth pinning precisely because it does. */
+ *  its one indexed case, so the empty default case runs and k0 keeps its
+ *  pre-dispatch value. */
 const brTable1Default: RtlProgram = {
     procedures: [
         {
@@ -825,6 +826,7 @@ const brTable1Default: RtlProgram = {
                 { op: "CONST", imm: 0 }, { op: "PUSH" },
                 { op: "CONST", imm: 7 },
                 { op: "BR_TABLE", imm: 1 },
+                    { op: "BLOCK_END" },
                     { op: "CONST", imm: 333 }, { op: "STORE", target: 0 }, { op: "BLOCK_END" },
                 { op: "LOAD", target: 0 },
                 { op: "RETURN" },
@@ -847,7 +849,7 @@ const longBranchOverPool: RtlProgram = {
             body: [
                 { op: "CONST", imm: 0x0019d156 }, // too wide for any MOVS/shift synthesis: parks a pool entry
                 { op: "LT_U", combo: "IMM_ACC", imm: 0 },
-                { op: "BR_TABLE", imm: 2 },
+                { op: "BR_TABLE", imm: 1 },
                     ...repeat<RtlInstr>(40, i => [
                         { op: "CONST", imm: 0x30000 + i },
                         { op: "STORE", target: 0 },
@@ -996,7 +998,66 @@ const entryArgsSpilledCall: RtlProgram = {
     ],
 }
 
+/** isa-core.md §4.5's two-block dispatch: truthy, total, and carrying acc
+ *  across its merge rather than killing it (§8.7). This is the shape
+ *  lower.ts gives a whole-expression ternary. */
+const brTableAccMerge: RtlProgram = {
+    procedures: [
+        {
+            argCount: 1,
+            body: [
+                { op: "LOAD", target: 0 }, { op: "GT_U", combo: "IMM_ACC", imm: 3 },
+                { op: "BR_TABLE", imm: 1 },
+                    { op: "CONST", imm: 11 }, { op: "BLOCK_END" },
+                    { op: "CONST", imm: 22 }, { op: "BLOCK_END" },
+                // acc is live here because every arm reaching the merge left it so
+                { op: "ADD", combo: "IMM_ACC", imm: 1 },
+                { op: "RETURN" },
+            ],
+        },
+    ],
+}
+
+/** An arm that runs on into the next one instead of leaving the construct —
+ *  so the merge has a single incoming edge. */
+const brTableFallthrough: RtlProgram = {
+    procedures: [
+        {
+            argCount: 1,
+            body: [
+                { op: "LOAD", target: 0 }, { op: "EQ", combo: "IMM_ACC", imm: 0 },
+                { op: "BR_TABLE", imm: 1 },
+                    { op: "FALLTHROUGH" },
+                    { op: "CONST", imm: 7 }, { op: "BLOCK_END" },
+                { op: "RETURN" },
+            ],
+        },
+    ],
+}
+
+/** C's `case 0: case 1: X` — a lone `FALLTHROUGH` sharing the next case's
+ *  body, inside an ordinary lenient dispatch. */
+const switchSharedBody: RtlProgram = {
+    procedures: [
+        {
+            argCount: 1,
+            body: [
+                { op: "CONST", imm: 0 }, { op: "PUSH" },
+                { op: "LOAD", target: 0 }, { op: "BR_TABLE", imm: 3 },
+                    { op: "FALLTHROUGH" },
+                    { op: "CONST", imm: 10 }, { op: "STORE", target: 1 }, { op: "BLOCK_END" },
+                    { op: "CONST", imm: 20 }, { op: "STORE", target: 1 }, { op: "BLOCK_END" },
+                    { op: "BLOCK_END" },
+                { op: "LOAD", target: 1 }, { op: "RETURN" },
+            ],
+        },
+    ],
+}
+
 const authored: [string, RtlProgram][] = [
+    ["br_table_acc_merge", brTableAccMerge],
+    ["br_table_fallthrough", brTableFallthrough],
+    ["switch_shared_body", switchSharedBody],
     ["entry_args_spilled_trap", entryArgsSpilledTrap],
     ["entry_args_spilled_call", entryArgsSpilledCall],
     ["entry_args_two", entryArgs(2)],
@@ -1038,7 +1099,7 @@ const authored: [string, RtlProgram][] = [
     ["call_chain", callChain],
     ["call_in_branch", callInBranch],
     ["call_in_loop", callInLoop],
-    ["br_table_dead_merge", brTableDeadMerge],
+    ["br_table_live_merge", brTableLiveMerge],
     ["if_then_dead_merge", ifThenDeadMerge],
     ["fused_if_then_dead_merge", fusedIfThenDeadMerge],
 ]

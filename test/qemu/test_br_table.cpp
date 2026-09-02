@@ -1,4 +1,4 @@
-// BR_TABLE: two-case fused dispatch, the shared jump-table helper past
+// BR_TABLE: the two-block fused dispatch, the shared jump-table helper past
 // that, and the branch-range and accState edges of both.
 
 #include <cstdint>
@@ -13,7 +13,7 @@ using namespace jitc;
 // ---- BR_TABLE if/else fusion, non-last case closed via a bare RETURN,
 // last case closes normally.
 static const Instr ifElseProc0[] = {
-    LOAD(0), opImm(Op::GT_U, 10), brTable(2),
+    LOAD(0), opImm(Op::GT_U, 10), brTable(1),
         CONST(111), bare(Op::RETURN),   // case 0 (n <= 10) — bare terminator
         CONST(222), bare(Op::BLOCK_END), // case 1 (n > 10) — normal close
     bare(Op::RETURN),
@@ -49,9 +49,10 @@ TEST(BrTableIfElseAboveTheBoundary)
     CHECK(r.value == 222);
 }
 
-// ---- BR_TABLE N>2, the shared jump-table helper.
+// ---- BR_TABLE N>=2, the shared jump-table helper. Selector 3 is the
+// default case, so it also catches everything above.
 static const Instr jumpTableProc0[] = {
-    LOAD(0), brTable(4),
+    LOAD(0), brTable(3),
         CONST(100), bare(Op::BLOCK_END),
         CONST(200), bare(Op::BLOCK_END),
         CONST(300), bare(Op::BLOCK_END),
@@ -99,11 +100,21 @@ TEST(JumpTableSelectorThree)
     CHECK(r.value == 400);
 }
 
+TEST(JumpTableSelectorFarOutOfRangeTakesTheDefaultCase)
+{
+    ProcSource procs[] = {PROC(1, jumpTableProc0)};
+    uint32_t args[] = {0xffffffffu};
+    ProgramResult r = runProgram(procs, 1, args);
+
+    CHECK(!r.trapped);
+    CHECK(r.value == 400);
+}
+
 // ---- Branch-range guard forced into the long (invert-and-branch) form —
 // case 0's own body is padded past the 240-byte safe span, so the dispatch
 // guard itself can't be a bare short-form conditional branch.
 static const Instr longGuardProc0[] = {
-    LOAD(0), opImm(Op::GT_U, 100), brTable(2),
+    LOAD(0), opImm(Op::GT_U, 100), brTable(1),
         bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT),
         bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT),
         bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT), bare(Op::NOT),
@@ -145,7 +156,7 @@ TEST(LongFormBranchGuardFalseCase)
 // case 1 (200) fires for arg<=5 and case 0 (100) for arg>5; the loop always
 // counts down to 0 and contributes nothing.
 static const Instr condBranchLeProc0[] = {
-    LOAD(0), opImm(Op::LE_S, 5), brTable(2),      // if/else guarded directly by LE_S
+    LOAD(0), opImm(Op::LE_S, 5), brTable(1),      // if/else guarded directly by LE_S
         CONST(100), bare(Op::BLOCK_END),
         CONST(200), bare(Op::BLOCK_END),
     PUSH(),                                        // slot1 = branch result
@@ -199,7 +210,7 @@ TEST(CondBranchLeAboveTheBoundary)
 // should overwrite it with the comparison's real result instead.
 static const Instr accStateMergeProc0[] = {
     CONST(77), PUSH(),                      // slot1 = 77 (stale sentinel)
-    LOAD(0), opImm(Op::GE_U, 0x80), brTable(2),
+    LOAD(0), opImm(Op::GE_U, 0x80), brTable(1),
         STORE(1), bare(Op::BLOCK_END),      // case 0 (false): probe
         STORE(1), bare(Op::BLOCK_END),      // case 1 (true): probe
     LOAD(1),
@@ -263,4 +274,112 @@ TEST(LargeJumpTableLastCase)
 
     CHECK(!r.trapped);
     CHECK(r.value == 190);
+}
+
+// ---- isa-core.md §8.7's merge: the dispatch is total, so every edge into
+// the merge is a case body and a value crosses it — the `+ 1` below reads
+// what the taken arm left in acc, which neither arm stored anywhere.
+static const Instr accMergeProc0[] = {
+    LOAD(0), opImm(Op::GT_U, 3), brTable(1),
+        CONST(11), bare(Op::BLOCK_END),
+        CONST(22), bare(Op::BLOCK_END),
+    opImm(Op::ADD, 1), bare(Op::RETURN),
+};
+
+TEST(DispatchMergeCarriesAccOutOfTheTrueArm)
+{
+    ProcSource procs[] = {PROC(1, accMergeProc0)};
+    uint32_t args[] = {9}; // 9 > 3 -> acc 1 -> case[1]
+    ProgramResult r = runProgram(procs, 1, args);
+
+    CHECK(!r.trapped);
+    CHECK(r.value == 23);
+}
+
+TEST(DispatchMergeCarriesAccOutOfTheFalseArm)
+{
+    ProcSource procs[] = {PROC(1, accMergeProc0)};
+    uint32_t args[] = {1}; // 1 > 3 is false -> acc 0 -> case[0]
+    ProgramResult r = runProgram(procs, 1, args);
+
+    CHECK(!r.trapped);
+    CHECK(r.value == 12);
+}
+
+// Unfused: the dispatch value is a plain load, not a comparison, so it is
+// any word at all — which the truthy test still splits without a range
+// check, because at N=1 everything above 0 is one outcome.
+static const Instr unfusedProc0[] = {
+    LOAD(0), brTable(1),
+        CONST(5), bare(Op::BLOCK_END),
+        CONST(6), bare(Op::BLOCK_END),
+    bare(Op::RETURN),
+};
+
+TEST(TwoBlockDispatchUnfusedZero)
+{
+    ProcSource procs[] = {PROC(1, unfusedProc0)};
+    uint32_t args[] = {0};
+    ProgramResult r = runProgram(procs, 1, args);
+
+    CHECK(!r.trapped);
+    CHECK(r.value == 5);
+}
+
+TEST(TwoBlockDispatchUnfusedFarAboveOne)
+{
+    ProcSource procs[] = {PROC(1, unfusedProc0)};
+    uint32_t args[] = {0x9000u}; // everything at or above N is case[N]
+    ProgramResult r = runProgram(procs, 1, args);
+
+    CHECK(!r.trapped);
+    CHECK(r.value == 6);
+}
+
+// ---- FALLTHROUGH in the two-block form: case[0] runs on into case[1], so
+// the merge has one incoming edge instead of two.
+static const Instr fallProc0[] = {
+    LOAD(0), opImm(Op::EQ, 0), brTable(1),
+        bare(Op::FALLTHROUGH),
+        CONST(7), bare(Op::BLOCK_END),
+    bare(Op::RETURN),
+};
+
+TEST(TwoBlockDispatchFallthroughFromEitherArm)
+{
+    ProcSource procs[] = {PROC(1, fallProc0)};
+    for(uint32_t arg = 0; arg < 2; arg++)
+    {
+        uint32_t args[] = {arg};
+        ProgramResult r = runProgram(procs, 1, args);
+
+        CHECK(!r.trapped);
+        CHECK(r.value == 7);
+    }
+}
+
+// ---- C's `case 0: case 1: X` — a lone FALLTHROUGH sharing the next
+// case's body, in a jump-table dispatch with an empty default case.
+static const Instr sharedBodyProc0[] = {
+    CONST(0), PUSH(),
+    LOAD(0), brTable(3),
+        bare(Op::FALLTHROUGH),
+        CONST(10), STORE(1), bare(Op::BLOCK_END),
+        CONST(20), STORE(1), bare(Op::BLOCK_END),
+        bare(Op::BLOCK_END),
+    LOAD(1), bare(Op::RETURN),
+};
+
+TEST(SwitchSharedCaseBody)
+{
+    const uint32_t expected[] = {10, 10, 20, 0};
+    for(uint32_t arg = 0; arg < 4; arg++)
+    {
+        ProcSource procs[] = {PROC(1, sharedBodyProc0)};
+        uint32_t args[] = {arg};
+        ProgramResult r = runProgram(procs, 1, args);
+
+        CHECK(!r.trapped);
+        CHECK(r.value == expected[arg]);
+    }
 }

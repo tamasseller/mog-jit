@@ -207,7 +207,8 @@ static const Combo SPEC_CMP_MODE[4] = {Combo::REG_ACC, Combo::POP_ACC, Combo::IM
 static const Op SPEC_MISC[19] = {
     Op::NEG, Op::NOT, Op::SXTB, Op::SXTH,                 // 90-93
     Op::UXTB, Op::UXTH,                                   // 94-95
-    Op::BLOCK_END, Op::LOOP, Op::BR_TABLE, Op::BR_TABLE,  // 96-99
+    Op::BLOCK_END, Op::LOOP, Op::BR_TABLE,                // 96-98
+    Op::FALLTHROUGH,                                      // 99
     Op::BR_TABLE, Op::CALL, Op::RETURN, Op::TRAP,         // 100-103
     Op::TRAP, Op::PUSH, Op::LOAD, Op::STORE,              // 104-107
     Op::CONST,                                            // 108
@@ -273,12 +274,17 @@ TEST(DecodeTableAgreesWithTheSpecsOwnFormulas)
 TEST(DecodeSuppliesTheImplicitAuxValuesTheSpecPromises)
 {
     // The forms whose auxiliary value comes from the opcode itself rather
-    // than a trailing operand (§5.2's IMM_SMALL, BR_TABLE#1/#2, TRAP#0,
+    // than a trailing operand (§5.2's IMM_SMALL, BR_TABLE#1, TRAP#0,
     // CONST#0..15) — the ones a table has to carry as constants.
-    const uint8_t brTable1[] = {98}, brTable2[] = {99}, trap0[] = {103};
+    const uint8_t brTable1[] = {98}, trap0[] = {103};
     CHECK(decodeInstr(brTable1, 1, 0).instr.imm == 1);
-    CHECK(decodeInstr(brTable2, 1, 0).instr.imm == 2);
     CHECK(decodeInstr(trap0, 1, 0).instr.imm == 0);
+
+    // §5.4's bias: the extended form's operand is N - 2, so it starts at 2
+    // and neither 0 nor 1 has a second spelling.
+    const uint8_t brTableExt0[] = {100, 0}, brTableExt1[] = {100, 1};
+    CHECK(decodeInstr(brTableExt0, 2, 0).instr.imm == 2);
+    CHECK(decodeInstr(brTableExt1, 2, 0).instr.imm == 3);
 
     for(uint32_t i = 0; i < 16; i++)
     {
@@ -321,12 +327,13 @@ TEST(MiscUnaryEscapeDecodesItsAssignedSubCodes)
 
 TEST(OnlyMiscUnaryHasAssignedSubCodes)
 {
+    // MISC_CF and MISC_BINARY are both held empty (isa-core.md §5.3), and
+    // MISC_UNARY stops at two.
     for(uint32_t code = MISC_BASE; code <= LAST_CORE_OPCODE; code++)
     {
         for(uint32_t sub = 0; sub < 4; sub++)
         {
-            const bool assigned = (code == MISC_UNARY && sub < 2);
-            CHECK(miscSubCodeAssigned(code, sub) == assigned);
+            CHECK(miscSubCodeAssigned(code, sub) == (code == MISC_UNARY && sub < 2));
         }
     }
 }

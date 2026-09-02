@@ -367,29 +367,30 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
 
 TEST(BrTableJumpTableHelperViaFullPipeline)
 {
-    // N > 2 reaches openBrTableJump's own MOV/LDR/BLX-through-helper-
+    // N >= 2 reaches openBrTableJump's own MOV/LDR/BLX-through-helper-
     // vector call sequence into brTableJumpHelper (jit-armv6m/runtime/
-    // runtime.S) — not reachable through the N<=2 fusion path this
-    // file's other tests exercise.
+    // runtime.S) — not reachable through the two-block path this file's
+    // other tests exercise.
     const Instr body[] = {
         CONST(1), brTable(3),
             CONST(10), bare(Op::BLOCK_END),
             CONST(20), bare(Op::BLOCK_END),
             CONST(30), bare(Op::BLOCK_END),
-        // isa-core.md §8.7: the switch's merge point starts acc poisoned
-        // regardless of which case fell through — RETURN needs its own
-        // fresh producer.
+            CONST(40), bare(Op::BLOCK_END),
+        // isa-core.md §8.7: only case[3] leaves acc live at the merge and
+        // the others do too, but nothing here reads it — RETURN gets its
+        // own fresh producer either way.
         CONST(0),
         bare(Op::RETURN),
     };
     FakeRuntime<1> rt(/*arenaBytes=*/128);
     rt.set(0, 0, /*savesLR=*/true, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 21);
+    CHECK(halfwordCount == 23);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
-        ArmV6M::pushWithLr(ArmV6M::LoRegs{0}),              // PUSH {lr}  (savesLR — BR_TABLE N>2 clobbers lr via BLX)
+        ArmV6M::pushWithLr(ArmV6M::LoRegs{0}),              // PUSH {lr}  (savesLR — BR_TABLE N>=2 clobbers lr via BLX)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)),  // MOVS r0,#1 (CONST 1, the jump-table selector)
         ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(3)),  // MOVS r2,#3 (n=3, into SCRATCH_REG)
         ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), // MOV r3,r10 (HELPER_VEC_REG)
@@ -398,13 +399,15 @@ TEST(BrTableJumpTableHelperViaFullPipeline)
         0x0008, // -- jump table slot 0 (case0): 8 bytes past the table base
         0x000c, // -- jump table slot 1 (case1)
         0x0010, // -- jump table slot 2 (case2)
-        0x0012, // -- jump table slot 3 (end): past case2, at RETURN_VIA_STACK
+        0x0014, // -- jump table slot 3 (case3, the default case — a block of its own now)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(10)), // MOVS r0,#10 (case0: CONST 10)
-        ArmV6M::b(ArmV6M::Ioff<1, 11>(4)),                  // B +4 — skip to end (case0 isn't the last case)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(8)),                  // B +8 — skip to the merge
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(20)), // MOVS r0,#20 (case1: CONST 20)
-        ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                  // B +0 — skip to end (case1 isn't the last case)
-        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(30)), // MOVS r0,#30 (case2: CONST 30, last case — no skip needed)
-        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)),  // MOVS r0,#0  (RETURN's flush of the post-switch CONST(0) — the merge point's own fresh producer)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(4)),                  // B +4 — skip to the merge
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(30)), // MOVS r0,#30 (case2: CONST 30)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                  // B +0 — skip to the merge
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(40)), // MOVS r0,#40 (case3: the default, falls straight into the merge)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)),  // MOVS r0,#0  (RETURN's own fresh producer)
         RETURN_VIA_STACK,
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -416,7 +419,7 @@ TEST(BrTableJumpTableHelperViaFullPipeline)
 TEST(ComparisonFusesIntoBrTableGuard)
 {
     const Instr body[] = {
-        CONST(5), opImm(Op::GT_U, 3), brTable(2),
+        CONST(5), opImm(Op::GT_U, 3), brTable(1),
             CONST(1), bare(Op::BLOCK_END),
             CONST(2), bare(Op::BLOCK_END),
         // isa-core.md §8.7: the if/else merge point starts acc poisoned
@@ -575,7 +578,7 @@ TEST(CaseClosesViaTerminatorThroughFullPipeline)
     // closeCaseViaTerminator is unit-tested directly (test_blocks.cpp),
     // this is the caller-side switch dispatch around it.
     const Instr body[] = {
-        CONST(5), opImm(Op::GT_U, 3), brTable(2),
+        CONST(5), opImm(Op::GT_U, 3), brTable(1),
             CONST(1), bare(Op::RETURN),
             CONST(2), bare(Op::BLOCK_END),
         // isa-core.md §8.7: the if/else merge point starts acc poisoned
@@ -648,7 +651,7 @@ TEST(TrapInsideCaseClosesItAndContinuesToNextCase)
     // terminator close has no pending pool entry to flush (which is why
     // there is no alignment pad between case0 and case1 either).
     const Instr body[] = {
-        CONST(5), opImm(Op::GT_U, 3), brTable(2),
+        CONST(5), opImm(Op::GT_U, 3), brTable(1),
             CONST(1), trapInstr(9),
             CONST(2), bare(Op::BLOCK_END),
         // isa-core.md §8.7: the if/else merge point starts acc poisoned
@@ -985,12 +988,13 @@ TEST(RevbitsHelperViaFullPipeline)
 
 TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
 {
-    // Fusion only applies for BR_TABLE N<=2 (if/if-else) — a comparison
-    // right before a genuine N>2 jump-table selector must materialize
-    // as an ordinary 0/1 value instead, exercising the "hasLookahead but
-    // op doesn't qualify" side of fusesIntoBrTable's own condition.
+    // Fusion only applies for BR_TABLE 1 (the truthy two-way form) — a
+    // comparison right before a genuine jump-table selector must
+    // materialize as an ordinary 0/1 value instead, exercising the
+    // "hasLookahead but op doesn't qualify" side of fusesIntoBrTable's own
+    // condition.
     const Instr body[] = {
-        LOAD(0), opImm(Op::GT_U, 3), brTable(3),
+        LOAD(0), opImm(Op::GT_U, 3), brTable(2),
             CONST(10), bare(Op::BLOCK_END),
             CONST(20), bare(Op::BLOCK_END),
             CONST(30), bare(Op::BLOCK_END),
@@ -1003,29 +1007,28 @@ TEST(ComparisonImmediatelyBeforeBrTableJumpTableDoesNotFuse)
     FakeRuntime<1> rt(/*arenaBytes=*/128);
     rt.set(0, 1, /*savesLR=*/true, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 26);
+    CHECK(halfwordCount == 25);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
-        ArmV6M::pushWithLr(ArmV6M::LoRegs{0}),              // PUSH {lr}  (savesLR — BR_TABLE N>2 needs LR save)
+        ArmV6M::pushWithLr(ArmV6M::LoRegs{0}),              // PUSH {lr}  (savesLR — a jump table needs LR save)
         ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),  // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(0)=r7)
         ArmV6M::cmp(ArmV6M::LoReg(7), ArmV6M::Imm<8>(3)),   // CMP r7, #3  (LOAD(0): ordinary in-window read of physReg(0), pending straight into the comparison; GT_U operand=3)
-        ArmV6M::bls(ArmV6M::Ioff<1, 8>(2)),                 // BLS +2  (inverse of HI/GT_U's true condition — comparison doesn't fuse into the N>2 jump table)
+        ArmV6M::bls(ArmV6M::Ioff<1, 8>(2)),                 // BLS +2  (inverse of HI/GT_U's true condition — comparison doesn't fuse into a jump table)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)),  // MOVS r0, #1  (materialized true value)
         ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                  // skip the false branch
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)),  // MOVS r0, #0  (materialized false value)
-        ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(3)),  // MOVS r2, #3  (materializeImm32(SCRATCH_REG, n=3) for openBrTableJump)
+        ArmV6M::movs(ArmV6M::LoReg(2), ArmV6M::Imm<8>(2)),  // MOVS r2, #2  (materializeImm32(SCRATCH_REG, n=2) for openBrTableJump)
         ArmV6M::mov(ArmV6M::AnyReg(3), ArmV6M::AnyReg(10)), ArmV6M::ldr(ArmV6M::LoReg(3), ArmV6M::LoReg(3), ArmV6M::Uoff<2, 5>(20)),
         ArmV6M::blx(ArmV6M::AnyReg(3)),                     // MOV r3,r10; LDR r3,[r3,#20]; BLX r3  (brTableJumpHelper, index 5 — lr must point at the table right after)
-        0x0008, // jump table slot 0 (case0 start, byte offset from table base)
-        0x000c, // jump table slot 1 (case1 start)
-        0x0010, // jump table slot 2 (case2 start)
-        0x0012, // jump table slot 3 (construct end)
+        0x0006, // jump table slot 0 (case0 start, byte offset from table base)
+        0x000a, // jump table slot 1 (case1 start)
+        0x000e, // jump table slot 2 (case2 — the default case)
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(10)), // CONST(10), case0
-        ArmV6M::b(ArmV6M::Ioff<1, 11>(4)),                  // case0's skip-to-end
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(4)),                  // case0's skip-to-merge
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(20)), // CONST(20), case1
-        ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                  // case1's skip-to-end
-        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(30)), // CONST(30), case2 (last — no skip needed)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(0)),                  // case1's skip-to-merge
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(30)), // CONST(30), case2 (the default — falls into the merge)
         ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),  // MOV r0, r7  (RETURN's flush of the post-switch LOAD(0) — the merge point's own fresh producer)
         RETURN_VIA_STACK,
     };
@@ -1148,19 +1151,24 @@ TEST(DeeplyNestedButWellFormedBlocksSucceedWithNoStackFloor)
     // isa-core.md §8.7: the outermost if-then's merge point starts acc
     // poisoned once all 50 levels unwind, so RETURN needs its own fresh
     // producer (CONST — argCount=0, no window slot available).
-    Instr body[2 * kDepth + 2];
+    // Each level is a producer plus a dispatch, and closes with two
+    // BLOCK_ENDs: `BR_TABLE 1` opens a case and a default case, and a case
+    // starts with acc dead (isa-core.md §8.7) so the next level down has to
+    // establish its own dispatch value.
+    Instr body[4 * kDepth + 2];
     for(int i = 0; i < kDepth; i++)
     {
-        body[i] = brTable(1);
+        body[2 * i] = CONST(1);
+        body[2 * i + 1] = brTable(1);
     }
-    for(int i = 0; i < kDepth; i++)
+    for(int i = 0; i < 2 * kDepth; i++)
     {
-        body[kDepth + i] = bare(Op::BLOCK_END);
+        body[2 * kDepth + i] = bare(Op::BLOCK_END);
     }
-    body[2 * kDepth] = CONST(0);
-    body[2 * kDepth + 1] = bare(Op::RETURN);
+    body[4 * kDepth] = CONST(0);
+    body[4 * kDepth + 1] = bare(Op::RETURN);
     FakeRuntime<1> rt(/*arenaBytes=*/1024);
-    rt.set(0, 0, /*savesLR=*/false, body, 2 * kDepth + 2, /*cap=*/512);
+    rt.set(0, 0, /*savesLR=*/false, body, 4 * kDepth + 2, /*cap=*/512);
     translateProc(0, rt.runtime(), LRU_TICK);
 }
 
@@ -1211,20 +1219,25 @@ TEST(NestedIfChainReportsOverflowWithTheSameSlackADepthZeroBodyTolerates)
     // level costs a small double-digit-or-more number of bytes," true by a
     // wide margin for a handful of un-inlined function calls.
     constexpr int kDepth = 8;
-    Instr body[2 * kDepth + 2];
+    // Each level is a producer plus a dispatch, and closes with two
+    // BLOCK_ENDs: `BR_TABLE 1` opens a case and a default case, and a case
+    // starts with acc dead (isa-core.md §8.7) so the next level down has to
+    // establish its own dispatch value.
+    Instr body[4 * kDepth + 2];
     for(int i = 0; i < kDepth; i++)
     {
-        body[i] = brTable(1);
+        body[2 * i] = CONST(1);
+        body[2 * i + 1] = brTable(1);
     }
-    for(int i = 0; i < kDepth; i++)
+    for(int i = 0; i < 2 * kDepth; i++)
     {
-        body[kDepth + i] = bare(Op::BLOCK_END);
+        body[2 * kDepth + i] = bare(Op::BLOCK_END);
     }
-    body[2 * kDepth] = CONST(0);
-    body[2 * kDepth + 1] = bare(Op::RETURN);
+    body[4 * kDepth] = CONST(0);
+    body[4 * kDepth + 1] = bare(Op::RETURN);
 
     FakeRuntime<1> rt(/*arenaBytes=*/1024, /*stackLimit=*/currentSp() - 1536);
-    rt.set(0, 0, /*savesLR=*/false, body, 2 * kDepth + 2, /*cap=*/512);
+    rt.set(0, 0, /*savesLR=*/false, body, 4 * kDepth + 2, /*cap=*/512);
 
     EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_TRANSLATOR_STACK, translateProc(0, rt.runtime(), LRU_TICK));
 }
@@ -1279,7 +1292,7 @@ TEST(PooledLoadInsideGuardedRegionStillResolves)
     // both surviving in one chunk to the end of the procedure — but
     // either way both values must still decode correctly.
     const Instr body[] = {
-        CONST(5), opImm(Op::GT_U, 3), brTable(2),
+        CONST(5), opImm(Op::GT_U, 3), brTable(1),
             CONST(0x12345678), bare(Op::BLOCK_END),
             CONST(0x0ABCDEF0), bare(Op::BLOCK_END),
         // isa-core.md §8.7: the if/else merge point starts acc poisoned
@@ -1313,7 +1326,7 @@ TEST(PooledLoadSurvivesAcrossABrTableJumpTableUnflushed)
     // all the way to the end-of-procedure flush, landing *after* the
     // jump table rather than before it.
     const Instr body[] = {
-        CONST(0x12345678), brTable(3),
+        CONST(0x12345678), brTable(2),
             CONST(1), bare(Op::BLOCK_END),
             CONST(2), bare(Op::BLOCK_END),
             CONST(3), bare(Op::BLOCK_END),
@@ -1352,11 +1365,11 @@ TEST(LargeBrTableJumpTableFlushesAPendingLiteralBeforeItsOwnTable)
     // limit (+-2048 bytes) that a real per-case body would risk crossing
     // at this case count.
     constexpr uint32_t kCases = 520;
-    Instr body[2 + kCases + 2];
+    Instr body[2 + kCases + 3];
     uint32_t n = 0;
     body[n++] = CONST(0x12345678); // the one literal this test is about
     body[n++] = brTable(kCases);
-    for(uint32_t i = 0; i < kCases; i++)
+    for(uint32_t i = 0; i <= kCases; i++)
     {
         body[n++] = bare(Op::BLOCK_END);
     }
@@ -1841,4 +1854,84 @@ TEST(AnExtensionOpCanLeaveTheAccumulatorUndefined)
     ExtScope extScope(&EXT_INVALIDATE);
     uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(n > 0);
+}
+
+// ── isa-core.md §4.5's dispatch ─────────────────────────────────────────
+//
+// `BR_TABLE 1` is a truthy two-way test: one compare, one branch, no range
+// check for a third outcome that cannot happen. Wider tables go through the
+// jump-table helper instead, which costs the table itself plus the call into
+// it — so this pins the shape of the two paths, not a particular encoding.
+
+static uint32_t dispatchHalfwords(uint32_t n)
+{
+    // Every block stores, so acc is dead at the merge either way and the
+    // only difference between the two measurements is the dispatch itself.
+    Instr body[16];
+    uint32_t k = 0;
+    body[k++] = LOAD(0);
+    body[k++] = brTable(n);
+    for(uint32_t i = 0; i <= n; i++)
+    {
+        body[k++] = CONST((int32_t)(5 + i));
+        body[k++] = STORE(1);
+        body[k++] = bare(Op::BLOCK_END);
+    }
+    body[k++] = LOAD(1);
+    body[k++] = bare(Op::RETURN);
+
+    FakeRuntime<1> rt;
+    rt.set(0, 2, /*savesLR=*/n >= 2, body, k);
+    return translateProc(0, rt.runtime(), LRU_TICK);
+}
+
+TEST(TheTwoBlockDispatchIsCheaperThanTheJumpTable)
+{
+    const uint32_t twoBlock = dispatchHalfwords(1);
+    const uint32_t jumpTable = dispatchHalfwords(2);
+
+    CHECK(twoBlock > 0);
+    CHECK(jumpTable > twoBlock);
+}
+
+TEST(DispatchCarriesAccOutOfEveryArm)
+{
+    // Neither arm stores anywhere, and the ADD after the merge reads what
+    // the taken arm left in acc (isa-core.md §8.7).
+    const Instr body[] = {
+        LOAD(0), opImm(Op::GT_U, 3), brTable(1),
+            CONST(11), bare(Op::BLOCK_END),
+            CONST(22), bare(Op::BLOCK_END),
+        opImm(Op::ADD, 1), bare(Op::RETURN),
+    };
+    FakeRuntime<1> rt;
+    rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+
+    CHECK(translateProc(0, rt.runtime(), LRU_TICK) > 0);
+}
+
+TEST(FallthroughEmitsNoBranchOutOfTheCase)
+{
+    // A case closed by FALLTHROUGH runs on into the next one, which is
+    // emitted immediately after it — so it needs no branch to the merge,
+    // and is one halfword shorter than the same case closed by BLOCK_END.
+    auto measure = [](Op closer)
+    {
+        const Instr body[] = {
+            CONST(0), PUSH(),
+            LOAD(0), brTable(1),
+                CONST(5), STORE(1), bare(closer),
+                CONST(6), STORE(1), bare(Op::BLOCK_END),
+            LOAD(1), bare(Op::RETURN),
+        };
+        FakeRuntime<1> rt;
+        rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+        return translateProc(0, rt.runtime(), LRU_TICK);
+    };
+
+    const uint32_t falling = measure(Op::FALLTHROUGH);
+    const uint32_t leaving = measure(Op::BLOCK_END);
+
+    CHECK(falling > 0);
+    CHECK(leaving == falling + 1); // the branch to the merge FALLTHROUGH omits
 }

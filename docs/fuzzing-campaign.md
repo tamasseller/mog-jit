@@ -210,6 +210,12 @@ could not be written from it. Exhaustiveness would have to be *declared* by
 the opcode instead — a §5.3 candidate priced in `isa-rationale.md`, not
 spent on a ternary that is parsed but not yet lowered.
 
+> Superseded. `BR_TABLE N` now opens `N+1` blocks and `acc ≥ N` runs
+> `case[N]` (isa-core.md §4.5), so the edge with no instruction slots no
+> longer exists and acc does cross a dispatch merge when every case
+> reaching it leaves it live. The entry rule above is unchanged, and it is
+> still what makes fusion legal.
+
 **Fix.**
 
 - `validate.ts`: the `BR_TABLE` merge is `accLive = false`, with no case's

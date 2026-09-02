@@ -19,6 +19,10 @@ constexpr uint32_t EXT_OPCODE_BASE = 128;
 /** `CONST #0..#15`'s first code — a small immediate is `code - this`. */
 constexpr uint32_t SMALL_CONST_BASE = 109;
 
+/** `BLOCK_END`'s own code (§5.2). Named because recognizing an empty block
+ *  is a one-byte lookahead, not worth a whole decode. */
+constexpr uint32_t BLOCK_END_OPCODE = 96;
+
 /** §5.2's last three codes: `MISC_CF`, `MISC_UNARY`, `MISC_BINARY`. Each takes
  *  a sub-code as its trailing LEB128 operand (§5.3). */
 constexpr uint32_t MISC_BASE = 125;

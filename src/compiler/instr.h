@@ -23,7 +23,7 @@ enum class Op : uint8_t
     EQ, NE, LT_S, LE_S, GT_S, GE_S, LT_U, LE_U, GT_U, GE_U,
     NEG, NOT, SXTB, SXTH, UXTB, UXTH, // §5.2's own unary range, in its order
     CLZ, REVBITS,                     // §5.3's MISC_UNARY sub-codes
-    BLOCK_END, LOOP, BR_TABLE,
+    BLOCK_END, LOOP, BR_TABLE, FALLTHROUGH,
     EXT, // one registered extension's opcode (isa-core.md §11); see ext.h
 };
 
@@ -125,9 +125,11 @@ constexpr bool isShiftOp(Op op)
     return op == Op::SHL || op == Op::SHR || op == Op::ASR;
 }
 
+/** Ends a block. `FALLTHROUGH` ends one by continuing into the next case
+ *  rather than leaving the construct (isa-core.md §4.5). */
 constexpr bool isTerminator(Op op)
 {
-    return op == Op::BLOCK_END || op == Op::RETURN || op == Op::TRAP;
+    return op == Op::BLOCK_END || op == Op::FALLTHROUGH || op == Op::RETURN || op == Op::TRAP;
 }
 
 constexpr bool isProcTerminator(Op op)

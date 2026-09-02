@@ -15,17 +15,21 @@ static bool triggersLRSave(const Instr &instr)
         return extDeclHas(instr.extDecl, EXT_FLAG_NEEDS_LR);
     }
     return instr.op == Op::CALL
-        || (instr.op == Op::BR_TABLE && (uint32_t)instr.imm > 2)
+        || (instr.op == Op::BR_TABLE && (uint32_t)instr.imm >= 2)
         || instr.op == Op::CLZ
         || instr.op == Op::REVBITS;
 }
 
-enum class ScanFrameKind : uint8_t { Case, LoopCond, LoopBody };
-
+/* One open block-nesting level. Both openers are just a count of closers
+ * still to come: `N + 1` for a `BR_TABLE`'s cases plus its default case
+ * (isa-core.md §4.5), two for a `LOOP`'s condition and body sub-blocks. The
+ * two close identically; they differ only in what §8.5 lets close them,
+ * which is why `dispatch` exists and why nothing but the assertions reads
+ * it. */
 struct ScanFrame
 {
-    ScanFrameKind kind;
-    uint32_t remaining; // Case only
+    uint32_t remaining;
+    bool dispatch;
 };
 
 static void GUARDED_scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool &needsLRSave, ScanFrame *frame, uint32_t stackFloor, bool &stop, bool &foundEnd, uint32_t &failCode)
@@ -80,37 +84,29 @@ static void GUARDED_scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &
         }
         pc = d.next;
 
-        if(d.instr.op == Op::BR_TABLE)
+        if(d.instr.op == Op::BR_TABLE || d.instr.op == Op::LOOP)
         {
-            ScanFrame inner{ScanFrameKind::Case, (uint32_t)d.instr.imm};
+            ScanFrame inner = d.instr.op == Op::BR_TABLE
+                ? ScanFrame{(uint32_t)d.instr.imm + 1, true}
+                : ScanFrame{2, false};
             GUARDED_scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, stop, foundEnd, failCode);
             if(stop) return;
             continue;
         }
-        if(d.instr.op == Op::LOOP)
+
+        if(d.instr.op == Op::FALLTHROUGH)
         {
-            ScanFrame inner{ScanFrameKind::LoopCond, 0};
-            GUARDED_scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, stop, foundEnd, failCode);
-            if(stop) return;
+            // Closes this case and continues into the next one, so the frame
+            // stays open with one fewer case to go (isa-core.md §4.5).
+            assert(frame != nullptr && frame->dispatch && frame->remaining > 1); // GCOV_EXCL_LINE — malformed input
+            frame->remaining--;
             continue;
         }
 
         if(d.instr.op == Op::BLOCK_END)
         {
             assert(frame != nullptr); // GCOV_EXCL_LINE — malformed input: BLOCK_END with no open block
-            if(frame->kind == ScanFrameKind::Case)
-            {
-                frame->remaining--;
-                if(frame->remaining == 0) return; // this BR_TABLE fully closed — unwind to the enclosing level
-            }
-            else if(frame->kind == ScanFrameKind::LoopCond)
-            {
-                frame->kind = ScanFrameKind::LoopBody;
-            }
-            else
-            {
-                return; // LoopBody's own ordinary closer
-            }
+            if(--frame->remaining == 0) return; // construct fully closed — unwind to the enclosing level
             continue;
         }
 
@@ -122,15 +118,10 @@ static void GUARDED_scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &
                 foundEnd = true;
                 return;
             }
-            if(frame->kind == ScanFrameKind::LoopBody)
-            {
-                return;
-            }
-            if(frame->kind == ScanFrameKind::Case)
-            {
-                frame->remaining--;
-                if(frame->remaining == 0) return;
-            }
+            // §8.5: a terminator closes a dispatch case, or a LOOP's *body*
+            // sub-block — never a LOOP's condition, which needs a BLOCK_END.
+            assert(frame->dispatch || frame->remaining == 1); // GCOV_EXCL_LINE — malformed input
+            if(--frame->remaining == 0) return;
             continue;
         }
     }

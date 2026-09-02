@@ -91,8 +91,8 @@ TEST(BrTableInLoopBodyWithZero)
 // sum(1..n) LOOP using two extra PUSHed locals; the case's own BLOCK_END is
 // what returns tos to its pre-brTable value (1), matching case 1 (which never
 // touches tos). The running total is what the case LOADs back and STOREs to
-// the result slot k1 — acc itself cannot cross a BR_TABLE's merge point
-// (isa-core.md §8.7), so a value-producing dispatch delivers through a slot.
+// the result slot k1 — one case ends in a LOOP, after which acc is dead
+// (isa-core.md §8.7), so this dispatch delivers through a slot.
 // Body lives in corpus_programs.h.
 TEST(LoopInBrTableCaseZero)
 {

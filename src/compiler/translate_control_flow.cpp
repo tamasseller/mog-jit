@@ -75,135 +75,152 @@ void Ctx::handleGlobalJump(Instr term, uint32_t tos)
     this->window.tos = tos;
 }
 
+/**
+ * `BR_TABLE 1` whose case[0] is empty — what an `if` with no `else` lowers
+ * to (isa-core.md §7.1). Branching over case[1] on the inverse condition is
+ * the whole construct: no block for the empty case, and no branch out of
+ * case[1] to a merge that sits immediately after it.
+ */
 uint32_t Ctx::translateIfThen(uint32_t pc, BranchWidth width)
 {
-    
     const auto entryTos = this->window.tos;
     const bool fused = this->hasPendingComparisonCondition;
     this->hasPendingComparisonCondition = false;
 
-    Label skip;
+    Label end;
 
     const auto cond = fused ? this->pendingComparisonCondition : testAccNonzero(a, this->accState);
 
-    if(!emitBranch(a, skip, cond, width))
+    if(!emitBranch(a, end, ArmV6M::inverse(cond), width))
     {
         return -1;
     }
 
     if(fused)
     {
-        this->accState.producer(Shape::ofImm(0));
+        this->accState.producer(Shape::ofImm(1));
     }
-    
-    if(DecodedInstr term; this->GUARDED_processUntilTerminator(pc, width, false, term))
+    else
     {
-        if(term.instr.op == Op::BLOCK_END)
-        {
-            this->localJumpCleanup(entryTos);
-        }
-        else
-        {
-            this->handleGlobalJump(term.instr, entryTos);
-        }
-
         this->accState.poison();
-
-        if(a.bind(skip))
-        {
-            return term.next;
-        }
     }
 
-    return -1;
+    DecodedInstr term;
+    if(!this->GUARDED_processUntilTerminator(pc + 1, width, false, term))
+    {
+        return -1;
+    }
+
+    assert(term.instr.op != Op::FALLTHROUGH); // GCOV_EXCL_LINE — malformed: nothing follows the default case
+
+    if(isProcTerminator(term.instr))
+    {
+        this->handleGlobalJump(term.instr, entryTos);
+    }
+    else
+    {
+        this->localJumpCleanup(entryTos);
+    }
+
+    // The skip edge is the empty case, which establishes nothing (§8.7).
+    this->accState.poison();
+
+    return a.bind(end) ? term.next : (uint32_t)-1;
 }
 
+/**
+ * isa-core.md §4.5's two-block dispatch: `BR_TABLE 1` is a truthy test, so
+ * `acc = 0` takes case[0] and every other value takes case[1]. Total by
+ * construction — no range check to emit for a third outcome that cannot
+ * happen — and that is also what lets acc cross the merge (§8.7): every arm
+ * flushes it to ACC_REG on its way out, so the merge always finds it in one
+ * agreed place. Whether it is *readable* there is the validator's question,
+ * not this one's: a merge some case left dead is one no valid program reads,
+ * so there is nothing here to decide.
+ */
 uint32_t Ctx::translateIfThenElse(uint32_t pc, BranchWidth width)
 {
-
     const auto entryTos = this->window.tos;
     const bool fused = this->hasPendingComparisonCondition;
     this->hasPendingComparisonCondition = false;
 
     Label end, otherwise;
 
-    if(fused)
+    // Fused, the comparison's own condition is "acc would be 1", which is
+    // exactly "not zero" for a value a comparison produced.
+    const auto cond = fused ? this->pendingComparisonCondition : testAccNonzero(a, this->accState);
+
+    if(!emitBranch(a, otherwise, cond, width))
     {
-        if(!emitBranch(a, otherwise, this->pendingComparisonCondition, width))
-        {
-            return -1;
-        }
-    }
-    else
-    {
-        this->accState.flush(a, ACC_REG);
-
-        a.emit(ArmV6M::cmp(R(ACC_REG), ArmV6M::Imm<8>(1)));
-
-        if(!emitBranch(a, end, ArmV6M::Condition::HI, width))
-        {
-            return -1;
-        }
-
-        a.emit(ArmV6M::cmp(R(ACC_REG), ArmV6M::Imm<8>(1)));
-
-        if(!emitBranch(a, otherwise, ArmV6M::Condition::EQ, width))
-        {
-            return -1;
-        }
+        return -1;
     }
 
-    this->accState.producer(Shape::ofImm(0));
+    uint32_t next = pc;
 
-    if(DecodedInstr term; this->GUARDED_processUntilTerminator(pc, width, false, term))
+    for(uint32_t arm = 0; arm < 2; arm++)
     {
-        if(term.instr.op == Op::BLOCK_END)
+        // §8.7 says a case starts with acc dead, so no valid program reads
+        // what is left here — but the value is known on the paths where it
+        // is, and saying so costs nothing: case[0] is reached exactly when
+        // acc was zero, and a fused comparison's case[1] exactly when it
+        // would have been one.
+        if(arm == 0)
+        {
+            this->accState.producer(Shape::ofImm(0));
+        }
+        else if(fused)
+        {
+            this->accState.producer(Shape::ofImm(1));
+        }
+        else
+        {
+            this->accState.poison();
+        }
+
+        DecodedInstr term;
+        if(!this->GUARDED_processUntilTerminator(next, width, false, term))
+        {
+            return -1;
+        }
+        next = term.next;
+
+        if(isProcTerminator(term.instr))
+        {
+            this->handleGlobalJump(term.instr, entryTos);
+        }
+        else
         {
             this->localJumpCleanup(entryTos);
-            if(!a.branchTo(end))
+        }
+
+        if(arm == 0)
+        {
+            // A FALLTHROUGH arm runs straight on into the next one, which
+            // is where `otherwise` is bound — so it needs no branch, and no
+            // literal pool spliced into the path it keeps running down.
+            if(term.instr.op == Op::BLOCK_END && !a.branchTo(end))
+            {
+                return -1;
+            }
+            if(term.instr.op != Op::FALLTHROUGH)
+            {
+                a.flushPool();
+            }
+            if(!a.bind(otherwise))
             {
                 return -1;
             }
         }
-        else
-        {
-            this->handleGlobalJump(term.instr, entryTos);
-        }
-
-        a.flushPool();
-        if(!a.bind(otherwise))
-        {
-            return -1;
-        }
-
-        this->accState.producer(Shape::ofImm(1));
-
-        if(DecodedInstr term2; this->GUARDED_processUntilTerminator(term.next, width, false, term2))
-        {
-            if(term2.instr.op == Op::BLOCK_END)
-            {
-                this->localJumpCleanup(entryTos);
-            }
-            else
-            {
-                this->handleGlobalJump(term2.instr, entryTos);
-            }
-
-            this->accState.poison();
-
-            if(end.chain != -1)
-            {
-                if(!a.bind(end))
-                {
-                    return -1;
-                }
-            }
-
-            return term2.next;
-        }
     }
 
-    return -1;
+    this->accState.setClean(ACC_REG);
+
+    if(end.chain != -1 && !a.bind(end))
+    {
+        return -1;
+    }
+
+    return next;
 }
 
 uint32_t Ctx::translateSwitch(uint32_t pc, BranchWidth width, uint32_t n)
@@ -235,44 +252,51 @@ uint32_t Ctx::translateSwitch(uint32_t pc, BranchWidth width, uint32_t n)
 
     Label end;
 
-    for(uint32_t i = 0; i < n; i++)
+    /* N indexed cases plus the default case (isa-core.md §4.5): the jump
+     * table's last slot is a block of its own now, not the merge. */
+    for(uint32_t i = 0; i <= n; i++)
     {
         a.patchRawHalfword(base + i * 2, (uint16_t)(a.pc() - base));
 
         this->accState.poison();
 
-        if(DecodedInstr term; this->GUARDED_processUntilTerminator(pc, width, false, term))
-        {
-            if(term.instr.op == Op::BLOCK_END)
-            {
-                this->localJumpCleanup(entryTos);
-                if(i + 1 < n)
-                {
-                    if(!a.branchTo(end))
-                    {
-                        return -1;
-                    }
-
-                    a.flushPool();
-                }
-            }
-            else
-            {
-                this->handleGlobalJump(term.instr, entryTos);
-                a.flushPool();
-            }
-
-            pc = term.next;
-        }
-        else
+        DecodedInstr term;
+        if(!this->GUARDED_processUntilTerminator(pc, width, false, term))
         {
             return -1;
         }
+        pc = term.next;
+
+        if(isProcTerminator(term.instr))
+        {
+            this->handleGlobalJump(term.instr, entryTos);
+            a.flushPool();
+            continue;
+        }
+
+        this->localJumpCleanup(entryTos);
+
+        if(term.instr.op == Op::FALLTHROUGH)
+        {
+            /* Runs on into case i+1, whose own code is emitted next — so no
+             * branch out, and no literal pool in between (isa-core.md §4.5). */
+            continue;
+        }
+
+        if(i < n)
+        {
+            if(!a.branchTo(end))
+            {
+                return -1;
+            }
+
+            a.flushPool();
+        }
     }
 
-    a.patchRawHalfword(base + n * 2, (uint16_t)(a.pc() - base));
-
-    this->accState.poison();
+    /* Same as the two-block form: every case leaves acc in ACC_REG on its
+     * way out, and a merge no valid program may read needs no distinction. */
+    this->accState.setClean(ACC_REG);
 
     if(end.chain != -1)
     {

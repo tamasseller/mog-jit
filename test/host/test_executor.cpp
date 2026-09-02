@@ -283,7 +283,7 @@ TEST(TheFrameHashIsTheNumberTheProducerMustReproduce)
     // through the mixer: nothing else here would catch one side widening it
     // as signed.
     const uint8_t vector[] = {0x00, 0x00, 0x01, 0x00, 0x80, 102};
-    CHECK(programFrameHash(vector, sizeof(vector)) == 0xDC7Du);
+    CHECK(programFrameHash(vector, sizeof(vector)) == 0x369Cu);
 }
 
 TEST(TheExtensionArgumentIsWhatInstallsTheExtension)

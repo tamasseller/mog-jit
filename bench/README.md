@@ -17,13 +17,13 @@ agrees with the reference VM on its return value and on every byte it wrote.
 
 | workload | JIT cycles/sample | vs -Os | vs best level | emitted / bytecode |
 |---|---|---|---|---|
-| pulse-trigger | 27.46 | 1.02x | 1.59x | 150 B / 81 B |
-| iq-preamble | 19.23 | 2.06x | 2.38x | 210 B / 109 B |
-| median5 | 151.00 | 1.99x | 2.20x | 298 B / 231 B |
+| pulse-trigger | 27.79 | 1.03x | 1.61x | 150 B / 83 B |
+| iq-preamble | 19.23 | 2.06x | 2.38x | 210 B / 111 B |
+| median5 | 151.00 | 1.99x | 2.10x | 298 B / 240 B |
 
 Against docs/design.md: §14 predicted throughput within "roughly 2-4x" of
-`-Os` C, and the measured 1.02x-2.06x sits at or below the bottom of that
-range; against each workload's best level it is 1.59x-2.38x. §15 estimated
+`-Os` C, and the measured 1.03x-2.06x sits at or below the bottom of that
+range; against each workload's best level it is 1.61x-2.38x. §15 estimated
 4-10 KB of flash for the whole JIT, and ~9.8 KB is inside it. Cold start is
 21k-49k instructions depending on program size, paid once per procedure.
 
@@ -31,7 +31,7 @@ The three workloads are chosen to be different shapes, and they behave like
 it:
 
 **pulse-trigger** — a two-state machine with hysteresis, on unsigned ADC
-codes. Almost no arithmetic, and the closest result: 1.02x against `-Os`.
+codes. Almost no arithmetic, and the closest result: 1.03x against `-Os`.
 
 **iq-preamble** — quadrature demodulation of a tone sampled at four times
 its frequency, where the mixer coefficients are [1,0,-1,0] and [0,1,0,-1],
@@ -88,7 +88,7 @@ lands exactly on fall-through and costs nothing extra.
 
 It matters. The JIT materializes pooled literals where C keeps values in
 registers, so it issues proportionally more loads; weighting them moved the
-`-O2` ratio from 1.52x to 1.54x and the `-Os` ratio from 1.13x to 1.02x.
+`-O2` ratio from 1.52x to 1.54x and the `-Os` ratio from 1.13x to 1.03x.
 
 `MUL` is a knob (`mul=` plugin argument, default 1) because Cortex-M0
 permits both a 1-cycle and a 32-cycle multiplier and the choice is

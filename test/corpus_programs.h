@@ -46,7 +46,7 @@ inline constexpr Instr corpusBrTableInLoopProc0[] = {
     bare(Op::LOOP),
         LOAD(1),
     bare(Op::BLOCK_END),
-        LOAD(1), opImm(Op::AND, 1), brTable(2),
+        LOAD(1), opImm(Op::AND, 1), brTable(1),
             LOAD(1), opImm(Op::MUL, 10), opReg(Op::ADD, 2), STORE(2), bare(Op::BLOCK_END),
             LOAD(1), opReg(Op::ADD, 2), STORE(2), bare(Op::BLOCK_END),
         LOAD(1), opImm(Op::SUB, 1), STORE(1),
@@ -56,13 +56,12 @@ inline constexpr Instr corpusBrTableInLoopProc0[] = {
 
 // LOOP nested inside a BR_TABLE case — test_nested_blocks.cpp's LoopInBrTableCase*.
 //
-// k0 is the packed argument, k1 the result slot: isa-core.md §8.7 drops acc
-// at a BR_TABLE's merge point however the cases ended, so a dispatch that
-// produces a value delivers it through a TOS slot the cases STORE to, not
-// through acc.
+// k0 is the packed argument, k1 the result slot: one case ends in a LOOP,
+// after which isa-core.md §8.7 leaves acc dead, so this dispatch delivers
+// its value through a TOS slot the cases STORE to rather than through acc.
 inline constexpr Instr corpusLoopInBrTableProc0[] = {
     CONST(0), PUSH(),
-    LOAD(0), opImm(Op::SHR, 8), brTable(2),
+    LOAD(0), opImm(Op::SHR, 8), brTable(1),
         CONST(0), PUSH(),
         LOAD(0), opImm(Op::AND, 0xFF), PUSH(),
         bare(Op::LOOP),
@@ -83,7 +82,7 @@ inline constexpr Instr corpusLoopInBrTableProc0[] = {
 // k1 is the result slot, for the same reason corpusLoopInBrTableProc0 has one.
 inline constexpr Instr corpusLargeBrTableProc0[] = {
     CONST(0), PUSH(),
-    LOAD(0), brTable(20),
+    LOAD(0), brTable(19),
         CONST(0), STORE(1), bare(Op::BLOCK_END),
         CONST(10), STORE(1), bare(Op::BLOCK_END),
         CONST(20), STORE(1), bare(Op::BLOCK_END),

@@ -356,7 +356,11 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
                 {
                     DecodedInstr lookahead = decodeInstr(this->bytes, this->bytesLen, afterInstr);
                     
-                    bool fusesIntoBrTable = lookahead.instr.op == Op::BR_TABLE && (lookahead.instr.imm == 1 || lookahead.instr.imm == 2);
+                    // Only the two-block form: its truthy test agrees with
+                    // the comparison's own condition for a value a
+                    // comparison produced, which is 0 or 1. A wider table
+                    // needs the index itself.
+                    bool fusesIntoBrTable = lookahead.instr.op == Op::BR_TABLE && lookahead.instr.imm == 1;
                     bool fusesIntoLoopExit = isThisLoopCondBlock && lookahead.instr.op == Op::BLOCK_END;
 
                     if(fusesIntoBrTable || fusesIntoLoopExit)
@@ -407,11 +411,21 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
                 break;
 
             case Op::BR_TABLE:
-                switch(instr.imm)
+                // N=1 is the two-block truthy form (isa-core.md §4.5); wider
+                // tables go through the jump-table helper. An empty case[0]
+                // is an `if` with no `else` (§7.1), which needs neither a
+                // block of its own nor a branch out of case[1].
+                if(instr.imm != 1)
                 {
-                    case 1: pc = this->translateIfThen(afterInstr, width); break;
-                    case 2: pc = this->translateIfThenElse(afterInstr, width); break;
-                    default: pc = this->translateSwitch(afterInstr, width, instr.imm);break;
+                    pc = this->translateSwitch(afterInstr, width, instr.imm);
+                }
+                else if(this->bytes[afterInstr] == BLOCK_END_OPCODE)
+                {
+                    pc = this->translateIfThen(afterInstr, width);
+                }
+                else
+                {
+                    pc = this->translateIfThenElse(afterInstr, width);
                 }
 
                 if(pc == -1) 

@@ -857,15 +857,15 @@ Per-opcode-class notes:
   window it takes a spill-stack `LDR` first. Peek and pop modes follow from
   §5's window (peek is the top-of-window register in place; pop reads and
   shrinks the window, with unconditional refill).
-- **`BR_TABLE`.** ARMv6-M has no `TBB`/`TBH` (Thumb-2 only). `N ≤ 2`, the
-  overwhelming common case (`if`/`if-else`, isa-core.md §7.1), compiles to
-  `CMP` plus a conditional branch, no table — *when* the dispatch value is a
-  fused comparison's own 0/1, which is what §7.1's "the default is
-  unreachable for `if-else`" is about. Unfused, `acc` is an arbitrary u32
-  and §4.5's `acc ≥ N` outcome is real, so `N == 2` needs three ways out
-  (`CMP #1` plus `BHI` past both arms, then `BEQ` to the second): folding
-  `acc ≥ 2` into `case[1]` ran the else-arm where the ISA runs neither arm.
-  `N > 2`
+- **`BR_TABLE`.** ARMv6-M has no `TBB`/`TBH` (Thumb-2 only). `N == 1` — the
+  overwhelming common case, since `if`, `if-else` and the ternary all lower
+  to it (isa-core.md §7.1) — compiles to `CMP` plus a conditional branch,
+  no table, fused or not: §4.5's index is *truthy* at `N == 1`, so there is
+  no third outcome to detect and no range check to emit. An `if` with no
+  `else` is that same shape with an empty `case[0]`, which a one-byte
+  lookahead at the dispatch site sends to `translateIfThen` instead: the
+  inverse branch alone, no block for the empty case and no branch out of
+  `case[1]` to a merge sitting right after it. `N ≥ 2`
   (`translate_control_flow.cpp`'s `BR_TABLE` arm) needs a literal-pool jump
   table plus a computed `BX`, but not one dispatch routine per site: one
   flash-resident copy for the whole program (§11's reserved slot 6,
@@ -873,11 +873,11 @@ Per-opcode-class notes:
   reached by `BLX` through the helper vector, with the call site's own table
   addressed relative to `lr` exactly as it would be after a local `BL`.
 
-  Table entries are clamped to `N`, one slot *past* the last real case, not
-  `N - 1`: isa-core.md's `acc ≥ N` behavior is "no case body runs, `acc`
-  left untouched", which a naive `N`-entry clamp turns into "re-run the last
-  case". The register holding the clamped index is deliberately never `acc`,
-  so it survives dispatch unmodified on both paths.
+  The table has `N + 1` slots and the index is clamped to `N`: §4.5's
+  out-of-range outcome is `case[N]`, a real block of its own, so the last
+  slot is an ordinary case target rather than the merge. The register
+  holding the clamped index is deliberately never `acc`, so it survives
+  dispatch unmodified on both paths.
 
   **A non-obvious ARMv6-M trap here.** `BL`/`BLX` always set `lr` with bit 0
   forced to 1, the Thumb-mode marker a later `BX`/`POP{PC}` needs. Harmless
@@ -991,9 +991,6 @@ independently available (isa-core.md §4.2), so "`k < rN`" recasts as
 "`rN > k`", the same truth value with operand and immediate on the sides
 Thumb's `CMP Rn,#imm8` supports, via a mechanical swap table (`LT_S`↔`GT_S`,
 `LE_S`↔`GE_S`, `LT_U`↔`GT_U`, `LE_U`↔`GE_U`, `EQ`↔`EQ`, `NE`↔`NE`).
-isa-core.md §7.3's complementary-comparison table is the same mechanical
-flavor one layer down, at lowering time, though a negation rather than a
-swap.
 
 **Why a one-token trigger stays sound with no lookahead past it.** Not from
 raw ISA physics: arithmetic's two write-back-in-place modes both read `acc`
@@ -1047,27 +1044,31 @@ producer *or* a write-back-in-place op. Four consequences:
   result anywhere — only CPU flags carry it into the guard — so `accState`
   is left completely untouched across the fusion unless something
   re-establishes it. `accState` is seeded with the statically-known
-  constant (`Imm(0)` entering `case[0]`/`Imm(1)` entering `case[1]` or a
-  loop body) exactly when the branch is genuinely fused — never for
-  `testAccNonzero`'s unfused fallback, which flushes for real before the
-  branch and needs no seeding.
+  constant it is: `Imm(0)` entering `case[0]` — where the test was zero
+  whether or not the comparison fused — and `Imm(1)` entering `case[1]` or
+  a loop body, which only a fused comparison makes known.
 
-isa-core.md §8.7 makes this a validation error generally, and the rule is
-unconditional in both directions: a CFG split (`BR_TABLE`/`LOOP`) clobbers
-`acc` on entry to every successor, *and* `acc` is dead after the whole
-construct however its cases ended. `validate.ts`/`vm.ts` reject both,
-rather than relying on this one seeded case alone.
+isa-core.md §8.7 makes this a validation error on *entry* to any successor
+of a CFG split (`BR_TABLE`/`LOOP`), which is what makes this backend's
+fusion legal: nothing may read the 0/1 a fused comparison never
+materialized. `validate.ts`/`vm.ts` enforce it, rather than relying on this
+one seeded case alone.
 
-The leaving direction is worth stating separately, because it is what makes
-this backend's fusion legal at all: `BR_TABLE`'s implicit default (§4.5,
-`acc ≥ N` runs no case) is the one edge in the ISA that holds no
-instructions, so nothing can establish a value on it and no merge after a
-dispatch can be given one on every edge. That is why `translateIfThen`,
-`translateIfThenElse` and `translateSwitch` all `poison()` at their merge
-point unconditionally, with no fixup on the skip edge — a fixup that
-materialized the fused comparison's 0/1 there was tried, and isa-rationale
-.md's own reasoning for the rule rules it out: the pattern is invalid input,
-not something a backend has to compile.
+Leaving is the other direction, and there the backend has nothing to decide.
+§4.5's dispatch is total, so every edge into the merge is a case body, and
+every case's `localJumpCleanup` flushes `acc` into `ACC_REG` on the way out
+— so `translateIfThenElse`/`translateSwitch` `setClean(ACC_REG)` there
+unconditionally. Whether the value is *readable* is §8.7's question, not
+theirs: a merge some case left dead is one no valid program reads, so the
+two answers differ only in what an invalid one gets. Deliberately not
+mirrored here, because mirroring it means a second implementation of the
+meet that can disagree with the first — and because it would change no
+emitted byte either way (`flushLive` into `ACC_REG` is elided when the value
+is already there, `Shape::materialize`). The one merge the backend does know
+is dead is `translateIfThen`'s: its skip edge is an empty case, which can
+establish nothing, so that one poisons. A `LOOP`'s exit is unconditionally
+dead too — that edge is a successor of the condition sub-block's own
+dispatch and holds no instructions.
 
 **Callee-side prologue as a fold.** isa-core.md §4.6's last argument arrives
 in `acc`, not at `phys(argidx)`, which holds stale data (whatever the
@@ -1106,7 +1107,7 @@ signed imm×2), so a procedure whose basic blocks span further needs the
 standard invert-and-long-branch idiom any Thumb-1 assembler already uses.
 Still unprototyped, and the only reason a fixup pass is needed at all.
 
-*Jump tables* need none. `BR_TABLE N>2`'s table entries resolve exactly as
+*Jump tables* need none. A jump-table `BR_TABLE`'s table entries resolve exactly as
 ordinary branch targets do (`blocks.ts`): each slot is a deferred fixup,
 patched the moment the corresponding case's `BLOCK_END` is reached in the
 single forward pass, never needing to have seen anything past that point.
@@ -1244,7 +1245,7 @@ unencodable at any size, this backend cannot compile it at all.
 | `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` | `0x52451500` | `executor.cpp` `Executor::run` | `argCount != slot(0).argCount()` |
 | `RESOURCE_PROGRAM_ENTRY_DEPTH` | `0x52451600` | `executor.cpp` `Executor::run` | the entry procedure's out-of-window args exceed `total_depth` |
 | `RESOURCE_PROGRAM_EXT_UNKNOWN` | `0x52451700` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | a wire byte past `LAST_CORE_OPCODE`: the extension range (§11), and nothing claimed it |
-| `RESOURCE_PROGRAM_RESERVED_OPCODE` | `0x52451900` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | one of isa-core.md §5.3's escapes naming a sub-code nothing has assigned — including `FALLTHROUGH`, which is assigned but unimplemented |
+| `RESOURCE_PROGRAM_RESERVED_OPCODE` | `0x52451900` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | one of isa-core.md §5.3's escapes naming a sub-code nothing has assigned |
 | `RESOURCE_PROGRAM_EXT_UNSUPPORTED` | `0x52451800` | `Runtime::loadProgram`, and `translate_proc.cpp`'s `EXT` arm | a declaration asking for a capability this core doesn't implement, or one the emitted code then contradicts (halfword overrun, `tosDelta` mismatch) |
 | `RESOURCE_EXHAUSTED_ARENA` | `0x52452100` | `assembler.cpp` `emit` | buffer full and nothing left to evict (§8) |
 | `RESOURCE_EXHAUSTED_STACK_BUDGET` | `0x52452200` | `executor.cpp`, both variants | the up-front §2 check; nothing was touched |
@@ -1328,7 +1329,7 @@ Per Generic Core opcode, native Thumb instruction count:
 | `PUSH`/`POP`, no window boundary crossed | 0 (pure relabeling) |
 | `PUSH`/`POP`, crossing the 4-deep boundary | 1 (`STR`/`LDR`) |
 | `CONST`/`LOAD`/`STORE` | 1-2 |
-| `if`/`if-else` (`BR_TABLE` ≤2) | 2-3 (`CMP` plus branches) with §10.1's fusion; about 7 unfused |
+| `if`/`if-else` (`BR_TABLE 1`) | 2-3 (`CMP` plus branches), fused or not |
 | `CALL` | up to about 8 for the shuffle (§6: `1+≤2` to spill the caller's resident window, `+1` to fill the callee's args, `+≤4` to reload the caller's window after return) plus the 5-7 instruction call sequence and `callHelper`'s 6; nothing at all for the shuffle in the common `argCount ≤ 1` case |
 | `RETURN` | 3 (helper-vector load plus `BX`), plus the shared tail's 6 |
 
@@ -1653,8 +1654,10 @@ wrong number, or no answer at all:
   own literal-pool flush lands — so that edge jumped into pool data and
   executed it. Now resolved through `Label`/`bind()`, the one flush-safe
   way to mean "wherever we are now".
-- `BR_TABLE 2`'s unfused form folded `acc ≥ 2` into `case[1]`, running the
-  else-arm where §4.5 runs neither arm (§10).
+- The index-exact `BR_TABLE 2`'s unfused form folded `acc ≥ 2` into
+  `case[1]`, running the else-arm where §4.5 then ran neither arm. The
+  opcode has since become total (§4.5's `case[N]`), which removes the
+  outcome the bug was about.
 - A `PUSH` inside a `LOOP`'s *condition* sub-block never had its TOS
   surplus dropped at that block's own `BLOCK_END` (§8.1 drops it like any
   other, and every `BR_TABLE` case already did) — so `sp` and the window

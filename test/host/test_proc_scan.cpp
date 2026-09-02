@@ -50,9 +50,10 @@ TEST(ScanProcBodyDetectsCallAsNeedingLRSave)
     CHECK(r.needsLRSave);
 }
 
-TEST(ScanProcBodyDetectsBrTableAbove2AsNeedingLRSave)
+TEST(ScanProcBodyDetectsBrTableFrom2UpAsNeedingLRSave)
 {
-    const Instr body[] = {CONST(0), brTable(3), CONST(1), bare(Op::BLOCK_END), CONST(2), bare(Op::BLOCK_END), CONST(3), bare(Op::BLOCK_END), bare(Op::RETURN)};
+    // N >= 2 goes through the jump-table helper, which is a call.
+    const Instr body[] = {CONST(0), brTable(2), CONST(1), bare(Op::BLOCK_END), CONST(2), bare(Op::BLOCK_END), CONST(3), bare(Op::BLOCK_END), bare(Op::RETURN)};
     uint8_t bytes[32];
     uint32_t len = encodeBody(body, 9, bytes, sizeof(bytes));
 
@@ -61,9 +62,10 @@ TEST(ScanProcBodyDetectsBrTableAbove2AsNeedingLRSave)
     CHECK(r.needsLRSave);
 }
 
-TEST(ScanProcBodyBrTableOfTwoDoesNotNeedLRSave)
+TEST(ScanProcBodyBrTableOfOneDoesNotNeedLRSave)
 {
-    const Instr body[] = {CONST(0), brTable(2), CONST(1), bare(Op::BLOCK_END), CONST(2), bare(Op::BLOCK_END), bare(Op::RETURN)};
+    // N = 1 is a compare and a branch, no helper (isa-core.md §4.5).
+    const Instr body[] = {CONST(0), brTable(1), CONST(1), bare(Op::BLOCK_END), CONST(2), bare(Op::BLOCK_END), bare(Op::RETURN)};
     uint8_t bytes[32];
     uint32_t len = encodeBody(body, 7, bytes, sizeof(bytes));
 
@@ -120,6 +122,28 @@ TEST(ScanProcBodyOrdinaryLoopBackEdgeClosedByBlockEndFindsTheOuterTail)
     CHECK(r.bodyBytes == len);
 }
 
+TEST(ScanProcBodyLoopFrameCountsBothSubBlocks)
+{
+    // A LOOP's frame is just "two closers to go", so a nested BR_TABLE
+    // inside its body must not be mistaken for the loop's own second
+    // closer: the outer tail after the loop still has to be found.
+    const Instr body[] = {
+        CONST(1), bare(Op::LOOP),
+            CONST(1), bare(Op::BLOCK_END),
+            CONST(0), brTable(1),
+                bare(Op::BLOCK_END),
+                CONST(2), bare(Op::BLOCK_END),
+        bare(Op::BLOCK_END),
+        CONST(0), bare(Op::RETURN),
+    };
+    uint8_t bytes[32];
+    uint32_t len = encodeBody(body, sizeof(body) / sizeof(body[0]), bytes, sizeof(bytes));
+
+    BodyScanResult r = scanProcBody(bytes, len, 0);
+    CHECK(r.ok);
+    CHECK(r.bodyBytes == len);
+}
+
 TEST(ScanProcBodyNonLastCaseClosedByBareTerminatorStillCountsAgainstN)
 {
     // The §8.5 wrinkle this port exists to get right: case[0] closes via a
@@ -128,7 +152,7 @@ TEST(ScanProcBodyNonLastCaseClosedByBareTerminatorStillCountsAgainstN)
     // for the bare-terminator close would run straight past this
     // procedure's own real end and into whatever bytes follow it.
     const Instr proc0[] = {
-        CONST(0), brTable(2),
+        CONST(0), brTable(1),
         CONST(111), bare(Op::RETURN),
         CONST(222), bare(Op::BLOCK_END),
         CONST(333), bare(Op::RETURN),
@@ -200,8 +224,7 @@ TEST(ScanProcBodyRejectsAnUnassignedEscapeSubCode)
     // length either — the walk cannot skip it and must stop. That includes
     // FALLTHROUGH (MISC_CF #0), which §5.3 assigns but nothing implements.
     const uint8_t cases[][3] = {
-        {125, 0, 102}, // MISC_CF #0 — FALLTHROUGH, not implemented
-        {125, 1, 102}, // MISC_CF, reserved
+        {125, 0, 102}, // MISC_CF, entirely reserved
         {126, 2, 102}, // MISC_UNARY, past its assigned sub-codes
         {127, 0, 102}, // MISC_BINARY, entirely reserved
     };
@@ -211,6 +234,22 @@ TEST(ScanProcBodyRejectsAnUnassignedEscapeSubCode)
         CHECK(!r.ok);
         CHECK(r.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE);
     }
+}
+
+TEST(ScanProcBodyStepsOverADispatchAndItsFallthrough)
+{
+    // 98 opens two blocks; 99 closes the first by running on into the
+    // second, so the frame stays open with one block left (isa-core.md §4.5).
+    const uint8_t bytes[] = {
+        109 /* CONST #0 */, 98 /* BR_TABLE #1 */,
+            99 /* FALLTHROUGH */,
+            109 /* CONST #0 */, 96 /* BLOCK_END */,
+        102 /* RETURN */,
+    };
+    BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
+    CHECK(r.ok);
+    CHECK(r.failCode == 0);
+    CHECK(r.bodyBytes == sizeof(bytes));
 }
 
 TEST(ScanProcBodyRejectsAnEscapeWithNoSubCodeAtAll)
