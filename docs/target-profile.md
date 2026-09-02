@@ -104,6 +104,48 @@ comparison, and the two ceilings are independent things that could move),
 but no test or fuzz input can exercise it, and one shouldn't be written on
 the assumption that it can.
 
+## The window holds four TOS entries, whatever they are
+
+`WINDOW_SIZE = 4` is not only `argCount`'s cheap band: `inWindow` is "within
+the top four TOS entries" (`window.cpp`), and a frame stacks arguments,
+then locals in declaration order, then temporaries. So the entries that
+spill are the oldest ones — argument 0 first, then local 0 — and arguments,
+locals and live temporaries compete for the same four registers `r4-r7`.
+Realistic hand-written programs cross that at the fourth or fifth frame
+entry (`packages/machine/docs/applications.md`), which no constant here bounds and nothing warns
+about.
+
+**Measured** (`fuzz/dump_code.sh`, `u32 v0 = 1; ... return v0 + v1 + ...;`
+lowered by `packages/machine`):
+
+| locals | bytecode | emitted | marginal |
+|---|---|---|---|
+| 3 | 10 instrs | 10 halfwords | +2 |
+| 4 | 13 instrs | 12 halfwords | +2 |
+| 5 | 16 instrs | 17 halfwords | **+5** |
+| 6 | 19 instrs | 21 halfwords | +4 |
+| 7 | 22 instrs | 25 halfwords | +4 |
+
+The bytecode grows by a flat three instructions per local throughout — the
+cliff is in the native code alone, so nothing on the `packages/machine` side
+can see it. What the fifth one buys: a `push` at its declaration, an
+`add sp, #4` at frame exit, an `ldr [sp, #imm]` per read of a spilled entry
+and a `str` per write, none of which fold into the arithmetic that consumes
+them.
+
+**It is not really about locals.** A temporary occupies a frame entry like
+anything else, so the budget is four *entries*, not four declarations:
+
+- `argCount = 4` plus one local spills argument 0.
+- Four locals and `return (a+b)*(c+d);` — one TOS temporary — spills local
+  0: 16 halfwords against 12 for the same four locals without it.
+
+A procedure written to stay inside four entries pays nothing for any of
+them; one written a step over pays on every access to whatever it pushed
+past. `oracle_server.ts` gates nothing on this (there is no crash behind
+it), and the cost is a cliff rather than a ceiling, so it belongs here as a
+number to design against rather than as a cap to enforce.
+
 ## Non-canonical (overlong) LEB128 fields
 
 **The crash this documents:** a fuzzed input decoded to `argCount=0`, body
