@@ -4,6 +4,7 @@
 // wrinkle that decoder was missing before this port started).
 #include "Test.h"
 #include "proc_scan.h"
+#include "wire.h"
 #include "encode_instr.h"
 #include "instr.h"
 
@@ -15,7 +16,7 @@ TEST(ScanProcBodyFindsAFlatBodysOwnEnd)
     uint8_t bytes[16];
     uint32_t len = encodeBody(body, 2, bytes, sizeof(bytes));
 
-    BodyScanResult r = scanProcBody(bytes, len, 0);
+    BodyScanResult r = scanBytes(bytes, len);
     CHECK(r.ok);
     CHECK(r.bodyBytes == len);
     CHECK(!r.needsLRSave);
@@ -34,7 +35,7 @@ TEST(ScanProcBodyStopsAtThisProceduresOwnEndNotPastIt)
     encodeInstr(proc1[0], bytes, outLen, sizeof(bytes));
     encodeInstr(proc1[1], bytes, outLen, sizeof(bytes));
 
-    BodyScanResult r = scanProcBody(bytes, outLen, 0);
+    BodyScanResult r = scanBytes(bytes, outLen);
     CHECK(r.ok);
     CHECK(r.bodyBytes == len0);
 }
@@ -45,7 +46,7 @@ TEST(ScanProcBodyDetectsCallAsNeedingLRSave)
     uint8_t bytes[16];
     uint32_t len = encodeBody(body, 2, bytes, sizeof(bytes));
 
-    BodyScanResult r = scanProcBody(bytes, len, 0);
+    BodyScanResult r = scanBytes(bytes, len);
     CHECK(r.ok);
     CHECK(r.needsLRSave);
 }
@@ -57,7 +58,7 @@ TEST(ScanProcBodyDetectsBrTableFrom2UpAsNeedingLRSave)
     uint8_t bytes[32];
     uint32_t len = encodeBody(body, 9, bytes, sizeof(bytes));
 
-    BodyScanResult r = scanProcBody(bytes, len, 0);
+    BodyScanResult r = scanBytes(bytes, len);
     CHECK(r.ok);
     CHECK(r.needsLRSave);
 }
@@ -69,7 +70,7 @@ TEST(ScanProcBodyBrTableOfOneDoesNotNeedLRSave)
     uint8_t bytes[32];
     uint32_t len = encodeBody(body, 7, bytes, sizeof(bytes));
 
-    BodyScanResult r = scanProcBody(bytes, len, 0);
+    BodyScanResult r = scanBytes(bytes, len);
     CHECK(r.ok);
     CHECK(!r.needsLRSave);
 }
@@ -79,11 +80,11 @@ TEST(ScanProcBodyDetectsClzAndRevbitsAsNeedingLRSave)
     const Instr clzBody[] = {bare(Op::CLZ), bare(Op::RETURN)};
     uint8_t bytes[16];
     uint32_t len = encodeBody(clzBody, 2, bytes, sizeof(bytes));
-    CHECK(scanProcBody(bytes, len, 0).needsLRSave);
+    CHECK(scanBytes(bytes, len).needsLRSave);
 
     const Instr revBody[] = {bare(Op::REVBITS), bare(Op::RETURN)};
     len = encodeBody(revBody, 2, bytes, sizeof(bytes));
-    CHECK(scanProcBody(bytes, len, 0).needsLRSave);
+    CHECK(scanBytes(bytes, len).needsLRSave);
 }
 
 TEST(ScanProcBodyLoopBodyClosedByBareTerminatorFindsTheOuterTail)
@@ -99,7 +100,7 @@ TEST(ScanProcBodyLoopBodyClosedByBareTerminatorFindsTheOuterTail)
     uint8_t bytes[32];
     uint32_t len = encodeBody(body, 7, bytes, sizeof(bytes));
 
-    BodyScanResult r = scanProcBody(bytes, len, 0);
+    BodyScanResult r = scanBytes(bytes, len);
     CHECK(r.ok);
     CHECK(r.bodyBytes == len);
 }
@@ -117,7 +118,7 @@ TEST(ScanProcBodyOrdinaryLoopBackEdgeClosedByBlockEndFindsTheOuterTail)
     uint8_t bytes[32];
     uint32_t len = encodeBody(body, 7, bytes, sizeof(bytes));
 
-    BodyScanResult r = scanProcBody(bytes, len, 0);
+    BodyScanResult r = scanBytes(bytes, len);
     CHECK(r.ok);
     CHECK(r.bodyBytes == len);
 }
@@ -139,7 +140,7 @@ TEST(ScanProcBodyLoopFrameCountsBothSubBlocks)
     uint8_t bytes[32];
     uint32_t len = encodeBody(body, sizeof(body) / sizeof(body[0]), bytes, sizeof(bytes));
 
-    BodyScanResult r = scanProcBody(bytes, len, 0);
+    BodyScanResult r = scanBytes(bytes, len);
     CHECK(r.ok);
     CHECK(r.bodyBytes == len);
 }
@@ -167,7 +168,7 @@ TEST(ScanProcBodyNonLastCaseClosedByBareTerminatorStillCountsAgainstN)
     encodeInstr(proc1[0], bytes, outLen, sizeof(bytes));
     encodeInstr(proc1[1], bytes, outLen, sizeof(bytes));
 
-    BodyScanResult r = scanProcBody(bytes, outLen, 0);
+    BodyScanResult r = scanBytes(bytes, outLen);
     CHECK(r.ok);
     CHECK(r.bodyBytes == len0);
 }
@@ -179,7 +180,7 @@ TEST(ScanProcBodyStackFloorReachedReportsNotOk)
     uint32_t len = encodeBody(body, 4, bytes, sizeof(bytes));
 
     register uint32_t sp asm("sp");
-    BodyScanResult r = scanProcBody(bytes, len, 0, sp); // floor pinned at the current sp: no margin at all
+    BodyScanResult r = scanBytes(bytes, len, sp); // floor pinned at the current sp: no margin at all
     CHECK(!r.ok);
     CHECK(r.failCode == RESOURCE_EXHAUSTED_SCAN_STACK); // out of stack, not a malformed body
 }
@@ -192,7 +193,7 @@ TEST(ScanProcBodyRejectsAnExtensionRangeOpcode)
     // both a malformed body and running out of stack.
     const uint8_t bytes[] = {0x80};
 
-    BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
+    BodyScanResult r = scanBytes(bytes, sizeof(bytes));
     CHECK(!r.ok);
     CHECK(r.failCode == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
@@ -202,7 +203,7 @@ TEST(ScanProcBodyAcceptsTheTopOfCoreOpcodeSpace)
     // 109-124 are the CONST small forms (isa-core.md §5.2), so the last one
     // below §5.3's escapes is ordinary core, not a hole.
     const uint8_t bytes[] = {124 /* CONST #15 */, 102 /* RETURN */};
-    BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
+    BodyScanResult r = scanBytes(bytes, sizeof(bytes));
     CHECK(r.ok);
     CHECK(r.failCode == 0);
 }
@@ -212,7 +213,7 @@ TEST(ScanProcBodyAcceptsAnAssignedEscapeSubCode)
     // MISC_UNARY #1 is CLZ (isa-core.md §5.3) — two bytes, and the walk has
     // to step over both.
     const uint8_t bytes[] = {126, 1 /* CLZ */, 102 /* RETURN */};
-    BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
+    BodyScanResult r = scanBytes(bytes, sizeof(bytes));
     CHECK(r.ok);
     CHECK(r.failCode == 0);
     CHECK(r.needsLRSave); // CLZ reaches a helper
@@ -230,7 +231,7 @@ TEST(ScanProcBodyRejectsAnUnassignedEscapeSubCode)
     };
     for(uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
     {
-        BodyScanResult r = scanProcBody(cases[i], 3, 0);
+        BodyScanResult r = scanBytes(cases[i], 3);
         CHECK(!r.ok);
         CHECK(r.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE);
     }
@@ -246,7 +247,7 @@ TEST(ScanProcBodyStepsOverADispatchAndItsFallthrough)
             109 /* CONST #0 */, 96 /* BLOCK_END */,
         102 /* RETURN */,
     };
-    BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
+    BodyScanResult r = scanBytes(bytes, sizeof(bytes));
     CHECK(r.ok);
     CHECK(r.failCode == 0);
     CHECK(r.bodyBytes == sizeof(bytes));
@@ -256,7 +257,7 @@ TEST(ScanProcBodyRejectsAnEscapeWithNoSubCodeAtAll)
 {
     // Truncated right after the escape byte: there is no sub-code to read.
     const uint8_t bytes[] = {126};
-    BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
+    BodyScanResult r = scanBytes(bytes, sizeof(bytes));
     CHECK(!r.ok);
     CHECK(r.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE);
 }
@@ -270,7 +271,7 @@ TEST(ScanProcBodyRejectsAnExtensionOpcodeAfterAValidPrefix)
     uint32_t len = encodeBody(prefix, 1, bytes, sizeof(bytes));
     bytes[len++] = 0x80;
 
-    BodyScanResult r = scanProcBody(bytes, len, 0);
+    BodyScanResult r = scanBytes(bytes, len);
     CHECK(!r.ok);
     CHECK(r.failCode == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
@@ -285,7 +286,7 @@ TEST(ScanProcBodyRunningOffTheEndIsNotAStackFloorHit)
     uint8_t bytes[16];
     uint32_t len = encodeBody(body, 2, bytes, sizeof(bytes));
 
-    BodyScanResult r = scanProcBody(bytes, len, 0);
+    BodyScanResult r = scanBytes(bytes, len);
     CHECK(!r.ok);
     CHECK(r.failCode == RESOURCE_PROGRAM_BODY_UNTERMINATED);
 }

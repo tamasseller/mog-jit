@@ -19,6 +19,7 @@ QEMU_EXEC=../fuzz/qemu_exec
 ELF="${TMPDIR:-/tmp}/ppl-bench-check.elf"
 OUT="${TMPDIR:-/tmp}/ppl-bench-check.out"
 
+mkdir -p generated
 npx ts-node --transpile-only gen-check.ts generated
 
 CXXFLAGS=(
@@ -36,6 +37,7 @@ arm-none-eabi-g++ "${CXXFLAGS[@]}" \
     "$QEMU_EXEC/vectors.S" \
     ../src/runtime/runtime.S \
     ../src/runtime/runtime.cpp \
+    ../src/runtime/bytecode_default.cpp \
     ../src/runtime/executor.cpp \
     ../src/runtime/dispatch_abi.cpp \
     ../src/compiler/window.cpp \

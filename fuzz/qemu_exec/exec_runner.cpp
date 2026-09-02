@@ -61,6 +61,7 @@
 
 #include "semihost.h"
 #include "executor.h"
+#include "bytecode_default.h"
 #include "dispatch_abi.h"
 #include "resource_codes.h"
 #include "ext_rawmem.h"
@@ -79,7 +80,7 @@ static constexpr uint32_t BATCH_LIMIT = 0x00006000u;
 static constexpr uint32_t BATCH_MAGIC = 0x50504C42u; /* "PPLB" */
 
 /* Programs are run *in place, out of flash* — Runtime::init only ever reads
- * the body bytes (its ProcSlot::bodyPtr is a read-only cursor the
+ * the body bytes (its ProcSlot::bodyHandle is a read-only cursor the
  * translator decodes from), so there is no reason to copy them into RAM
  * first. This runner used to, and the 1KB buffer that took was the real
  * ceiling on how much of a fuzz corpus the execution oracle could reach at
@@ -203,7 +204,7 @@ int main(void)
                 (uint32_t)(uintptr_t)g_codeArena, CODE_ARENA_BYTES,
                 /*stackLimit=*/(uint32_t)(uintptr_t)(g_codeArena + CODE_ARENA_BYTES),
                 /*interruptReserve=*/0)
-            .run(programBytes, len, entryArgs, argCount);
+            .run(bcMapped(programBytes), len, entryArgs, argCount);
 
         ran++;
 

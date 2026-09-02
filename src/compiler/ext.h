@@ -3,6 +3,8 @@
 
 #include <cstdint>
 
+#include "bytecode.h"
+
 namespace jitc
 {
 
@@ -12,32 +14,23 @@ class AccState; // incomplete by design
 
 constexpr uint32_t EXT_FLAG_NEEDS_LR = 1u << 0;     // clobbers lr: helper dispatch, or call-shaped
 constexpr uint32_t EXT_FLAG_CALL_SHAPED = 1u << 1;  // §11.2 call-shaped — rejected in v1
-constexpr uint32_t EXT_FLAG_ATOMIC = 1u << 2;       // emitted halfwords must stay contiguous
-constexpr uint32_t EXT_FLAG_KILLS_ACC = 1u << 3;    // §11.2 acc effect: destroys it, as ExtOpEffect.killsAcc
 
-constexpr uint32_t extDecl(uint32_t flags, int32_t tosDelta, uint32_t halfwords, uint32_t poolWords = 0)
+constexpr uint32_t extDesc(uint32_t flags, int32_t tosDelta)
 {
-    return (flags & 0xfu)
-        | (((uint32_t)tosDelta & 0xfu) << 4)
-        | ((halfwords & 0x3fu) << 8)
-        | ((poolWords & 0x3u) << 14);
+    return (flags & 0xfu) | (((uint32_t)tosDelta & 0xfu) << 4);
 }
 
-constexpr uint32_t extDeclFlags(uint32_t w) { return w & 0xfu; }
-constexpr bool extDeclHas(uint32_t w, uint32_t flag) { return (extDeclFlags(w) & flag) != 0; }
-constexpr uint32_t extDeclHalfwords(uint32_t w) { return (w >> 8) & 0x3fu; }
-constexpr uint32_t extDeclPoolWords(uint32_t w) { return (w >> 14) & 0x3u; }
+constexpr uint32_t extDescFlags(uint32_t w) { return w & 0xfu; }
+constexpr bool extDescHas(uint32_t w, uint32_t flag) { return (extDescFlags(w) & flag) != 0; }
 
 /** Sign-extended from the stored 4 bits. */
-constexpr int32_t extDeclTosDelta(uint32_t w)
+constexpr int32_t extDescTosDelta(uint32_t w)
 {
     uint32_t f = (w >> 4) & 0xfu;
     return (int32_t)(f >= 8u ? f | 0xfffffff0u : f);
 }
 
 constexpr int32_t EXT_TOS_DELTA_MIN = -8;
-constexpr uint32_t EXT_MAX_HALFWORDS = 63;
-constexpr uint32_t EXT_MAX_POOL_WORDS = 3;
 
 }
 
@@ -56,28 +49,30 @@ constexpr uint32_t EXT_SCRATCH_MASK = (1u << 1) | (1u << 2) | (1u << 3) | (1u <<
  * and invalidate the accumulator themselves; an op that has to keep a value
  * across one stages it on the operand stack, as its own maxTransient.
  *
- * What the site leaves behind is checked against its declaration once
- * emission ends: EXT_FLAG_KILLS_ACC means acc is gone, and without it an
- * accumulator that was live on entry has to still be live on exit. */
+ * The site owns the wire as well: `opcode()` is the byte the core already
+ * read, `operand()` reads the next one. An emitter must consume exactly the
+ * operands its own extDescribe did — that cursor is the core's position too,
+ * and nothing re-derives the instruction's length behind it. */
 class ExtSite
 {
     jitc::Window &window;
     jitc::AccState &acc;
-    const uint8_t *at;
-    uint32_t decl;
+    BcReader &wire;
+    uint8_t op;
+    bool lrSaved;
 
 public:
     jitc::Assembler &a;
 
-    ExtSite(jitc::Assembler &a, jitc::Window &window, jitc::AccState &acc, const uint8_t *at, uint32_t decl)
-        : window(window), acc(acc), at(at), decl(decl), a(a) {}
+    ExtSite(jitc::Assembler &a, jitc::Window &window, jitc::AccState &acc, BcReader &wire,
+        uint8_t op, bool lrSaved)
+        : window(window), acc(acc), wire(wire), op(op), lrSaved(lrSaved), a(a) {}
 
     ExtSite(const ExtSite &) = delete;
     ExtSite &operator=(const ExtSite &) = delete;
 
-    const uint8_t *opcode() const { return at; }
-    const uint8_t *operands() const { return at + 1; }
-    uint32_t declaration() const { return decl; }
+    uint8_t opcode() const { return op; }
+    uint8_t operand() { return wire.next(); }
 
     /** Slots are absolute frame-relative indices, exactly as LOAD/STORE use. */
     uint32_t depth() const;
@@ -98,8 +93,12 @@ public:
     void cHelperCall(uint32_t helperAddr);
 };
 
-/* Bound at link time, direct calls for stack bound checking */
-extern "C" uint32_t extDecode(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t *decl);
+/* Bound at link time, direct calls for stack bound checking. One call per
+ * phase, and nothing carries a description between them: extDescribe runs in
+ * the body scan, extEmit in translation with the cursor where extDescribe's
+ * was. An emitter owns everything else about its site, the literal pool
+ * included. design.md §18. */
+extern "C" bool extDescribe(uint8_t opcode, BcReader &wire, uint32_t *desc);
 extern "C" void extEmit(ExtSite &site);
 extern "C" uint32_t extHelperStackBytes();
 

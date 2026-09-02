@@ -116,7 +116,8 @@ function fixedFootprintBytes(elf: string): number
      * design.md §15's estimate, not a substitute for a map file. */
     const prefixes = ["translate", "Runtime", "CodeArena", "DispatchTable", "Assembler",
         "Window", "AccState", "decodeInstr", "scanBody", "enterDispatch", "Executor",
-        "_ZN4jitc", "_ZN8Assembler", "extEmit", "extDecode"]
+        "_ZN4jitc", "_ZN8Assembler", "extEmit", "extDescribe",
+        "bcOpen", "bcNext", "bcTell", "bcHint"]
 
     let total = 0
 

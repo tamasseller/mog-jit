@@ -246,70 +246,72 @@ void emitSliceCmp(ExtSite &site)
 }
 } // namespace
 
-extern "C" uint32_t extDecode(const uint8_t *bytes, uint32_t, uint32_t offset, uint32_t *decl)
+/* The opcode byte is the whole instruction for every op here, so neither
+ * phase reads anything off the wire. */
+extern "C" bool extDescribe(uint8_t opcode, BcReader &, uint32_t *desc)
 {
-    const uint32_t flags = EXT_FLAG_ATOMIC;
-
-    switch(bytes[offset])
+    switch(opcode)
     {
         case RAWMEM_LD8:
         case RAWMEM_LD16:
         case RAWMEM_LD32:
-            *decl = extDecl(flags, /*tosDelta=*/0, /*halfwords=*/8, /*poolWords=*/1);
-            return 1;
+            *desc = extDesc(0, /*tosDelta=*/0);
+            return true;
 
         case RAWMEM_ST8:
         case RAWMEM_ST16:
         case RAWMEM_ST32:
-            *decl = extDecl(flags, /*tosDelta=*/-1, /*halfwords=*/10, /*poolWords=*/1);
-            return 1;
+            *desc = extDesc(0, /*tosDelta=*/-1);
+            return true;
 
         case RAWMEM_MEMMOVE:
             /* NEEDS_LR: the helper reach is a BLX, and the prologue's
-             * decision to save lr was made from this flag. KILLS_ACC: it has
-             * nothing to put back in r0 afterwards, unlike the two compares
-             * below — rawmem_ext.ts declares the same. */
-            *decl = extDecl(flags | EXT_FLAG_NEEDS_LR | EXT_FLAG_KILLS_ACC, /*tosDelta=*/-3,
-                /*halfwords=*/16, /*poolWords=*/1);
-            return 1;
+             * decision to save lr is made from this flag. */
+            *desc = extDesc(EXT_FLAG_NEEDS_LR, /*tosDelta=*/-3);
+            return true;
 
         case RAWMEM_MEMCMP:
-            *decl = extDecl(flags | EXT_FLAG_NEEDS_LR, /*tosDelta=*/-3,
-                /*halfwords=*/24, /*poolWords=*/1);
-            return 1;
+            *desc = extDesc(EXT_FLAG_NEEDS_LR, /*tosDelta=*/-3);
+            return true;
 
         case RAWMEM_SLICECMP:
-            *decl = extDecl(flags | EXT_FLAG_NEEDS_LR, /*tosDelta=*/-4,
-                /*halfwords=*/28, /*poolWords=*/1);
-            return 1;
+            *desc = extDesc(EXT_FLAG_NEEDS_LR, /*tosDelta=*/-4);
+            return true;
 
         default:
-            return 0;
+            return false;
     }
 }
 
+/* Each op reserves its own AtomicBlock: its emitted halfwords have to stay
+ * contiguous, and the size covers the core's service code too. */
 extern "C" void extEmit(ExtSite &site)
 {
-    const uint8_t opcode = *site.opcode();
+    const uint8_t opcode = site.opcode();
 
     if(opcode == RAWMEM_SLICECMP)
     {
+        Assembler::AtomicBlock atomic(site.a, /*poolEntries=*/1, /*extraBytes=*/56);
         emitSliceCmp(site);
     }
     else if(opcode == RAWMEM_MEMCMP)
     {
+        Assembler::AtomicBlock atomic(site.a, /*poolEntries=*/1, /*extraBytes=*/48);
         emitMemcmp(site);
     }
     else if(opcode == RAWMEM_MEMMOVE)
     {
+        Assembler::AtomicBlock atomic(site.a, /*poolEntries=*/1, /*extraBytes=*/32);
         emitMemmove(site);
     }
     else if(opcode >= RAWMEM_ST8)
     {
+        Assembler::AtomicBlock atomic(site.a, /*poolEntries=*/1, /*extraBytes=*/20);
         emitStore(site, widthOf(opcode));
     }
     else
     {
+        Assembler::AtomicBlock atomic(site.a, /*poolEntries=*/1, /*extraBytes=*/16);
         emitLoad(site, widthOf(opcode));
     }
 }

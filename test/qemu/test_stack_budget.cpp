@@ -41,7 +41,7 @@ TEST(OnStackGenerousSucceeds)
     uint32_t len = encodeJitProgram(/*maxCallDepth=*/1, /*totalDepth=*/1, procs, 2, bytes, sizeof(bytes));
 
     uint32_t stackLimit = stackLimitAboveBss();
-    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
+    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bcMapped(bytes), len, nullptr, 0);
 
     if(r.trapped)
     {
@@ -63,7 +63,7 @@ TEST(SplitThreeDeepCallChainSucceeds)
     static uint8_t arena[GENEROUS_ARENA];
     uint32_t stackLimit = stackLimitAboveBss();
     ProgramResult r = Executor::split((uint32_t)(uintptr_t)arena, GENEROUS_ARENA, stackLimit, /*interruptReserve=*/0)
-        .run(bytes, len, nullptr, 0);
+        .run(bcMapped(bytes), len, nullptr, 0);
 
     if(r.trapped)
     {
@@ -82,7 +82,7 @@ TEST(OnStackRejectsBeforeTouchingAnything)
     uint32_t len = encodeJitProgram(/*maxCallDepth=*/1, /*totalDepth=*/1, procs, 2, bytes, sizeof(bytes));
 
     uint32_t stackLimit = currentSp(); // measured before this callee's own prologue — strictly higher than sp once inside it
-    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
+    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bcMapped(bytes), len, nullptr, 0);
 
     if(r.trapped)
     {
@@ -146,7 +146,7 @@ TEST(OnStackAcceptsAtComputedBudgetBoundary)
 
     uint32_t stackLimit = currentSp() - requiredStackBytesFor(procCount, totalDepth, maxCallDepth) - ARENA_ALLOWANCE;
 
-    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
+    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bcMapped(bytes), len, nullptr, 0);
 
     if(r.trapped)
     {
@@ -176,7 +176,7 @@ TEST(OnStackRejectsJustAboveComputedBudget)
     // claimed rather than merely inside the arena it would have got.
     uint32_t stackLimit = currentSp() - requiredStackBytesFor(procCount, totalDepth, maxCallDepth) + BOUNDARY_SLACK;
 
-    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
+    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bcMapped(bytes), len, nullptr, 0);
 
     if(r.trapped)
     {
@@ -230,7 +230,7 @@ TEST(OnStackSucceedsWithTheArenaTrimmedToWhatTheChainNeeds)
     uint32_t stackLimit = currentSp()
         - requiredStackBytesFor(procCount, totalDepth, maxCallDepth) - tightArena - TIGHT_TEST_SLACK;
 
-    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
+    ProgramResult r = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bcMapped(bytes), len, nullptr, 0);
 
     if(r.trapped)
     {
@@ -262,7 +262,7 @@ TEST(AnExtensionsDeclaredHelperStackCountsOnlyPastTheTranslatorsOwnEntry)
 
     uint32_t stackLimit = currentSp() - requiredStackBytesFor(procCount, totalDepth, maxCallDepth) - ARENA_ALLOWANCE;
 
-    ProgramResult without = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
+    ProgramResult without = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bcMapped(bytes), len, nullptr, 0);
     if(without.trapped)
     {
         writeHexTrap(without.value);
@@ -274,7 +274,7 @@ TEST(AnExtensionsDeclaredHelperStackCountsOnlyPastTheTranslatorsOwnEntry)
     // charged as a sum this is 924 bytes and would be refused, charged as the
     // deeper of the two it is 412 and fits.
     g_extHelperStackBytes = ARENA_ALLOWANCE + BOUNDARY_SLACK;
-    ProgramResult absorbed = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
+    ProgramResult absorbed = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bcMapped(bytes), len, nullptr, 0);
     g_extHelperStackBytes = 0;
     if(absorbed.trapped)
     {
@@ -285,7 +285,7 @@ TEST(AnExtensionsDeclaredHelperStackCountsOnlyPastTheTranslatorsOwnEntry)
 
     // Far enough past it that the excess alone outgrows the leftover.
     g_extHelperStackBytes = ARENA_ALLOWANCE + TRANSLATOR_ENTRY_WORST_CASE_BYTES + BOUNDARY_SLACK;
-    ProgramResult over = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
+    ProgramResult over = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bcMapped(bytes), len, nullptr, 0);
     g_extHelperStackBytes = 0;
     CHECK(over.trapped == LANDING_RESOURCE_ERROR);
     CHECK(over.value == RESOURCE_EXHAUSTED_STACK_BUDGET);
@@ -304,7 +304,7 @@ TEST(TheInterruptReserveIsAddedToTheUpFrontBudget)
 
     uint32_t stackLimit = currentSp() - requiredStackBytesFor(procCount, totalDepth, maxCallDepth) - ARENA_ALLOWANCE;
 
-    ProgramResult without = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bytes, len, nullptr, 0);
+    ProgramResult without = Executor::onStack(stackLimit, /*interruptReserve=*/0).run(bcMapped(bytes), len, nullptr, 0);
     if(without.trapped)
     {
         writeHexTrap(without.value);
@@ -314,7 +314,7 @@ TEST(TheInterruptReserveIsAddedToTheUpFrontBudget)
 
     // A real exception frame still fits, and compiles through an arena ceiling
     // that is now holding that much back from the live stack floor.
-    ProgramResult modest = Executor::onStack(stackLimit, ARMV6M_EXCEPTION_FRAME_BYTES).run(bytes, len, nullptr, 0);
+    ProgramResult modest = Executor::onStack(stackLimit, ARMV6M_EXCEPTION_FRAME_BYTES).run(bcMapped(bytes), len, nullptr, 0);
     if(modest.trapped)
     {
         writeHexTrap(modest.value);
@@ -323,7 +323,7 @@ TEST(TheInterruptReserveIsAddedToTheUpFrontBudget)
     CHECK(modest.value == 37);
 
     // Past the leftover that made it fit, the code limit drops below stackLimit.
-    ProgramResult with = Executor::onStack(stackLimit, ARENA_ALLOWANCE + BOUNDARY_SLACK).run(bytes, len, nullptr, 0);
+    ProgramResult with = Executor::onStack(stackLimit, ARENA_ALLOWANCE + BOUNDARY_SLACK).run(bcMapped(bytes), len, nullptr, 0);
     CHECK(with.trapped == LANDING_RESOURCE_ERROR);
     CHECK(with.value == RESOURCE_EXHAUSTED_STACK_BUDGET);
 }
@@ -371,7 +371,7 @@ TEST(DeepNestingStaysWithinStackBudget)
 
     static uint8_t arena[512];
     ProgramResult r = Executor::split((uint32_t)(uintptr_t)arena, sizeof(arena), deepNestingStackLimit(), /*interruptReserve=*/0)
-        .run(progBytes, progLen, nullptr, 0);
+        .run(bcMapped(progBytes), progLen, nullptr, 0);
 
     // Either outcome is healthy and worth distinguishing in the report:
     // a clean RESOURCE_ERROR proves the live checks fired before anything

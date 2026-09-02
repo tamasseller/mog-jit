@@ -1,7 +1,7 @@
 // The top-level per-procedure driver — decodes one procedure's wire bytes
 // and emits Thumb code via abi_strategy.h's real-ABI sequences.
 // Everything reaches the outside world through Runtime: slot(procIdx)
-// supplies argCount/bodyPtr/bodyBytes/needsLRSave, and compilation always
+// supplies argCount/bodyHandle/bodyBytes/needsLRSave, and compilation always
 // goes through an Assembler attached to r. A host test or QEMU
 // pre-measurement gets the same path by handing in a throwaway Runtime
 // with only the facts translateProc reads filled in.

@@ -14,11 +14,14 @@ SOURCES += test_proc_scan.cpp
 SOURCES += test_ext.cpp
 SOURCES += test_entry_args.cpp
 SOURCES += test_executor.cpp
+SOURCES += test_bytecode_reader.cpp
 
 # Test support
 SOURCES += main.cpp
 SOURCES += host_runtime_support.cpp
 SOURCES += ext_stub.cpp
+SOURCES += bc_stub.cpp
+SOURCES += bc_buffered.cpp
 SOURCES += ../encode_instr.cpp
 
 # The compiler itself (armv6.h is header-only — test_armv6_encoding.cpp

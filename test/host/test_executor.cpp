@@ -12,6 +12,7 @@
 #include "encode_instr.h"
 #include "instr.h"
 #include "host_runtime_support.h"
+#include "wire.h"
 
 using namespace jitc;
 
@@ -44,19 +45,19 @@ uint32_t buildProgram(uint32_t entryArgCount, uint32_t totalDepth, uint8_t *out,
 
 /* Declines every byte, so a program containing one is rejected — which is
  * observable only if Executor::run actually installed it. */
-uint32_t decliningDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *)
+bool decliningDescribe(uint8_t, BcReader &, uint32_t *)
 {
-    return 0;
+    return false;
 }
 
-uint32_t acceptingDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+bool acceptingDescribe(uint8_t, BcReader &, uint32_t *desc)
 {
-    *decl = extDecl(0, /*tosDelta=*/0, /*halfwords=*/2);
-    return 1;
+    *desc = extDesc(0, /*tosDelta=*/0);
+    return true;
 }
 
-const ExtStub DECLINING = {decliningDecode};
-const ExtStub ACCEPTING = {acceptingDecode};
+const ExtStub DECLINING = {decliningDescribe};
+const ExtStub ACCEPTING = {acceptingDescribe};
 
 ProgramResult enterWithExtension(const ExtStub *ext, const uint8_t *bytes, uint32_t len)
 {
@@ -64,7 +65,7 @@ ProgramResult enterWithExtension(const ExtStub *ext, const uint8_t *bytes, uint3
     ExtScope scope(ext);
     g_captured = Captured{};
     return Executor::split((uint32_t)(uintptr_t)arena, sizeof(arena), /*stackLimit=*/0, /*interruptReserve=*/0)
-        .run(bytes, len, nullptr, 0);
+        .run(bcMapped(bytes), len, nullptr, 0);
 }
 
 ProgramResult enter(uint32_t *args, uint32_t argCount, const uint8_t *bytes, uint32_t len)
@@ -75,7 +76,7 @@ ProgramResult enter(uint32_t *args, uint32_t argCount, const uint8_t *bytes, uin
      * not what these TESTs are about — the two boundary cases for that
      * check live in test/qemu/main.cpp, against a real measured sp. */
     return Executor::split((uint32_t)(uintptr_t)arena, sizeof(arena), /*stackLimit=*/0, /*interruptReserve=*/0)
-        .run(bytes, len, args, argCount);
+        .run(bcMapped(bytes), len, args, argCount);
 }
 
 } // namespace
@@ -283,7 +284,8 @@ TEST(TheFrameHashIsTheNumberTheProducerMustReproduce)
     // through the mixer: nothing else here would catch one side widening it
     // as signed.
     const uint8_t vector[] = {0x00, 0x00, 0x01, 0x00, 0x80, 102};
-    CHECK(programFrameHash(vector, sizeof(vector)) == 0x369Cu);
+    BcReader wire = wireOver(vector, sizeof(vector));
+    CHECK(programFrameHash(wire, sizeof(vector)) == 0x369Cu);
 }
 
 TEST(TheExtensionArgumentIsWhatInstallsTheExtension)
@@ -317,6 +319,6 @@ TEST(AModestDeclaredHelperStackDoesNotDisturbTheBudget)
     // whatever ASLR chose — the same reason this file's other budget cases
     // live over there.
     const FramedProgram ext = framedProgram(kExtLiteral, sizeof(kExtLiteral));
-    static const ExtStub MODEST = {acceptingDecode, nullptr, EXT_THUNK_STACK_BYTES};
+    static const ExtStub MODEST = {acceptingDescribe, nullptr, EXT_THUNK_STACK_BYTES};
     CHECK(enterWithExtension(&MODEST, ext.bytes, ext.len).trapped == LANDING_SUCCESS);
 }

@@ -13,6 +13,7 @@ g++ -std=c++17 -O1 \
     -I ../src/compiler -I ../src/runtime -I ../test \
     dump_seeds.cpp \
     ../test/encode_instr.cpp \
+    ../src/runtime/bytecode_default.cpp \
     -o dump_seeds
 
 mkdir -p seeds_raw

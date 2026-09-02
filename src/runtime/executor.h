@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "code_arena.h"
+#include "bytecode.h"
 
 class Runtime;
 
@@ -45,7 +46,7 @@ public:
         return Executor(CodeArena::sharedWithStack(stackLimit, interruptReserve));
     }
 
-    ProgramResult run(const uint8_t *programBytes, uint32_t programSize, uint32_t *args, uint32_t argCount);
+    ProgramResult run(BcHandle program, uint32_t programSize, uint32_t *args, uint32_t argCount);
 
     /* Ends the running excursion from outside it, by rewriting the ARM
      * exception frame at `exceptionFrame` so the return from that exception

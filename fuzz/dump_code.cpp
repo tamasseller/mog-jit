@@ -16,6 +16,7 @@
 #include "translate_proc.h"
 #include "decode_instr.h"
 #include "runtime.h"
+#include "envelope.h"
 
 using namespace jitc;
 
@@ -44,18 +45,17 @@ int main(int argc, char **argv)
     if(in.empty()) { fprintf(stderr, "empty input\n"); return 1; }
     const uint8_t *data = in.data();
 
-    uint32_t pos = 0;
-    jitc::decodeLeb128(data, pos, pos); // max_call_depth
-    jitc::decodeLeb128(data, pos, pos); // total_depth
-    const uint32_t procCount = jitc::decodeLeb128(data, pos, pos);
-    const uint32_t bodyOffset = pos;
+    const Envelope env = readEnvelope(data, (uint32_t)in.size());
+    const uint32_t procCount = env.procCount;
+    const uint32_t bodyOffset = env.bodyOffset;
 
     alignas(8) uint8_t storage[1024] = {};
     const uint32_t arenaBase = (uint32_t)(uintptr_t)g_arena;
 
     CodeArena arena = CodeArena::region(arenaBase, ARENA_CAPACITY, /*stackLimit=*/0);
     Runtime &rt = *new(storage) Runtime(procCount, arena);
-    if(uint32_t code = rt.loadProgram(data, (uint32_t)in.size(), bodyOffset); code != 0)
+    BcReader wire = wireAtBodies(data, (uint32_t)in.size(), bodyOffset);
+    if(uint32_t code = rt.loadProgram(wire); code != 0)
     {
         fprintf(stderr, "Runtime::loadProgram rejected this program: %08x\n", code);
         return 1;
@@ -68,7 +68,8 @@ int main(int argc, char **argv)
         memset(g_arena, 0, ARENA_CAPACITY);
         arena = CodeArena::region(arenaBase, ARENA_CAPACITY, /*stackLimit=*/0);
         new(storage) Runtime(procCount, arena);
-        rt.loadProgram(data, (uint32_t)in.size(), bodyOffset);
+        wire = wireAtBodies(data, (uint32_t)in.size(), bodyOffset);
+        rt.loadProgram(wire);
 
         const uint32_t argCount = rt.slot(i).argCount();
         const uint32_t bodyBytes = rt.slot(i).bodyBytes();

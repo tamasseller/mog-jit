@@ -1,6 +1,8 @@
 # Bytecode reader interface — plan
 
-Status: not started. Elaborates TODO.md's "JIT bytecode reader interface".
+Status: done. The interface as built is documented in design.md §1.2 and
+§18; what follows is the plan it was built from, with the deviations
+recorded below.
 
 Two changes that ride together: a link-time-injected bytecode reader, and the
 extension interface simplification that the reader's phase split exposes.
@@ -160,6 +162,71 @@ In order. Each step keeps the tree green.
    budget check.
 7. `bcHint`, and a buffered reference accessor to prove the interface.
 
+## As built
+
+Deviations from the above, and what they cost.
+
+- **`bcTell` is a fourth accessor call.** `Runtime::loadProgram` walks the
+  whole directory off one cursor and has to pin each body it passes; with
+  an opaque handle it cannot do the arithmetic itself. `bcTell(c)` names
+  the byte the cursor will read next, and is the only place a `bodyHandle`
+  comes from.
+- **`BcReader` owns end-of-body, not `BcCursor`.** The core wraps the
+  driver's cursor with the length it was opened with; `atEnd()` bounds every
+  walk, and reading past it is asserted rather than tracked — a malformed
+  program is the validator's business, so nothing is carried per byte for
+  it. `bcOpen` still carries `len`, for prefetch sizing.
+- **`extDescribe` returns a bool, not a length.** With the cursor threaded
+  through, a returned length is a second opinion on a position the core
+  already has — exactly the double bookkeeping item 6 exists to remove. It
+  also retires the "no forward progress" hazard structurally: the core
+  consumes the opcode byte itself, so a walk always advances.
+- **`extEmit` is handed no description.** The two calls are on the two
+  phases, so nothing carries a description from the scan into translation.
+  Beyond the emit budget check the plan already gives up, that also drops
+  the post-emit `tosDelta` cross-check and `EXT_FLAG_KILLS_ACC`, and with
+  them four host tests. An emitter whose window effect disagrees with its
+  own `extDescribe` is now a miscompilation rather than a diagnostic —
+  keeping the check would have meant either a cursor copy per instruction
+  in the hot loop, or a description the emitter supplies itself, which
+  checks nothing. `EXT_FLAG_NEEDS_LR`'s helper-reach assertion survives,
+  retargeted onto the prologue's own `savesLR`, which is the fact that
+  actually matters at the site.
+- **`Op::EXT` carries the opcode byte, not the description.** `decodeInstr`
+  never consults the extension: it hands back the opcode with the operands
+  unread, and whichever phase asked consumes them. That keeps one decoder
+  for both phases and takes `ext.h` out of `decode_instr`'s dependencies.
+
+### Measured
+
+`make test` (225 host, 118 QEMU), `stack-usage-check`, all 52 fuzz seeds
+through `qemu_exec` (50 matched, 0 mismatched, 2 legitimate bails), 1.5M
+executions of `fuzz/build.sh`'s ASan+UBSan driver and 21.4M of
+`build_afl.sh`'s coverage-guided one (101 corpus entries past the 52 seeds,
+0 crashes, 0 hangs), `bench/check.sh`, and the three-workload bench —
+every image agreeing with the reference VM.
+
+| | master | with the reader |
+|---|---|---|
+| cycles/sample, all three workloads | 27.79 / 19.23 / 151.00 | unchanged |
+| emitted bytes, all three workloads | 150 / 210 / 298 | unchanged |
+| cold start, pulse-trigger | 21990 | 22320 (+1.5%) |
+| cold start, iq-preamble | 27828 | 28323 (+1.8%) |
+| cold start, median5 | 51742 | 54367 (+5.1%) |
+| fixed .text, translator + runtime | 9530 B | 9292 B (−238 B) |
+| translator stack peak (deepest workload) | 1464 B | 1304 B |
+| `GUARDED_processUntilTerminator` | 416 B | 384 B (limit 432) |
+| `GUARDED_scanBody` | 160 B | 128 B (limit 160) |
+| `scanProcBody` | 144 B | 112 B (limit 488, shared with `translateProc`'s 472) |
+
+Cold start is the per-byte call, and it lands inside the "few percent" this
+plan predicted for the two smaller workloads. **LTO is not the answer here:**
+`test/qemu`'s stack-usage gate reads GCC's per-translation-unit callgraph
+(`-fcallgraph-info`), and LTO moves inlining past the point those are
+written — the bound that keeps the translator's recursion safe would stop
+being derivable. The steady state is untouched, since none of this is on a
+path compiled code takes.
+
 ## Risks
 
 - **Downstream build scripts.** Every fuzz driver builds from its own
@@ -167,10 +234,11 @@ In order. Each step keeps the tree green.
   `build_afl.sh`, `dump_code.sh`, `probe_arena.sh`, `qemu_exec/build.sh`,
   `bench/build.sh`. A new `bytecode_default.cpp` must be added to each, and
   each rebuilt and positively sanity-checked. This is where the time goes.
-- **Extension ABI break.** `ExtSite::opcode()`/`operands()` return raw
-  pointers. Three implementations in-tree (`test/ext_rawmem.cpp`,
-  `test/host/ext_stub.cpp`, `bench/ext_sampstream.cpp`) plus
-  `ext_default.cpp`. Any out-of-tree extension breaks.
+- **Extension ABI break.** `ExtSite::opcode()` now returns the byte and
+  `operands()` is `operand()`, one byte at a time off the cursor. Three
+  implementations in-tree (`test/ext_rawmem.cpp`, `test/host/ext_stub.cpp`,
+  `bench/ext_sampstream.cpp`) plus `ext_default.cpp`. Any out-of-tree
+  extension breaks.
 - **Test surface.** 18 files construct programs or call `Executor::run`
   directly; `test/corpus_programs.h`, `test/qemu/run_program.h` and
   `measure_proc.h` are the shared ones to change first.

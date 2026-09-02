@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "bytecode.h"
+
 /* The two bytes a program carries after its last procedure, binding it to the
  * validator that produced it. Not a signature and not error correction: it
  * catches an off-by-one length, a buffer nobody filled in, a stale pointer,
@@ -18,13 +20,13 @@
 
 /* FNV-1a folded rather than truncated: the prime is odd, so bit 0 survives
  * every multiply and the raw low half is little more than a parity. */
-inline uint16_t programFrameHash(const uint8_t *bytes, uint32_t len)
+inline uint16_t programFrameHash(BcReader &r, uint32_t len)
 {
     uint32_t h = PROGRAM_FRAME_SEED;
 
     for(uint32_t i = 0; i < len; i++)
     {
-        h ^= bytes[i];
+        h ^= r.next();
         h *= 0x01000193u;
     }
 
@@ -32,19 +34,21 @@ inline uint16_t programFrameHash(const uint8_t *bytes, uint32_t len)
 }
 
 /* size is the caller's own figure, and hashing exactly what it claims is what
- * checks it: a wrong one reads the stored value from the wrong place. Nothing
- * here reads past it. */
-inline bool programFrameOk(const uint8_t *bytes, uint32_t size)
+ * checks it: a wrong one reads the stored value from the wrong place. `r` is
+ * left at the end of the program either way, so a caller that goes on to read
+ * the header reopens it. */
+inline bool programFrameOk(BcReader &r, uint32_t size)
 {
     if(size <= PROGRAM_FRAME_BYTES)
     {
         return false;
     }
 
-    const uint32_t payload = size - PROGRAM_FRAME_BYTES;
-    const uint16_t stored = (uint16_t)((uint16_t)bytes[payload] | (uint16_t)((uint16_t)bytes[payload + 1] << 8));
+    const uint16_t computed = programFrameHash(r, size - PROGRAM_FRAME_BYTES);
+    const uint16_t lo = r.next();
+    const uint16_t stored = (uint16_t)(lo | (uint16_t)((uint16_t)r.next() << 8));
 
-    return programFrameHash(bytes, payload) == stored;
+    return computed == stored;
 }
 
 #endif /* JIT_ARMV6M_RUNTIME_PROGRAM_FRAME_H_ */

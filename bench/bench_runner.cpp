@@ -18,6 +18,7 @@
 
 #include "semihost.h"
 #include "executor.h"
+#include "bytecode_default.h"
 #include "dispatch_abi.h"
 #include "runtime.h"
 #include "translate_proc.h"
@@ -49,7 +50,7 @@ static uint32_t runMog(uint32_t n)
             (uint32_t)(uintptr_t)g_codeArena, CODE_ARENA_BYTES,
             /*stackLimit=*/(uint32_t)(uintptr_t)(g_codeArena + CODE_ARENA_BYTES),
             /*interruptReserve=*/0)
-        .run(g_benchProgram, g_benchProgramLen, entryArgs, 1);
+        .run(bcMapped(g_benchProgram), g_benchProgramLen, entryArgs, 1);
 
     if (r.trapped)
     {
@@ -121,7 +122,10 @@ static uint32_t emittedCodeBytes()
             /*stackLimit=*/0);
         Runtime &rt = *new (runtimeStorage) Runtime(BENCH_PROC_COUNT, arena);
 
-        if (rt.loadProgram(g_benchProgram, g_benchProgramLen, BENCH_BODY_OFFSET) != 0)
+        BcReader wire;
+        wire.open(bcMapped(g_benchProgram + BENCH_BODY_OFFSET), g_benchProgramLen - BENCH_BODY_OFFSET);
+
+        if (rt.loadProgram(wire) != 0)
         {
             semihostWriteTagged("E:", 0xffffffffu);
             semihostExit(1);

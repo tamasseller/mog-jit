@@ -1,6 +1,7 @@
 #include "translate_internal.h"
 #include "stack_budget.h"
 #include "decode_instr.h"
+#include "ext.h"
 #include "runtime.h"
 #include "abi_strategy.h"
 #include "arithmetic.h"
@@ -9,35 +10,35 @@ using R = ArmV6M::LoReg;
 
 using namespace jitc;
 
-struct FoldResult
+const Instr *Ctx::peek()
 {
-    int32_t reg;
-    uint32_t afterNext;
-
-    inline auto redirectReg(uint32_t otherwise) const 
+    if(!this->hasLookahead)
     {
-        return this->reg >= 0 ? (uint32_t)this->reg : otherwise;
+        if(this->body.atEnd())
+        {
+            return nullptr;
+        }
+
+        const bool ok = decodeInstr(this->body.next(), this->body, this->lookahead);
+        assert(ok); // GCOV_EXCL_LINE — the scan already refused every encoding this can
+        (void)ok;
+
+        this->hasLookahead = true;
     }
 
-    inline auto redirectAfterNext(uint32_t otherwise) const {
-        return this->reg >= 0 ? this->afterNext : otherwise;
-    }
-};
+    return &this->lookahead;
+}
 
-static FoldResult peekStoreFold(const uint8_t *bytes, uint32_t bytesLen, uint32_t afterPc, uint32_t tos)
+int32_t Ctx::peekStoreFold()
 {
-    if(afterPc >= bytesLen)
+    const Instr *next = this->peek();
+
+    if(next != nullptr && next->op == Op::STORE && inWindow(this->window.tos, next->target))
     {
-        return {-1, 0};
+        return (int32_t)physReg(this->consume().target);
     }
 
-    DecodedInstr d = decodeInstr(bytes, bytesLen, afterPc);
-
-    if(d.instr.op == Op::STORE && inWindow(tos, d.instr.target))
-    {
-        return {(int32_t)physReg(d.instr.target), d.next};
-    }
-    return {-1, 0};
+    return -1;
 }
 
 ArmV6M::Condition Ctx::handleComparisonEmission(const Instr &instr)
@@ -60,10 +61,10 @@ ArmV6M::Condition Ctx::handleComparisonEmission(const Instr &instr)
     {
         return emitComparison(a, this->accState.shape(), instr.op, Shape::ofImm(instr.imm));
     }
-    else 
+    else
     {
         const auto ret = emitComparison(a, this->accState.shape(), instr.op, Shape::ofReg(this->window.topReg()));
-        
+
         if(combo == Combo::POP_ACC)
         {
             this->window.finishPop(a);
@@ -73,78 +74,28 @@ ArmV6M::Condition Ctx::handleComparisonEmission(const Instr &instr)
     }
 }
 
-/* An extension that outgrows its declaration is a diagnostic here rather
- * than arena pressure and a wide-branch retry further out. */
-static void emitExtSite(Assembler &a, ExtSite &site, uint32_t budget)
+void Ctx::handleExt(uint8_t opcode)
 {
-    const uint32_t before = a.pc();
+    ExtSite site(this->a, this->window, this->accState, this->body, opcode, this->savesLR);
     extEmit(site);
-
-    if(a.pc() - before > budget)
-    {
-        runtimeBail(&a.runtime, RESOURCE_PROGRAM_EXT_UNSUPPORTED);
-    }
-}
-
-void Ctx::handleExt(const Instr &instr, uint32_t pc)
-{
-    const uint32_t decl = instr.extDecl;
-    const uint32_t budget = extDeclHalfwords(decl) * 2;
-    const uint32_t tosBefore = this->window.tos;
-    const bool accWasLive = !this->accState.shape().isPoisoned();
-
-    ExtSite site(this->a, this->window, this->accState, this->bytes + pc, decl);
-
-    if(extDeclHas(decl, EXT_FLAG_ATOMIC))
-    {
-        Assembler::AtomicBlock atomic(this->a, extDeclPoolWords(decl), budget);
-        emitExtSite(this->a, site, budget);
-    }
-    else
-    {
-        emitExtSite(this->a, site, budget);
-    }
-
-    /* The wire's total_depth was validated against this delta, and nothing
-     * re-derives it here. */
-    if(this->window.tos != tosBefore + (uint32_t)extDeclTosDelta(decl))
-    {
-        runtimeBail(&a.runtime, RESOURCE_PROGRAM_EXT_UNSUPPORTED);
-    }
-
-    /* The validator read the same declaration off the other half of the
-     * extension (ExtOpEffect.killsAcc), so an emitter that disagrees with it
-     * about acc is a diagnostic here rather than a poisoned read later. */
-    if(extDeclHas(decl, EXT_FLAG_KILLS_ACC))
-    {
-        this->accState.poison();
-    }
-    else if(accWasLive && this->accState.shape().isPoisoned())
-    {
-        runtimeBail(&a.runtime, RESOURCE_PROGRAM_EXT_UNSUPPORTED);
-    }
 }
 
 /* The one cut vertex of the translator's recursion: every cycle runs through
  * here, so one check per level bounds them all. */
-bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool isThisLoopCondBlock, DecodedInstr& out)
+bool Ctx::GUARDED_processUntilTerminator(BranchWidth width, bool isThisLoopCondBlock, Instr& out)
 {
     Runtime::DynamicStackGuard stackGuard(this->a.runtime, TRANSLATE_LEVEL_STACK_MARGIN);
 
-    while(pc < this->bytesLen)
+    while(this->peek())
     {
-        DecodedInstr decoded = decodeInstr(this->bytes, this->bytesLen, pc);
-        const Instr &instr = decoded.instr;
-        uint32_t afterInstr = decoded.next;
+        const Instr instr = this->consume();
 
         switch(instr.op)
         {
             case Op::EXT:
-            {
-                this->handleExt(instr, pc);
-                pc = afterInstr;
+                this->handleExt((uint8_t)instr.extOpcode);
                 break;
-            }
+
             case Op::CALL:
             {
                 if(instr.calleeIndex >= this->a.runtime.getProcCount())
@@ -173,13 +124,11 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
                     this->accState.producer(Shape::ofReg(ACC_REG));
                 }
 
-                pc = afterInstr;
                 break;
             }
 
             case Op::PUSH:
                 this->window.pushValue(a, this->accState);
-                pc = afterInstr;
                 break;
 
             case Op::NEG:
@@ -189,27 +138,21 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
             case Op::UXTB:
             case Op::UXTH:
             {
-                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
-                uint32_t dest = fold.redirectReg(ACC_REG);
+                uint32_t dest = foldDest(this->peekStoreFold(), ACC_REG);
                 uint32_t src = this->accState.shape().sourceReg(a, dest);
 
                 emitUnary(a, instr.op, dest, src);
                 this->accState.setClean(dest);
-                
-                pc = fold.redirectAfterNext(afterInstr);
                 break;
             }
             case Op::CLZ:
             case Op::REVBITS:
             {
                 this->accState.flush(a, ACC_REG);
-                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
-                uint32_t dest = fold.redirectReg(ACC_REG);
+                uint32_t dest = foldDest(this->peekStoreFold(), ACC_REG);
 
                 emitUnary(a, instr.op, dest, ACC_REG);
                 this->accState.setClean(dest);
-                
-                pc = fold.redirectAfterNext(afterInstr);
                 break;
             }
             case Op::LOAD:
@@ -218,24 +161,18 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
                 {
                     a.emit(ArmV6M::ldrSp(R(ACC_REG), spillImm(a, this->window.spillOffset(instr.target))));
                     this->accState.setClean(ACC_REG);
-
-                    pc = afterInstr;
                     break;
                 }
 
-                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
-                
+                const int32_t fold = this->peekStoreFold();
+
                 this->accState.producer(Shape::ofReg(physReg(instr.target)));
 
-                if(fold.reg >= 0)
+                if(fold >= 0)
                 {
-                    this->accState.flush(a, (uint32_t)fold.reg);
-
-                    pc = fold.afterNext;
-                    break;
+                    this->accState.flush(a, (uint32_t)fold);
                 }
 
-                pc = afterInstr;
                 break;
             }
 
@@ -244,37 +181,26 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
                 {
                     uint32_t r = this->accState.shape().sourceReg(a, SCRATCH_REG);
                     a.emit(ArmV6M::strSp(R(r), spillImm(a, this->window.spillOffset(instr.target))));
-
-                    pc = afterInstr;
-                    break;
                 }
                 else
                 {
                     this->accState.flush(a, physReg(instr.target));
-                    
-                    pc = afterInstr;
-                    break;
                 }
+                break;
 
             case Op::CONST:
             {
                 if(ArmV6M::fitsImm8(instr.imm))
                 {
                     this->accState.producer(Shape::ofImm(instr.imm)); // stay pending — a later consumer may fold it
-
-                    pc = afterInstr;
-                    break;
                 }
                 else
                 {
-                    FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
-                    uint32_t target = fold.redirectReg(ACC_REG);
+                    uint32_t target = foldDest(this->peekStoreFold(), ACC_REG);
                     a.materializeImm32(target, (uint32_t)instr.imm);
                     this->accState.setClean(target);
-
-                    pc = fold.redirectAfterNext(afterInstr);
-                    break;
                 }
+                break;
             }
             case Op::ADD:
             case Op::SUB:
@@ -325,21 +251,15 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
                     }
 
                     this->accState.poison();
-                    pc = afterInstr;
-                    break;
                 }
                 else if(instr.combo == Combo::PEEK_PEEK)
                 {
                     emitBinaryOp(a, instr.op, instr.combo, this->accState.shape(), operandStorage, this->window.topReg());
                     this->accState.poison();
-                    pc = afterInstr;
-                    break;
                 }
                 else
                 {
-                    FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
-
-                    const auto dest = fold.redirectReg(ACC_REG);
+                    const auto dest = foldDest(this->peekStoreFold(), ACC_REG);
                     emitBinaryOp(a, instr.op, instr.combo, this->accState.shape(), operandStorage, dest);
                     this->accState.setClean(dest);
 
@@ -347,10 +267,9 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
                     {
                         this->window.finishPop(a);
                     }
-
-                    pc = fold.redirectAfterNext(afterInstr);
-                    break;
                 }
+
+                break;
             }
             case Op::EQ:
             case Op::NE:
@@ -365,40 +284,30 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
             {
                 this->accState.producer(Shape::ofFlags(this->handleComparisonEmission(instr)));
 
-                if(afterInstr < this->bytesLen)
+                if(const Instr *la = this->peek(); la != nullptr)
                 {
-                    DecodedInstr lookahead = decodeInstr(this->bytes, this->bytesLen, afterInstr);
-                    
                     // Only the two-block form: its truthy test agrees with
                     // the comparison's own condition for a value a
                     // comparison produced, which is 0 or 1. A wider table
                     // needs the index itself.
-                    bool fusesIntoBrTable = lookahead.instr.op == Op::BR_TABLE && lookahead.instr.imm == 1;
-                    bool fusesIntoLoopExit = isThisLoopCondBlock && lookahead.instr.op == Op::BLOCK_END;
+                    bool fusesIntoBrTable = la->op == Op::BR_TABLE && la->imm == 1;
+                    bool fusesIntoLoopExit = isThisLoopCondBlock && la->op == Op::BLOCK_END;
 
                     if(fusesIntoBrTable || fusesIntoLoopExit)
                     {
-                        pc = afterInstr;
-                        break;
+                        break; // whichever it is stays standing for the next round
                     }
                 }
 
-                FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
-
-                this->accState.flush(a, fold.redirectReg(ACC_REG));
-
-                pc = fold.redirectAfterNext(afterInstr);
+                this->accState.flush(a, foldDest(this->peekStoreFold(), ACC_REG));
                 break;
             }
-            
-            case Op::LOOP: 
-                pc = this->translateLoop(afterInstr, width); 
 
-                if(pc == -1) 
+            case Op::LOOP:
+                if(!this->translateLoop(width))
                 {
                     return false;
                 }
-
                 break;
 
             case Op::BR_TABLE:
@@ -408,18 +317,21 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
                 // block of its own nor a branch out of case[1].
                 if(instr.imm != 1)
                 {
-                    pc = this->translateSwitch(afterInstr, width, instr.imm);
+                    if(!this->translateSwitch(width, instr.imm))
+                    {
+                        return false;
+                    }
                 }
-                else if(this->bytes[afterInstr] == BLOCK_END_OPCODE)
+                else if(const Instr *la = this->peek(); la != nullptr && la->op == Op::BLOCK_END)
                 {
-                    pc = this->translateIfThen(afterInstr, width);
-                }
-                else
-                {
-                    pc = this->translateIfThenElse(afterInstr, width);
-                }
+                    this->consume();
 
-                if(pc == -1) 
+                    if(!this->translateIfThen(width))
+                    {
+                        return false;
+                    }
+                }
+                else if(!this->translateIfThenElse(width)) // case[0]'s first instruction is still standing
                 {
                     return false;
                 }
@@ -430,7 +342,7 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
                 assert(isTerminator(instr));
                 assert(!this->accState.shape().isFlags() || (isThisLoopCondBlock && instr.op == Op::BLOCK_END)); // GCOV_EXCL_LINE — comparison fused into nothing; malformed program
 
-                out = DecodedInstr{.instr = instr, .next = afterInstr};
+                out = instr;
                 return true;
         }
     }
@@ -438,4 +350,3 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
     assert(false); // GCOV_EXCL_LINE
     return false;
 }
-

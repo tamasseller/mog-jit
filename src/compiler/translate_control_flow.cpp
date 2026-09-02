@@ -81,7 +81,7 @@ void Ctx::handleGlobalJump(Instr term, uint32_t tos)
  * the whole construct: no block for the empty case, and no branch out of
  * case[1] to a merge that sits immediately after it.
  */
-uint32_t Ctx::translateIfThen(uint32_t pc, BranchWidth width)
+bool Ctx::translateIfThen(BranchWidth width)
 {
     const auto entryTos = this->window.tos;
     const bool fused = this->accState.shape().isFlags();
@@ -92,22 +92,22 @@ uint32_t Ctx::translateIfThen(uint32_t pc, BranchWidth width)
 
     if(!emitBranch(a, end, ArmV6M::inverse(cond), width))
     {
-        return -1;
+        return false;
     }
 
     this->accState.poison();
 
-    DecodedInstr term;
-    if(!this->GUARDED_processUntilTerminator(pc + 1, width, false, term))
+    Instr term;
+    if(!this->GUARDED_processUntilTerminator(width, false, term))
     {
-        return -1;
+        return false;
     }
 
-    assert(term.instr.op != Op::FALLTHROUGH); // GCOV_EXCL_LINE — malformed: nothing follows the default case
+    assert(term.op != Op::FALLTHROUGH); // GCOV_EXCL_LINE — malformed: nothing follows the default case
 
-    if(isProcTerminator(term.instr))
+    if(isProcTerminator(term))
     {
-        this->handleGlobalJump(term.instr, entryTos);
+        this->handleGlobalJump(term, entryTos);
     }
     else
     {
@@ -117,7 +117,7 @@ uint32_t Ctx::translateIfThen(uint32_t pc, BranchWidth width)
     // The skip edge is the empty case, which establishes nothing (§8.7).
     this->accState.poison();
 
-    return a.bind(end) ? term.next : (uint32_t)-1;
+    return a.bind(end);
 }
 
 /**
@@ -130,7 +130,7 @@ uint32_t Ctx::translateIfThen(uint32_t pc, BranchWidth width)
  * not this one's: a merge some case left dead is one no valid program reads,
  * so there is nothing here to decide.
  */
-uint32_t Ctx::translateIfThenElse(uint32_t pc, BranchWidth width)
+bool Ctx::translateIfThenElse(BranchWidth width)
 {
     const auto entryTos = this->window.tos;
     const bool fused = this->accState.shape().isFlags();
@@ -143,25 +143,22 @@ uint32_t Ctx::translateIfThenElse(uint32_t pc, BranchWidth width)
 
     if(!emitBranch(a, otherwise, cond, width))
     {
-        return -1;
+        return false;
     }
-
-    uint32_t next = pc;
 
     for(uint32_t arm = 0; arm < 2; arm++)
     {
         this->accState.poison();
 
-        DecodedInstr term;
-        if(!this->GUARDED_processUntilTerminator(next, width, false, term))
+        Instr term;
+        if(!this->GUARDED_processUntilTerminator(width, false, term))
         {
-            return -1;
+            return false;
         }
-        next = term.next;
 
-        if(isProcTerminator(term.instr))
+        if(isProcTerminator(term))
         {
-            this->handleGlobalJump(term.instr, entryTos);
+            this->handleGlobalJump(term, entryTos);
         }
         else
         {
@@ -173,34 +170,28 @@ uint32_t Ctx::translateIfThenElse(uint32_t pc, BranchWidth width)
             // A FALLTHROUGH arm runs straight on into the next one, which
             // is where `otherwise` is bound — so it needs no branch, and no
             // literal pool spliced into the path it keeps running down.
-            if(term.instr.op == Op::BLOCK_END && !a.branchTo(end))
+            if(term.op == Op::BLOCK_END && !a.branchTo(end))
             {
-                return -1;
+                return false;
             }
-            if(term.instr.op != Op::FALLTHROUGH)
+            if(term.op != Op::FALLTHROUGH)
             {
                 a.flushPool();
             }
             if(!a.bind(otherwise))
             {
-                return -1;
+                return false;
             }
         }
     }
 
     this->accState.setClean(ACC_REG);
 
-    if(end.chain != -1 && !a.bind(end))
-    {
-        return -1;
-    }
-
-    return next;
+    return end.chain == -1 || a.bind(end);
 }
 
-uint32_t Ctx::translateSwitch(uint32_t pc, BranchWidth width, uint32_t n)
+bool Ctx::translateSwitch(BranchWidth width, uint32_t n)
 {
-
     const auto entryTos = this->window.tos;
     assert(!this->accState.shape().isFlags());
 
@@ -235,23 +226,22 @@ uint32_t Ctx::translateSwitch(uint32_t pc, BranchWidth width, uint32_t n)
 
         this->accState.poison();
 
-        DecodedInstr term;
-        if(!this->GUARDED_processUntilTerminator(pc, width, false, term))
+        Instr term;
+        if(!this->GUARDED_processUntilTerminator(width, false, term))
         {
-            return -1;
+            return false;
         }
-        pc = term.next;
 
-        if(isProcTerminator(term.instr))
+        if(isProcTerminator(term))
         {
-            this->handleGlobalJump(term.instr, entryTos);
+            this->handleGlobalJump(term, entryTos);
             a.flushPool();
             continue;
         }
 
         this->localJumpCleanup(entryTos);
 
-        if(term.instr.op == Op::FALLTHROUGH)
+        if(term.op == Op::FALLTHROUGH)
         {
             /* Runs on into case i+1, whose own code is emitted next — so no
              * branch out, and no literal pool in between (isa-core.md §4.5). */
@@ -262,7 +252,7 @@ uint32_t Ctx::translateSwitch(uint32_t pc, BranchWidth width, uint32_t n)
         {
             if(!a.branchTo(end))
             {
-                return -1;
+                return false;
             }
 
             a.flushPool();
@@ -273,86 +263,76 @@ uint32_t Ctx::translateSwitch(uint32_t pc, BranchWidth width, uint32_t n)
      * way out, and a merge no valid program may read needs no distinction. */
     this->accState.setClean(ACC_REG);
 
-    if(end.chain != -1)
-    {
-        if(!a.bind(end))
-        {
-            return -1;
-        }
-    }
-
-    return pc;
+    return end.chain == -1 || a.bind(end);
 }
 
-uint32_t Ctx::translateLoop(uint32_t pc, BranchWidth width)
+bool Ctx::translateLoop(BranchWidth width)
 {
     const auto entryTos = this->window.tos;
 
     this->accState.flushLive(a, ACC_REG);
     const auto start = a.pc();
 
-    if(DecodedInstr condTerm; this->GUARDED_processUntilTerminator(pc, width, true, condTerm))
+    Instr condTerm;
+    if(!this->GUARDED_processUntilTerminator(width, true, condTerm))
     {
-        assert(condTerm.instr.op == Op::BLOCK_END);
+        return false;
+    }
 
-        if(this->window.tos != entryTos)
+    assert(condTerm.op == Op::BLOCK_END);
+
+    if(this->window.tos != entryTos)
+    {
+        this->accState.flushLive(a, ACC_REG);
+        if(!this->window.restore(a, entryTos))
         {
-            this->accState.flushLive(a, ACC_REG);
-            if(!this->window.restore(a, entryTos))
-            {
-                runtimeBail(&a.runtime, RESOURCE_LIMIT_WINDOW_RECLAIM);
-            }
-        }
-
-        const bool fused = this->accState.shape().isFlags();
-
-        const auto cond = fused ? this->accState.shape().cond() : testAccNonzero(a, this->accState);
-
-        Label out;
-        if(!emitBranch(a, out, ArmV6M::inverse(cond), width))
-        {
-            return -1;
-        }
-
-        this->accState.poison();
-
-        if(DecodedInstr bodyTerm; this->GUARDED_processUntilTerminator(condTerm.next, width, false, bodyTerm))
-        {
-            if(bodyTerm.instr.op == Op::BLOCK_END)
-            {
-                this->localJumpCleanup(entryTos);
-                int32_t delta = (int32_t)start - (int32_t)(a.pc() + 4);
-                if(!ArmV6M::Ioff<1, 11>::isInRange(delta))
-                {
-                    runtimeBail(&a.runtime, RESOURCE_LIMIT_LOOP_BACK_EDGE);
-                    return -1;
-                }
-                a.emit(ArmV6M::b(ArmV6M::Ioff<1, 11>((int16_t)delta)));
-            }
-            else
-            {
-                this->handleGlobalJump(bodyTerm.instr, entryTos);
-            }
-
-            a.flushPool();
-
-            this->accState.poison();
-
-            if(!a.bind(out))
-            {
-                return -1;
-            }
-
-            return bodyTerm.next;
+            runtimeBail(&a.runtime, RESOURCE_LIMIT_WINDOW_RECLAIM);
         }
     }
-    
-    return -1;
+
+    const bool fused = this->accState.shape().isFlags();
+
+    const auto cond = fused ? this->accState.shape().cond() : testAccNonzero(a, this->accState);
+
+    Label out;
+    if(!emitBranch(a, out, ArmV6M::inverse(cond), width))
+    {
+        return false;
+    }
+
+    this->accState.poison();
+
+    Instr bodyTerm;
+    if(!this->GUARDED_processUntilTerminator(width, false, bodyTerm))
+    {
+        return false;
+    }
+
+    if(bodyTerm.op == Op::BLOCK_END)
+    {
+        this->localJumpCleanup(entryTos);
+        int32_t delta = (int32_t)start - (int32_t)(a.pc() + 4);
+        if(!ArmV6M::Ioff<1, 11>::isInRange(delta))
+        {
+            runtimeBail(&a.runtime, RESOURCE_LIMIT_LOOP_BACK_EDGE);
+            return false;
+        }
+        a.emit(ArmV6M::b(ArmV6M::Ioff<1, 11>((int16_t)delta)));
+    }
+    else
+    {
+        this->handleGlobalJump(bodyTerm, entryTos);
+    }
+
+    a.flushPool();
+
+    this->accState.poison();
+
+    return a.bind(out);
 }
 
 bool Ctx::translateBody(BranchWidth width)
 {
-
     abiEmitPrologue(a, savesLR);
 
     if(window.tos >= 1)
@@ -360,13 +340,11 @@ bool Ctx::translateBody(BranchWidth width)
         accState.flush(a, physReg(window.tos - 1));
     }
 
-    if(DecodedInstr decoded; GUARDED_processUntilTerminator(0, width, false, decoded))
+    if(Instr term; GUARDED_processUntilTerminator(width, false, term))
     {
-        const Instr &instr = decoded.instr;
-
-        assert(instr.op == Op::RETURN || instr.op == Op::TRAP); // GCOV_EXCL_LINE — BLOCK_END with no open block; malformed program
-        this->handleGlobalJump(instr, this->window.tos);
-        assert(decoded.next == this->bytesLen);
+        assert(term.op == Op::RETURN || term.op == Op::TRAP); // GCOV_EXCL_LINE — BLOCK_END with no open block; malformed program
+        this->handleGlobalJump(term, this->window.tos);
+        assert(this->body.atEnd());
 
         return true;
     }

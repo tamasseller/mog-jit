@@ -56,7 +56,8 @@ uses `Executor::split`.
 
 ### 1.1 Wire envelope and frame
 
-`programBytes`/`programSize` is one whole serialized program:
+`Executor::run` takes a `BcHandle` and a size — one whole serialized
+program, wherever §1.2's accessor says it lives:
 
 ```
 jit program := max_call_depth:LEB128 total_depth:LEB128
@@ -150,6 +151,78 @@ helpers reached through it are ordinary C using that stack regardless of
 where the code they emit lands.
 
 ---
+
+### 1.2 Reaching the bytecode
+
+Nothing in the tree holds a pointer into a program. Every byte arrives
+through a link-time accessor (`runtime/bytecode.h`), bound the way
+`extDescribe`/`extEmit` are and defaulting to a memory-mapped
+implementation in `bytecode_default.cpp`:
+
+```c
+typedef uint32_t BcHandle;              /* opaque; what ProcSlot::bodyHandle holds */
+
+void     bcOpen(BcCursor *c, BcHandle h, uint32_t len);
+uint8_t  bcNext(BcCursor *c);
+BcHandle bcTell(const BcCursor *c);     /* names the byte c will read next */
+void     bcHint(BcHandle h, uint32_t len);
+```
+
+It is a cursor because **every read in the tree is already strictly
+forward**. `programFrameHash`, `parseProgramHeader` and
+`Runtime::loadProgram` are sequential over the payload; `GUARDED_scanBody`
+recurses on block nesting but only ever advances; every `translate_*` entry
+resumes where the last one stopped. `translateLoop`'s back edge is computed
+from `a.pc()` — an emitted-code offset, not a bytecode one. So the position
+that used to be a `pc` parameter threaded through every decode signature is
+the cursor itself, and `DecodedInstr::next` is gone with it.
+
+That costs a **memory-mapped store nothing but the call**: a handle is the
+address and every accessor call folds to a pointer bump. What it buys is
+that a block-buffered store — SPI NOR, EEPROM, a host link — needs no
+change anywhere else: the whole program is never resident, caching and
+prefetch live entirely in the driver, and a handle is free to be an offset
+rather than an address. `test/host/bc_buffered.cpp` is a reference one that
+serves eight bytes at a time and keeps no cache;
+`test_bytecode_reader.cpp` compiles the shared corpus through both and
+requires the emitted Thumb to be identical. The cursor a driver gets is one
+word, a position — a buffer and its bookkeeping are the driver's own
+statics, which on a target with no heap is where they have to live anyway,
+and every frame holding a reader is that much shallower for it.
+
+**Byte at a time, deliberately.** A span request would have to answer one
+straddling a block boundary — short return or staging copy — which is logic
+the mapped case pays for in interface complexity and needs none of.
+
+**Two deviations from strict streaming**, both solved on the JIT side so no
+minimum buffer size leaks back into the driver:
+
+- *One-instruction lookahead.* `peekStoreFold` and the comparison-fusion
+  test decode ahead and may decline. The declined instruction is carried
+  forward in `Ctx::lookahead` into the next loop iteration rather than
+  re-read, so nothing rewinds. An `Op::EXT` lookahead leaves its operands
+  unread — the cursor sits mid-instruction until the emitter takes it.
+- *Narrow→Wide restart.* `translateProc` runs `translateBody` twice from
+  body offset 0; each pass constructs its own `Ctx` and reopens the handle.
+
+**End of body belongs to the core, not the accessor.** `BcReader` wraps a
+`BcCursor` with the length it was opened with, and `atEnd()` is what every
+walk stops on — the scan loop, and an `extDescribe` stepping over its own
+operands. Reading past it is a caller's bug, asserted and nothing more: a
+malformed program is the validator's business and a corrupt one the frame
+hash's, so no per-byte state is carried for either. `bytesLen` therefore
+stops being threaded through every decode signature too.
+
+**`bcHint` is not DMA overlap.** It is called at `Ctx::Ctx` with the
+procedure's own `bodyBytes`, and what it buys a buffered driver is that the
+Narrow→Wide second pass and any recompile after eviction become buffer hits
+with a buffer sized to the largest body. The first scan of a procedure
+cannot be hinted: `bodyBytes` is what that scan produces.
+
+**Not a program-size ceiling.** That ceiling is `ProcSlot` at 16 B per
+procedure, resident for the whole run, and this changes nothing about it —
+though `bodyHandle` becoming opaque is what would let it shrink later.
+
 
 ## 2. Memory layout
 
@@ -1712,48 +1785,48 @@ core never interprets them. The core assigns every one of its own 128 codes
 | 125-127 | core's own escapes (§5.3) | translated if the sub-code is assigned, else `RESERVED_OPCODE` |
 | ≥128 | the registered extension (§5.1, §11) | `EXT_UNKNOWN` if nothing claims it |
 
-The core needs exactly two things per extension opcode:
+**Two calls on two phases.** The core's two needs fall in different passes,
+so they are different entry points and no intermediate representation
+crosses between them.
 
-1. the **byte length**, so `proc_scan.cpp`'s body-boundary walk can step
-   over it;
-2. the **declared effect** (§11.2), so `needsLRSave` stays right without
-   knowing semantics.
+`extDescribe(opcode, wire, desc)` runs in `proc_scan.cpp`'s body-boundary
+walk. It consumes the opcode's operands off the cursor — which is what lets
+the walk step over an instruction whose encoding it does not know — and
+reports the **declared effect** (§11.2) in one packed word. `false` means
+the opcode is not this extension's, reported as `EXT_UNKNOWN`.
 
-Both come from `extDecode`, packed into one 32-bit word carried in
-`Instr`'s existing union. Packed rather than a struct because
-`triggersLRSave(const Instr&)` keeps its signature and becomes a bitfield
-read rather than an indirect call per instruction, and because
-`sizeof(Instr)` stays 8 — a `static_assert` holds it there, keeping
-`DecodedInstr` off the sret path where the margin against
-`SCAN_STACK_MARGIN` is ~56 bytes.
+`extEmit(site)` runs in translation, with the cursor sitting exactly where
+`extDescribe`'s did. It is handed **no description at all**: an emitter
+re-reads its own operands and owns everything else about the site.
 
-**Operands never reach the core.** They are literal constants (§11.3), so
-the extension re-reads them from the wire when it emits. The core carries a
-length and an effect; that is the whole coupling. It also means
+**Operands never reach the core.** They are literal constants (§11.3) that
+both phases read off the wire and neither stores, so nothing about an
+extension's operand shape can widen `Instr` — which carries only the opcode
+byte for an `Op::EXT`, in the union it already had. That is also why
 `encode_instr.cpp` structurally cannot rebuild an extension instruction
 from an `Instr`, so a fixture needing one splices its own bytes.
 
-**One gate, not three.** `Runtime::loadProgram`'s directory walk already
-decodes every instruction of every procedure before anything is translated,
-so the extension is consulted there and `decodeInstr` trusts the result. Two things
-the core checks rather than trusts, because both would turn a bad extension
-into a hang or an overrun instead of a diagnostic: a claimed length of zero
-(no forward progress), and one running past `bytesLen`.
+The price of the split is that **the cursor is shared state**: an emitter
+that consumes a different number of operand bytes than its own
+`extDescribe` did leaves the core's own position wrong. Nothing checks it.
+That is the same trade as `EXT_SCRATCH_MASK` and the register discipline
+below — the halves of one extension have to agree with each other, and the
+core is not the referee.
 
-**What the declaration carries** is only what the core cannot derive at the
-site: `NEEDS_LR` because the pre-pass consumes it before any `Assembler`
-exists, `halfwords` because an extension that outgrows it should be a
-diagnostic rather than arena pressure, `poolWords` because only the
-extension knows how many literals an `ATOMIC` block will add, `CALL_SHAPED`
-because `Executor::run`'s budget takes the *max* of a translation and an extension
-helper rather than their sum, and `tosDelta` and `KILLS_ACC` — which are
-not drivers but postconditions, checked against the real `window.tos` and
-`AccState` after emit, since the wire's `total_depth` and the validator's
-acc liveness were decided against them upstream (isa-core.md §11.2) and
-nothing re-derives either here. Everything else an earlier draft declared is derivable or belongs
-upstream: `maxTransient` is already folded into `total_depth` by
-`validate.ts`, `terminates` is honoured in exactly one of three places on
-the TS side, and the opcode byte is at `site.opcode()`.
+**What the description carries** is only what the core cannot derive at the
+site, and every field is consumed in the walk that asked for it:
+`NEEDS_LR`, because the pre-pass settles `needsLRSave` before any
+`Assembler` exists; `CALL_SHAPED`, because `Executor::run`'s budget takes
+the *max* of a translation and an extension helper rather than their sum;
+and `tosDelta`, because a net TOS push is rejected (below). Half a word,
+flags nibble and signed delta.
+
+Everything else an earlier draft declared is derivable, belongs upstream, or
+belongs to the extension: `maxTransient` is already folded into
+`total_depth` by `validate.ts`, `terminates` is honoured in exactly one of
+three places on the TS side, `halfwords`/`poolWords` moved into the
+`AtomicBlock` the emitter opens for itself (§18.2), and the opcode byte
+is at `site.opcode()`.
 
 Two rejections remain, at load with `EXT_UNSUPPORTED`: call-shaped, and a
 net TOS push (not representable on the TS side either — `extension.ts`).
@@ -1776,20 +1849,13 @@ The accumulator carries a second such invariant: **a helper reach destroys
 it.** r0 is an argument register across both `helperCall` and
 `cHelperCall`, so they poison `AccState` themselves and an op that has to
 keep a value across one stages it on the operand stack, as its own
-`maxTransient`. That is what makes the declaration checkable at all: an
-accumulator live on entry to a site that did not declare `KILLS_ACC` has to
-be live on leaving it, or the site and the validator that approved the
-program disagree, and the translator bails instead of emitting a read of a
-register the helper already clobbered.
+`maxTransient`. An op that ends in a reach and has nothing to put back says
+so by leaving the accumulator poisoned; one that recovers a result says so
+with `accIsNowIn`. The validator upstream decided acc liveness the same way
+(isa-core.md §11.2), and the two halves of an extension agreeing about it
+is that extension's business, not the core's.
 
-The cost is that `halfwords` now budgets core-emitted code too, and the
-worst case per call (2 for `push`/`pop`, 1 for a spilled `load`/`store`,
-`materializeImm32`'s own for `accInto`) depends on a `tos` the author
-cannot know. That is survivable because the check is empirical: the
-translator measures the real `a.pc()` delta and bails before anything runs,
-so miscounting is a deterministic diagnostic rather than a silent overspend.
-
-**One extension per image, bound by the linker.** `extDecode`, `extEmit`
+**One extension per image, bound by the linker.** `extDescribe`, `extEmit`
 and `extHelperStackBytes` are `extern "C"` symbols whose weak defaults live
 in `ext_default.cpp`; an extension replaces them. No table, no per-program
 argument, no pointer on the `Runtime` — direct calls are what keep the
@@ -1817,7 +1883,7 @@ cannot.
 Two words of per-excursion scratch at `RUNTIME_EXT_STATE_OFFSET`, for
 whatever an extension needs to carry (a stream cursor, a buffer base, an
 object handle). They are the sentinel `ProcSlot`'s own
-`bodyPtr`/`staticInfo`: `slots[0]` exists only so a real procedure index can
+`bodyHandle`/`staticInfo`: `slots[0]` exists only so a real procedure index can
 be offset by one, and nothing reads its static half — `sentinelLandingAddress()`
 reads its `codePtr`, and every loop over procedures runs over
 `slot(i) == slots[i+1]`. So the words are already allocated, already
@@ -1826,7 +1892,7 @@ all. The dispatch table's own initialization would zero them, next to the
 `slots[0].lastUsed` it already clears; a `static_assert` ties the offset to
 the real struct.
 
-Two rather than three, starting at `bodyPtr` rather than `lastUsed`, because
+Two rather than three, starting at `bodyHandle` rather than `lastUsed`, because
 `returnHelperTail` (§9) stamps the sentinel's `lastUsed` on every return out
 of the entry procedure. That word is therefore genuinely written and cannot
 be lent out. Trading one scratch word for a branchless return-from-entry is
@@ -1852,9 +1918,13 @@ or reversed. Note `ensurePoolRoom` is advisory rather than a reservation —
 it returns immediately when the pending set is empty — which is exactly why
 the count belongs in the type rather than in a call the author might omit.
 
-`EXT_FLAG_ATOMIC` is what wraps an extension site in one: the block covers
-the core-emitted service code as well as the extension's own, so
-`poolWords` has to be declared rather than derived.
+An extension site opens its own, as its first act in `extEmit`:
+`Assembler::AtomicBlock` is public and `ExtSite::a` is a public
+`Assembler&`, so the size sits beside the code that spends it rather than
+in a description read a phase earlier. The block covers the core-emitted
+service code as well as the extension's own — `push`/`pop`,
+`materializeImm32` for `accInto` — whose worst case depends on a `tos` the
+author cannot know, so the figure is a ceiling, not an accounting.
 
 ### 18.3 Helper reach
 
@@ -1881,9 +1951,11 @@ exactly what a veneer is for and leaves r0-r3 to the callee's arguments.
 
 `REALIGN_ENTER` clobbers r2/r3, so **a C helper takes at most two
 arguments**, in r0 and r1 — the same arity limit §3 already argues for on
-cost grounds. Both forms require `EXT_FLAG_NEEDS_LR` in the declaration,
+cost grounds. Both forms require `EXT_FLAG_NEEDS_LR` in the description,
 since a `BLX` clobbers `lr` and the prologue's decision to save it was made
-from that flag back in the pre-pass.
+from that flag back in the pre-pass; both assert on the prologue's own
+`savesLR` rather than on the flag, which is the fact that actually matters
+at the site.
 
 **Stack cost.** `extHelperStackBytes()` is the extension's declared worst
 case for its own C helper, and nothing else — `Executor::run` adds
@@ -1908,7 +1980,7 @@ the canceller passed.
 
 It works because the entry machinery already publishes everything needed:
 `enterDispatch` parks the landing address in the sentinel's `codePtr` and
-the sp to land on in its `bodyPtr` (§9), which is exactly what `trapHelper`
+the sp to land on in its `bodyHandle` (§9), which is exactly what `trapHelper`
 and `runtimeBail` read. Cancellation reuses both, changing only the tag.
 
 **Why a trampoline.** Exception return pops the stacked frame to a sp of the

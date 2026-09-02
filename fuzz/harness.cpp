@@ -16,12 +16,10 @@
 // reference result is already wired up; only the "execute buf[] and
 // compare" step is missing. Search for "TODO(execute)" below.
 //
-// Entry point is the standard `LLVMFuzzerTestOneInput(data, size)` shape
-// so this drops straight into libFuzzer or AFL++'s persistent mode once
-// either is installed (neither is available in this environment: no
-// clang, no afl-*). Until then, main() below is a small, dumb
-// mutation-based driver against the exact same function -- no coverage
-// guidance, just enough to start finding bugs today.
+// Entry point is the standard `LLVMFuzzerTestOneInput(data, size)` shape,
+// so libFuzzer and AFL++'s persistent mode both drive it directly. The
+// mutation loop further down is the fallback for a build with no coverage
+// instrumentation at all.
 
 #include <cstdint>
 #include <cstdio>
@@ -36,6 +34,7 @@
 #include "translate_proc.h"
 #include "decode_instr.h"
 #include "runtime.h"
+#include "envelope.h"
 
 using namespace jitc;
 
@@ -220,13 +219,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     g_lastWasValid = true;
 
-    uint32_t pos = 0;
-    const uint32_t maxCallDepth = jitc::decodeLeb128(data, pos, pos);
-    const uint32_t totalDepth = jitc::decodeLeb128(data, pos, pos);
-    const uint32_t procCount = jitc::decodeLeb128(data, pos, pos);
-    const uint32_t bodyOffset = pos;
-    (void)maxCallDepth;
-    (void)totalDepth;
+    const Envelope env = readEnvelope(data, (uint32_t)size);
+    const uint32_t procCount = env.procCount;
 
     if(procCount == 0 || procCount > ORACLE_MAX_PROC_COUNT) return 0;
     static_assert(sizeof(Runtime) + (ORACLE_MAX_PROC_COUNT + 1) * sizeof(ProcSlot) <= 512,
@@ -234,7 +228,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     alignas(8) uint8_t storage[512] = {};
     CodeArena arena = CodeArena::region(arenaBase(), ARENA_CAPACITY, /*stackLimit=*/0);
     Runtime &rt = *new(storage) Runtime(procCount, arena);
-    if(rt.loadProgram(data, (uint32_t)size, bodyOffset) != 0)
+    BcReader wire = wireAtBodies(data, (uint32_t)size, env.bodyOffset);
+    if(rt.loadProgram(wire) != 0)
     {
         return 0; // the JIT's own static ceiling rejected it -- graceful, not a bug
     }
@@ -260,7 +255,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     {
         arena = CodeArena::region(arenaBase(), ARENA_CAPACITY, /*stackLimit=*/0);
         new(storage) Runtime(procCount, arena);
-        rt.loadProgram(data, (uint32_t)size, bodyOffset); // already known to succeed
+        wire = wireAtBodies(data, (uint32_t)size, env.bodyOffset);
+        rt.loadProgram(wire); // already known to succeed
 
         if(setjmp(g_resourceEscape) == 0)
         {
@@ -293,12 +289,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     // is already full, so round 1 populates and later rounds are where a
     // procedure evicted out from under an earlier round gets recompiled
     // on top of a compacted arena.
-    const uint32_t arenaSize = arenaSizeFor(data, size, bodyOffset);
+    const uint32_t arenaSize = arenaSizeFor(data, size, env.bodyOffset);
     memset(g_arena, 0, arenaSize);
 
     arena = CodeArena::region(arenaBase(), arenaSize, /*stackLimit=*/0);
     new(storage) Runtime(procCount, arena);
-    if(rt.loadProgram(data, (uint32_t)size, bodyOffset) != 0)
+    wire = wireAtBodies(data, (uint32_t)size, env.bodyOffset);
+    if(rt.loadProgram(wire) != 0)
     {
         return 0;
     }
@@ -348,14 +345,19 @@ int main(void)
     {
         int len = __AFL_FUZZ_TESTCASE_LEN;
         if(len < 1) continue;
-        LLVMFuzzerTestOneInput(buf, (size_t)len);
+
+        // The testcase buffer is a 1MB shared mapping, so only an
+        // exact-sized copy gives a read past `len` a redzone to land in.
+        unsigned char *exact = (unsigned char *)malloc((size_t)len);
+        memcpy(exact, buf, (size_t)len);
+        LLVMFuzzerTestOneInput(exact, (size_t)len);
+        free(exact);
     }
     return 0;
 }
 
-// No libFuzzer/AFL++ in this environment (no clang, no afl-*) -- this is a
-// tiny, dumb mutation loop against the exact same entry point above, so
-// swapping in real coverage-guided fuzzing later is a rebuild against
+// The uninstrumented fallback: a tiny, dumb mutation loop against the exact
+// same entry point above, so coverage-guided fuzzing is a rebuild against
 // -fsanitize=fuzzer or afl-clang-fast, not a rewrite of anything here.
 #elif !defined(PPL_FUZZ_LIBFUZZER_BUILD)
 #include <cstdlib>

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include "instr.h"
 #include "program_frame.h"
+#include "bytecode_default.h"
 
 namespace jitc
 {

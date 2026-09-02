@@ -14,8 +14,10 @@
 # cycle just to get a report. Plain (non-trap) UBSan costs nothing extra
 # except when a crash actually happens, which is exactly when the extra
 # output is worth it.
-# -m32: Runtime addresses its arena and every ProcSlot::bodyPtr as a bare
+# -m32: Runtime addresses its arena and every ProcSlot::bodyHandle as a bare
 # uint32_t, so the host build has to be one where a real address fits.
+# Debian's amd64 afl++ ships no afl-compiler-rt-32.o and afl-cc then refuses
+# -m32 outright; README.md carries the AFL_PATH workaround.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -25,11 +27,13 @@ afl-clang-fast++ -std=c++17 -O1 -g \
     -fsanitize=undefined -fno-sanitize-recover=all \
     -fno-sanitize=shift-base \
     -m32 \
-    -I ../src/compiler -I ../src/runtime \
+    -I ../src/compiler -I ../src/runtime -I ../test \
     harness.cpp \
     ../src/compiler/window.cpp \
     ../src/compiler/ext.cpp \
     ../src/compiler/ext_default.cpp \
+    ../test/ext_rawmem.cpp \
+    rawmem_helper_host.cpp \
     ../src/compiler/accstate.cpp \
     ../src/compiler/assembler.cpp \
     ../src/compiler/arithmetic.cpp \
@@ -41,6 +45,7 @@ afl-clang-fast++ -std=c++17 -O1 -g \
     ../src/compiler/translate_data_flow.cpp \
     ../src/compiler/translate_control_flow.cpp \
     ../src/runtime/runtime.cpp \
+    ../src/runtime/bytecode_default.cpp \
     -o fuzz_driver_afl
 
 echo "built ./fuzz_driver_afl"

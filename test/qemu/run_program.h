@@ -10,6 +10,7 @@
 #include "instr.h"
 #include "encode_instr.h"
 #include "executor.h"
+#include "bytecode_default.h"
 
 extern "C" uint8_t __bss_end;
 
@@ -43,7 +44,7 @@ inline ProgramResult runProgram(const ProcSource *procs, uint32_t procCount, uin
 
     return Executor::split((uint32_t)(uintptr_t)arena, ARENA_BYTES,
             (uint32_t)(uintptr_t)&__bss_end + STACK_SLACK_ABOVE_BSS, /*interruptReserve=*/0)
-        .run(bytes, len, args, procs[0].argCount);
+        .run(bcMapped(bytes), len, args, procs[0].argCount);
 }
 
 } // namespace jitc

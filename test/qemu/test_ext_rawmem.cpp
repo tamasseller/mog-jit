@@ -65,7 +65,7 @@ ProgramResult runBody(const Body &body, uint32_t totalDepth)
 
     return Executor::split((uint32_t)(uintptr_t)arena, sizeof(arena),
             (uint32_t)(uintptr_t)&__bss_end + STACK_SLACK_ABOVE_BSS, /*interruptReserve=*/0)
-        .run(bytes, len, nullptr, 0);
+        .run(bcMapped(bytes), len, nullptr, 0);
 }
 
 const Instr RETURN_ONLY[] = {bare(Op::RETURN)};
