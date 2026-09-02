@@ -48,21 +48,21 @@ ArmV6M::Condition Ctx::handleComparisonEmission(const Instr &instr)
     {
         if(inWindow(this->window.tos, instr.target))
         {
-            return emitComparison(a, this->accState.peek(), instr.op, Shape::ofReg(physReg(instr.target)));
+            return emitComparison(a, this->accState.shape(), instr.op, Shape::ofReg(physReg(instr.target)));
         }
         else
         {
             a.emit(ArmV6M::ldrSp(R(SCRATCH_REG), spillImm(a, this->window.spillOffset(instr.target))));
-            return emitComparison(a, this->accState.peek(), instr.op, Shape::ofReg(SCRATCH_REG));
+            return emitComparison(a, this->accState.shape(), instr.op, Shape::ofReg(SCRATCH_REG));
         }
     }
     else if(combo == Combo::IMM_ACC)
     {
-        return emitComparison(a, this->accState.peek(), instr.op, Shape::ofImm(instr.imm));
+        return emitComparison(a, this->accState.shape(), instr.op, Shape::ofImm(instr.imm));
     }
     else 
     {
-        const auto ret = emitComparison(a, this->accState.peek(), instr.op, Shape::ofReg(this->window.topReg()));
+        const auto ret = emitComparison(a, this->accState.shape(), instr.op, Shape::ofReg(this->window.topReg()));
         
         if(combo == Combo::POP_ACC)
         {
@@ -178,7 +178,7 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
             {
                 FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
                 uint32_t dest = fold.redirectReg(ACC_REG);
-                uint32_t src = this->accState.peek().peek(a, dest);
+                uint32_t src = this->accState.shape().sourceReg(a, dest);
 
                 emitUnary(a, instr.op, dest, src);
                 this->accState.setClean(dest);
@@ -229,7 +229,7 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
             case Op::STORE:
                 if(!inWindow(this->window.tos, instr.target))
                 {
-                    uint32_t r = this->accState.peek().peek(a, SCRATCH_REG);
+                    uint32_t r = this->accState.shape().sourceReg(a, SCRATCH_REG);
                     a.emit(ArmV6M::strSp(R(r), spillImm(a, this->window.spillOffset(instr.target))));
 
                     pc = afterInstr;
@@ -303,11 +303,11 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
                 {
                     if(inWindow(this->window.tos, instr.target))
                     {
-                        emitBinaryOp(a, instr.op, instr.combo, this->accState.peek(), operandStorage, physReg(instr.target));
+                        emitBinaryOp(a, instr.op, instr.combo, this->accState.shape(), operandStorage, physReg(instr.target));
                     }
                     else
                     {
-                        emitBinaryOp(a, instr.op, instr.combo, this->accState.peek(), operandStorage, SCRATCH_REG);
+                        emitBinaryOp(a, instr.op, instr.combo, this->accState.shape(), operandStorage, SCRATCH_REG);
                         a.emit(ArmV6M::strSp(R(SCRATCH_REG), spillImm(a, this->window.spillOffset(instr.target))));
                     }
 
@@ -317,7 +317,7 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
                 }
                 else if(instr.combo == Combo::PEEK_PEEK)
                 {
-                    emitBinaryOp(a, instr.op, instr.combo, this->accState.peek(), operandStorage, this->window.topReg());
+                    emitBinaryOp(a, instr.op, instr.combo, this->accState.shape(), operandStorage, this->window.topReg());
                     this->accState.poison();
                     pc = afterInstr;
                     break;
@@ -327,7 +327,7 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
                     FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
 
                     const auto dest = fold.redirectReg(ACC_REG);
-                    emitBinaryOp(a, instr.op, instr.combo, this->accState.peek(), operandStorage, dest);
+                    emitBinaryOp(a, instr.op, instr.combo, this->accState.shape(), operandStorage, dest);
                     this->accState.setClean(dest);
 
                     if(instr.combo == Combo::POP_ACC)

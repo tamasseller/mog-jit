@@ -13,27 +13,16 @@ class Assembler;
 
 class AccState
 {
-    enum class Kind : uint8_t
-    {
-        Clean,
-        Pending,
-        Poisoned
-    };
-
-    Kind kind;
-    Shape shape;
-    uint32_t reg;
+    Shape value = Shape::ofReg(ACC_REG);
 
 public:
-    AccState(): kind(Kind::Clean), reg(ACC_REG) {}
-
-    Shape peek() const;
+    const Shape &shape() const { return value; }
 
     void flush(Assembler &e, uint32_t dstReg);
 
     void flushLive(Assembler &e, uint32_t dstReg)
     {
-        if(kind != Kind::Poisoned)
+        if(!value.isPoisoned())
         {
             flush(e, dstReg);
         }
@@ -42,8 +31,7 @@ public:
     /** True when acc's value is only readable out of `r`. */
     bool livesIn(uint32_t r) const
     {
-        if(kind == Kind::Poisoned) return false;
-        return kind == Kind::Clean ? reg == r : (!shape.isImm && shape.reg == r);
+        return value.isReg() && value.reg() == r;
     }
 
     /** Called before overwriting `r`, so acc stops depending on it. */
@@ -55,22 +43,9 @@ public:
         }
     }
 
-    void setClean(uint32_t r)
-    {
-        kind = Kind::Clean;
-        reg = r;
-    }
-
-    void producer(Shape s)
-    {
-        kind = Kind::Pending;
-        shape = s;
-    }
-
-    void poison()
-    {
-        kind = Kind::Poisoned;
-    }
+    void producer(Shape s) { value = s; }
+    void setClean(uint32_t r) { value = Shape::ofReg(r); }
+    void poison() { value = Shape::poisoned(); }
 };
 
 } // namespace jitc

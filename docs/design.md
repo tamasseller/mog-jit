@@ -911,30 +911,36 @@ one free destination, with no ternary form, so combining never chains more
 than one bytecode instruction deep in either direction. It resolves *at* the
 next instruction, never several ahead.
 
-**The state** (`compiler/src/accstate.h`):
+**The state** (`src/compiler/shape.h`) is one `Shape`: where `acc`'s value
+is right now.
 
-- **`CLEAN(reg)`**: already in a committed physical register, usually `r0`,
-  sometimes an alias left by an earlier destination-fold.
-- **`PENDING(shape)`**: not yet emitted. `shape` is `Imm(k)` (from `CONST`)
-  or `Reg(r)` (from `LOAD` *or* `POP`, one class, since both mean "the value
-  already sits in some resident register"). Classifying by *result shape*
-  rather than opcode is what keeps the table small.
-- **`POISONED`**: a write-back-in-place combo (`REG_REG`/`PEEK_PEEK`) just
-  ran, so `acc` is clobbered by convention and nothing downstream may read
-  it. `peek`/`flush` throw (assert, in the C++ port), since reading it is a
-  translator or input-program bug.
+- **`Reg(r)`**: in a physical register — usually `r0`, sometimes an alias
+  left by an earlier destination-fold, sometimes the window register a
+  `LOAD` named.
+- **`Imm(k)`**: a literal, not yet emitted anywhere (from `CONST`).
+  Classifying by *result shape* rather than opcode is what keeps the table
+  small.
+- **`Poisoned`**: nothing downstream may read `acc` — a write-back-in-place
+  combo (`REG_REG`/`PEEK_PEEK`) just ran, or a CFG edge killed it (§8.7).
+  `imm()`/`reg()` assert, since reading it is a translator or input-program
+  bug.
+
+`Shape` is also the operand type `emitBinaryOp`/`emitComparison` take, so
+folding `acc` in is passing its own shape through; only `Poisoned` never
+appears in operand position. `AccState` adds what is specific to `acc`: the
+flush that records where the value landed, and the `ACC_REG` dependency
+tracking `Window` and the extension surface drive.
 
 **The transitions**, one bytecode instruction at a time:
 
 | Current state | Next instruction | Action |
 |---|---|---|
-| `CLEAN` | a producer (`CONST`/`LOAD`/`POP`) | → `PENDING(shape)`, nothing emitted |
-| `PENDING(shape)` | a compatible consumer (table below) | emit **one** instruction folding `shape` in as the left operand; peek one more token for a following `STORE` to fold as the destination → `CLEAN(dest)` |
-| `PENDING(shape)` | no match in the table | **flush**: emit `shape`'s trivial materialization into `r0` → `CLEAN(r0)`; reprocess the next instruction fresh |
-| `CLEAN(reg)` | an ordinary consumer | emit normally reading `reg`; still peek one token for a `STORE`-fold on the destination |
+| any | a producer (`CONST`/`LOAD`) | → `Imm(k)` or `Reg(r)`, nothing emitted |
+| `Imm(k)`/`Reg(r)` | a compatible consumer (table below) | emit **one** instruction folding the shape in as the left operand; peek one more token for a following `STORE` to fold as the destination → `Reg(dest)` |
+| `Imm(k)`/`Reg(r)` | no match in the table | **flush**: materialize into `r0` → `Reg(r0)`, a self-move when it is already there and elided as one; reprocess the next instruction fresh |
 
 `LOAD rN; ADD rM; STORE rD` (three bytecode ops) fires both slots on one
-native instruction: `LOAD` → `PENDING(Reg(rN))`, then `ADD rM` folds `rN` in
+native instruction: `LOAD` → `Reg(rN)`, then `ADD rM` folds `rN` in
 as the left operand *and* peeks `STORE rD` to fold the destination, giving
 `ADDS rD, rN, rM`.
 
@@ -976,10 +982,10 @@ below: retargeting one of those computes the wrong result immediately
 rather than risking a stale value later. Pending state must always flush
 before one of these, without exception.
 
-**Operand order is the real correctness wrinkle.** `PENDING(Reg(r))` folds
+**Operand order is the real correctness wrinkle.** `Reg(r)` folds
 safely into anything regardless of the op, since it only skips a copy and
 `r` genuinely *is* what `acc` would hold, leaving the operand's position in
-the encoding unchanged. `PENDING(Imm(k))` is where order bites, and one pair
+the encoding unchanged. `Imm(k)` is where order bites, and one pair
 looks symmetric and isn't: `RSUB` (`operand − acc`) folds a pending `Imm(k)`
 cleanly via Thumb's `SUBIMM` (`Rd = Rn − imm3`, exactly `operand − k`),
 while `SUB` (`acc − operand`, wanting `k − operand`) has no matching Thumb-1
@@ -1012,7 +1018,7 @@ instructions can validly read the same `acc` value, terminated by the next
 producer *or* a write-back-in-place op. Four consequences:
 
 - A second consecutive `STORE`/`PUSH` reading the same value works
-  unmodified, since `CLEAN`'s `reg` already points at it.
+  unmodified, since the shape's own register already points at it.
 - **Rotation eviction needs no rescue instruction.** §5's window rotation
   evicting the *specific* register a fused result lives in, before a new
   producer supersedes it, looks like it would, but `accState` can only
@@ -1026,18 +1032,18 @@ producer *or* a write-back-in-place op. Four consequences:
   flush's destination and the dependency's register are the same one
   (`physReg(evictedByPush) === physReg(tos)`, both reducing to the same
   `k mod WINDOW_SIZE`), so it is a same-register self-move
-  `materializeShape` already elides.
+  `Shape::materialize` already elides.
 - **A `case` boundary is a control-flow merge, and `accState` is one
   linear, compile-time-sequential belief threaded through a single forward
-  pass.** A value left `PENDING` at the end of one case and never read again
+  pass.** A value left unmaterialized at the end of one case and never read again
   within it (a bare `CONST` immediately followed by `BLOCK_END`, as a
   `switch` returning a per-case constant produces) would survive past that
   case's close and be silently overwritten by the next case's translation,
   so whatever the merged code read afterward would be the *last* case's
   value rather than whichever case ran. `accState` is therefore flushed
   unconditionally at every case boundary (`blocks.ts`'s `closeBlockEnd`,
-  `accstate.ts`'s `flushLive`, a no-op when already `CLEAN` and safe when
-  `POISONED`, unlike a bare `flush`): cheap when nothing was pending, paid
+  `accstate.ts`'s `flushLive`, a no-op when the value is already there and
+  safe when `Poisoned`, unlike a bare `flush`): cheap when nothing was pending, paid
   only in the case that needs it.
 - **A fused branch's *opening* is a merge point too, in the other
   direction.** Branch-fusion never materializes the comparison's 0/1
@@ -1075,12 +1081,12 @@ in `acc`, not at `phys(argidx)`, which holds stale data (whatever the
 caller's shuffle left there, never overwritten, since the convention routes
 this argument through `acc`). Rather than an unconditional
 `MOVS phys(argidx), r0` before Pass 1 starts, a procedure with
-`arg_count ≥ 1` starts Pass 1 at `CLEAN(r0)` plus one standing obligation,
+`arg_count ≥ 1` starts Pass 1 at `Reg(r0)` plus one standing obligation,
 "`phys(argidx)` isn't populated yet", resolved by the same one-token
 machinery:
 
 - **`LOAD argidx`** (or any acc-destination mode reading `argidx`) as the
-  next instruction is a true no-op: it asks for exactly what `CLEAN(r0)`
+  next instruction is a true no-op: it asks for exactly what `Reg(r0)`
   holds, so nothing is emitted and the obligation is discharged free. Common
   in practice, since any small procedure reading its last argument back near
   the top hits it.
@@ -1493,7 +1499,7 @@ because its next consumer reads it as an operand, not a `STORE`. That is
 what tier 3 picks up.
 
 **Tier 3, the full §10.1 state machine** (operand-fold joins
-destination-fold, so every `LOAD`'s `PENDING(Reg(...))` folds forward into
+destination-fold, so every `LOAD`'s `Reg(...)` folds forward into
 whatever reads it instead of being flushed into `r0`):
 
 ```
@@ -1503,7 +1509,7 @@ whatever reads it instead of being flushed into `r0`):
         MOVS  r6, #1
 
 L_cond:                             ; LOAD 0 ; GE_U #0x80 ; BLOCK_END, all
-                                    ; three fused: LOAD → PENDING(Reg(r7)),
+                                    ; three fused: LOAD → Reg(r7),
                                     ; folded as CMP's left operand, then
                                     ; branch-fused, v never touches r0
         CMP   r7, #0x80
@@ -1523,7 +1529,7 @@ L_body:                             ; LOAD 0 ; SHR #7 ; STORE 0, all three
         ADDS  r6, r6, #1
         B     L_cond
 
-L_exit:                             ; LOAD 1 → PENDING(Reg(r6)), but
+L_exit:                             ; LOAD 1 → Reg(r6), but
                                     ; RETURN's ABI needs the value
                                     ; specifically in r0, so flush
         MOVS  r0, r6

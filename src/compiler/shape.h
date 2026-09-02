@@ -1,38 +1,58 @@
-// jit-armv6m/compiler — a value's location right now. Two plain fields
-// with a discriminant instead of a tagged union — same information, no
-// ambiguity.
+// jit-armv6m/compiler — where a value is right now: in a register, still an
+// unmaterialized literal, or nowhere at all.
 #ifndef JIT_ARMV6M_COMPILER_SHAPE_H_
 #define JIT_ARMV6M_COMPILER_SHAPE_H_
 
 #include <cstdint>
+#include <cassert>
 
 namespace jitc
 {
 
 class Assembler;
 
-struct Shape
+class Shape
 {
-    bool isImm = true;
-
-    union 
+    enum class Kind : uint8_t
     {
-        int32_t imm = 0;
-        uint32_t reg;   
+        Imm,
+        Reg,
+        Poisoned
     };
 
-    static constexpr Shape ofImm(int32_t v)
+    constexpr Shape(Kind k, uint32_t v): kind(k), bits(v) {}
+
+    Kind kind;
+    uint32_t bits;
+
+public:
+    constexpr Shape(): Shape(Kind::Poisoned, 0) {}
+
+    static constexpr Shape ofImm(int32_t v) { return Shape(Kind::Imm, (uint32_t)v); }
+    static constexpr Shape ofReg(uint32_t r) { return Shape(Kind::Reg, r); }
+    static constexpr Shape poisoned() { return Shape(Kind::Poisoned, 0); }
+
+    bool isImm() const { return kind == Kind::Imm; }
+    bool isReg() const { return kind == Kind::Reg; }
+    bool isPoisoned() const { return kind == Kind::Poisoned; }
+
+    int32_t imm() const
     {
-        return Shape{.isImm = true, .imm = v};
+        assert(kind == Kind::Imm); // GCOV_EXCL_LINE — a translator-logic bug, never legitimate input
+        return (int32_t)bits;
     }
 
-    static constexpr Shape ofReg(uint32_t r)
+    uint32_t reg() const
     {
-        return Shape{.isImm = false, .reg = r};
+        assert(kind == Kind::Reg); // GCOV_EXCL_LINE — a translator-logic bug, never legitimate input
+        return bits;
     }
 
+    /** Puts the value in `dstReg`. */
     void materialize(Assembler &a, uint32_t dstReg) const;
-    uint32_t peek(Assembler &a, uint32_t scratchReg) const;
+
+    /** A register the value can be read from — `scratchReg` only if one must be made. */
+    uint32_t sourceReg(Assembler &a, uint32_t scratchReg) const;
 };
 
 } // namespace jitc

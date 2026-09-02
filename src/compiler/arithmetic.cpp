@@ -78,7 +78,7 @@ static void addOrSubWithImm(AddSubRsubOp which, Assembler &e, uint32_t dest, uin
 
 void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const Shape &rhs, uint32_t dest)
 {
-    if(accShape.isImm && rhs.isImm)
+    if(accShape.isImm() && rhs.isImm())
     {
         /*
         * Degenerate case - foldable constants, lowerer should have caught it but easier 
@@ -86,16 +86,16 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
         */
         switch (op)
         {
-            case Op::ADD:  e.materializeImm32(dest, (uint32_t)accShape.imm + (uint32_t)rhs.imm); break;
-            case Op::SUB:  e.materializeImm32(dest, (uint32_t)accShape.imm - (uint32_t)rhs.imm); break;
-            case Op::RSUB: e.materializeImm32(dest, (uint32_t)rhs.imm - (uint32_t)accShape.imm); break;
-            case Op::MUL:  e.materializeImm32(dest, (uint32_t)accShape.imm * (uint32_t)rhs.imm); break;
-            case Op::AND:  e.materializeImm32(dest, accShape.imm & rhs.imm); break;
-            case Op::OR:   e.materializeImm32(dest, accShape.imm | rhs.imm); break;
-            case Op::XOR:  e.materializeImm32(dest, accShape.imm ^ rhs.imm); break;
-            case Op::SHL:  e.materializeImm32(dest, (uint32_t)accShape.imm << (rhs.imm & 31)); break;
-            case Op::SHR:  e.materializeImm32(dest, (uint32_t)accShape.imm >> (rhs.imm & 31)); break;
-            case Op::ASR:  e.materializeImm32(dest, (uint32_t)((int32_t)accShape.imm >> (rhs.imm & 31))); break;
+            case Op::ADD:  e.materializeImm32(dest, (uint32_t)accShape.imm() + (uint32_t)rhs.imm()); break;
+            case Op::SUB:  e.materializeImm32(dest, (uint32_t)accShape.imm() - (uint32_t)rhs.imm()); break;
+            case Op::RSUB: e.materializeImm32(dest, (uint32_t)rhs.imm() - (uint32_t)accShape.imm()); break;
+            case Op::MUL:  e.materializeImm32(dest, (uint32_t)accShape.imm() * (uint32_t)rhs.imm()); break;
+            case Op::AND:  e.materializeImm32(dest, accShape.imm() & rhs.imm()); break;
+            case Op::OR:   e.materializeImm32(dest, accShape.imm() | rhs.imm()); break;
+            case Op::XOR:  e.materializeImm32(dest, accShape.imm() ^ rhs.imm()); break;
+            case Op::SHL:  e.materializeImm32(dest, (uint32_t)accShape.imm() << (rhs.imm() & 31)); break;
+            case Op::SHR:  e.materializeImm32(dest, (uint32_t)accShape.imm() >> (rhs.imm() & 31)); break;
+            case Op::ASR:  e.materializeImm32(dest, (uint32_t)((int32_t)accShape.imm() >> (rhs.imm() & 31))); break;
             default: assert(false);
         }
     }
@@ -104,29 +104,29 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
         /*
          * Addition and substraction are well supported, many options here.
          */
-        if(!accShape.isImm && !rhs.isImm)
+        if(!accShape.isImm() && !rhs.isImm())
         {
             /*
              * If both are registers the most general form is used.
              */
             switch(op)
             {
-                case Op::ADD:  e.emit(ArmV6M::adds(R((uint16_t)dest), R((uint16_t)accShape.reg), R((uint16_t)rhs.reg))); break;
-                case Op::SUB:  e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)accShape.reg), R((uint16_t)rhs.reg))); break;
-                case Op::RSUB: e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)rhs.reg), R((uint16_t)accShape.reg))); break;
+                case Op::ADD:  e.emit(ArmV6M::adds(R((uint16_t)dest), R((uint16_t)accShape.reg()), R((uint16_t)rhs.reg()))); break;
+                case Op::SUB:  e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)accShape.reg()), R((uint16_t)rhs.reg()))); break;
+                case Op::RSUB: e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)rhs.reg()), R((uint16_t)accShape.reg()))); break;
                 default: assert(false); // GCOV_EXCL_LINE
             }
         }
-        else if(rhs.isImm)
+        else if(rhs.isImm())
         {
             /*
              * Right hand side is constant left is register, asymmetric, SUB vs RSUB distinction must be kept.
              */
             switch(op)
             {
-                case Op::ADD:  addOrSubWithImm(AddSubRsubOp::Add, e, dest, accShape.reg, rhs.imm); break;
-                case Op::SUB:  addOrSubWithImm(AddSubRsubOp::Sub, e, dest, accShape.reg, rhs.imm); break;
-                case Op::RSUB: addOrSubWithImm(AddSubRsubOp::Rsub, e, dest, accShape.reg, rhs.imm); break;
+                case Op::ADD:  addOrSubWithImm(AddSubRsubOp::Add, e, dest, accShape.reg(), rhs.imm()); break;
+                case Op::SUB:  addOrSubWithImm(AddSubRsubOp::Sub, e, dest, accShape.reg(), rhs.imm()); break;
+                case Op::RSUB: addOrSubWithImm(AddSubRsubOp::Rsub, e, dest, accShape.reg(), rhs.imm()); break;
                 default: assert(false); // GCOV_EXCL_LINE
             }
         }
@@ -136,12 +136,12 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
              * Left hand side is constant, still asymmetric, but can use the same templates as the above,
              * with SUB vs RSUB exchanged.
              */
-            assert(accShape.isImm);
+            assert(accShape.isImm());
             switch(op)
             {
-                case Op::ADD:  addOrSubWithImm(AddSubRsubOp::Add, e, dest, rhs.reg, accShape.imm); break;
-                case Op::SUB:  addOrSubWithImm(AddSubRsubOp::Rsub, e, dest, rhs.reg, accShape.imm); break;
-                case Op::RSUB: addOrSubWithImm(AddSubRsubOp::Sub, e, dest, rhs.reg, accShape.imm); break;
+                case Op::ADD:  addOrSubWithImm(AddSubRsubOp::Add, e, dest, rhs.reg(), accShape.imm()); break;
+                case Op::SUB:  addOrSubWithImm(AddSubRsubOp::Rsub, e, dest, rhs.reg(), accShape.imm()); break;
+                case Op::RSUB: addOrSubWithImm(AddSubRsubOp::Sub, e, dest, rhs.reg(), accShape.imm()); break;
                 default: assert(false); // GCOV_EXCL_LINE
             }
         }
@@ -153,11 +153,11 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
             /*
              * Shift by literal is also well supported, some special cases here.
              */
-            assert(rhs.isImm); // GCOV_EXCL_LINE
+            assert(rhs.isImm()); // GCOV_EXCL_LINE
 
-            const auto m = accShape.peek(e, SCRATCH_REG);
+            const auto m = accShape.sourceReg(e, SCRATCH_REG);
 
-            uint32_t shift = (uint32_t)rhs.imm & 31u;
+            uint32_t shift = (uint32_t)rhs.imm() & 31u;
             switch(op)
             {
                 case Op::SHL:
@@ -180,7 +180,7 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
              * Shift by register, non-commutative, only a <<= b form isn exists, mov + shift (either order) 
              * in general, aliasing hazard.
              */
-            auto m = rhs.peek(e, SCRATCH_REG);
+            auto m = rhs.sourceReg(e, SCRATCH_REG);
             auto t = (m == dest) ? ACC_REG : dest;
 
             accShape.materialize(e, t);
@@ -205,11 +205,11 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
          * Commutative register ops, only a *= b form isn exists, mov + op in that order in general, 
          * aliasing handled by swapping.
          */
-        auto m = rhs.peek(e, SCRATCH_REG);
+        auto m = rhs.sourceReg(e, SCRATCH_REG);
 
         if(m == dest)
         {
-            const auto t = accShape.peek(e, ACC_REG);
+            const auto t = accShape.sourceReg(e, ACC_REG);
 
             switch(op)
             {
@@ -270,30 +270,30 @@ ArmV6M::Condition emitComparison(Assembler &a, Shape left, Op op, const Shape &o
     uint32_t idx = (uint32_t)op - (uint32_t)Op::EQ;
     ArmV6M::Condition condition = DIRECT_CONDITION[idx];
 
-    if(left.isImm && !operand.isImm && ArmV6M::fitsImm8(left.imm))
+    if(left.isImm() && !operand.isImm() && ArmV6M::fitsImm8(left.imm()))
     {
-        a.emit(ArmV6M::cmp(R((uint16_t)operand.reg), ArmV6M::Imm<8>((uint16_t)left.imm)));
+        a.emit(ArmV6M::cmp(R((uint16_t)operand.reg()), ArmV6M::Imm<8>((uint16_t)left.imm())));
         return MIRRORED_CONDITION[idx];
     }
 
-    if(left.isImm)
+    if(left.isImm())
     {
         left.materialize(a, ACC_REG);
         left = Shape::ofReg(ACC_REG);
     }
 
-    if(!operand.isImm)
+    if(!operand.isImm())
     {
-        a.emit(ArmV6M::cmp(R((uint16_t)left.reg), R((uint16_t)operand.reg)));
+        a.emit(ArmV6M::cmp(R((uint16_t)left.reg()), R((uint16_t)operand.reg())));
     }
-    else if(ArmV6M::fitsImm8(operand.imm))
+    else if(ArmV6M::fitsImm8(operand.imm()))
     {
-        a.emit(ArmV6M::cmp(R((uint16_t)left.reg), ArmV6M::Imm<8>((uint16_t)operand.imm)));
+        a.emit(ArmV6M::cmp(R((uint16_t)left.reg()), ArmV6M::Imm<8>((uint16_t)operand.imm())));
     }
     else
     {
         operand.materialize(a, SCRATCH_REG);
-        a.emit(ArmV6M::cmp(R((uint16_t)left.reg), R((uint16_t)SCRATCH_REG)));
+        a.emit(ArmV6M::cmp(R((uint16_t)left.reg()), R((uint16_t)SCRATCH_REG)));
     }
     return condition;
 }

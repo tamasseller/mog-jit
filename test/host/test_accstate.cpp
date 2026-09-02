@@ -11,11 +11,11 @@ using namespace jitc;
 TEST(startsCleanInAccReg)
 {
     AccState acc;
-    Shape s = acc.peek();
-    CHECK(!s.isImm && s.reg == ACC_REG);
+    Shape s = acc.shape();
+    CHECK(!s.isImm() && s.reg() == ACC_REG);
 }
 
-TEST(producerThenPeekReturnsPendingShapeUnmaterialized)
+TEST(producerLeavesTheShapePendingUnmaterialized)
 {
     TestAssembler e_ta(4);
     Assembler &e = e_ta.a;
@@ -23,9 +23,9 @@ TEST(producerThenPeekReturnsPendingShapeUnmaterialized)
     AccState acc;
     acc.producer(Shape::ofImm(42));
     CHECK(e.halfwordCount() == 0); // producer alone never emits
-    Shape s = acc.peek();
-    CHECK(s.isImm && s.imm == 42);
-    CHECK(e.halfwordCount() == 0); // peek doesn't discharge it either
+    Shape s = acc.shape();
+    CHECK(s.isImm() && s.imm() == 42);
+    CHECK(e.halfwordCount() == 0); // reading it doesn't discharge it either
 }
 
 TEST(flushMaterializesPendingAndBecomesClean)
@@ -38,8 +38,8 @@ TEST(flushMaterializesPendingAndBecomesClean)
     acc.flush(e, 5);
     CHECK(e.halfwordCount() == 1);
     CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(5), ArmV6M::Imm<8>(3))); // MOVS r5, #3
-    Shape s = acc.peek();
-    CHECK(!s.isImm && s.reg == 5);
+    Shape s = acc.shape();
+    CHECK(!s.isImm() && s.reg() == 5);
 }
 
 TEST(flushOfAlreadyCleanSameRegisterIsANoOp)
@@ -74,14 +74,14 @@ TEST(setCleanThenPoisonThenProducerSupersedes)
 {
     AccState acc;
     acc.setClean(7);
-    Shape s = acc.peek();
-    CHECK(!s.isImm && s.reg == 7);
+    Shape s = acc.shape();
+    CHECK(!s.isImm() && s.reg() == 7);
 
     acc.poison();
-    // peek()/flush() on a poisoned state would assert (a translator-logic
+    // Reading a poisoned value's imm()/reg() asserts (a translator-logic
     // bug, never legitimate input) — not exercised here.
 
     acc.producer(Shape::ofReg(2));
-    Shape s2 = acc.peek(); // producer supersedes Poisoned without issue
-    CHECK(!s2.isImm && s2.reg == 2);
+    Shape s2 = acc.shape(); // producer supersedes Poisoned without issue
+    CHECK(!s2.isImm() && s2.reg() == 2);
 }
