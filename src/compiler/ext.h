@@ -13,24 +13,25 @@ class AccState; // incomplete by design
 constexpr uint32_t EXT_FLAG_NEEDS_LR = 1u << 0;     // clobbers lr: helper dispatch, or call-shaped
 constexpr uint32_t EXT_FLAG_CALL_SHAPED = 1u << 1;  // §11.2 call-shaped — rejected in v1
 constexpr uint32_t EXT_FLAG_ATOMIC = 1u << 2;       // emitted halfwords must stay contiguous
+constexpr uint32_t EXT_FLAG_KILLS_ACC = 1u << 3;    // §11.2 acc effect: destroys it, as ExtOpEffect.killsAcc
 
 constexpr uint32_t extDecl(uint32_t flags, int32_t tosDelta, uint32_t halfwords, uint32_t poolWords = 0)
 {
-    return (flags & 0x7u)
-        | (((uint32_t)tosDelta & 0xfu) << 3)
-        | ((halfwords & 0x3fu) << 7)
-        | ((poolWords & 0x3u) << 13);
+    return (flags & 0xfu)
+        | (((uint32_t)tosDelta & 0xfu) << 4)
+        | ((halfwords & 0x3fu) << 8)
+        | ((poolWords & 0x3u) << 14);
 }
 
-constexpr uint32_t extDeclFlags(uint32_t w) { return w & 0x7u; }
+constexpr uint32_t extDeclFlags(uint32_t w) { return w & 0xfu; }
 constexpr bool extDeclHas(uint32_t w, uint32_t flag) { return (extDeclFlags(w) & flag) != 0; }
-constexpr uint32_t extDeclHalfwords(uint32_t w) { return (w >> 7) & 0x3fu; }
-constexpr uint32_t extDeclPoolWords(uint32_t w) { return (w >> 13) & 0x3u; }
+constexpr uint32_t extDeclHalfwords(uint32_t w) { return (w >> 8) & 0x3fu; }
+constexpr uint32_t extDeclPoolWords(uint32_t w) { return (w >> 14) & 0x3u; }
 
 /** Sign-extended from the stored 4 bits. */
 constexpr int32_t extDeclTosDelta(uint32_t w)
 {
-    uint32_t f = (w >> 3) & 0xfu;
+    uint32_t f = (w >> 4) & 0xfu;
     return (int32_t)(f >= 8u ? f | 0xfffffff0u : f);
 }
 
@@ -51,7 +52,13 @@ constexpr uint32_t EXT_SCRATCH_MASK = (1u << 1) | (1u << 2) | (1u << 3) | (1u <<
  *
  * Every call that writes a window register first resolves an accumulator
  * living in it. Writing r0 outside accInto is a contract violation unless
- * followed by accIsNowIn or accInvalidate. */
+ * followed by accIsNowIn or accInvalidate. Both helper reaches clobber r0
+ * and invalidate the accumulator themselves; an op that has to keep a value
+ * across one stages it on the operand stack, as its own maxTransient.
+ *
+ * What the site leaves behind is checked against its declaration once
+ * emission ends: EXT_FLAG_KILLS_ACC means acc is gone, and without it an
+ * accumulator that was live on entry has to still be live on exit. */
 class ExtSite
 {
     jitc::Window &window;

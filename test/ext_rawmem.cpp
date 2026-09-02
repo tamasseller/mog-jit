@@ -266,8 +266,10 @@ extern "C" uint32_t extDecode(const uint8_t *bytes, uint32_t, uint32_t offset, u
 
         case RAWMEM_MEMMOVE:
             /* NEEDS_LR: the helper reach is a BLX, and the prologue's
-             * decision to save lr was made from this flag. */
-            *decl = extDecl(flags | EXT_FLAG_NEEDS_LR, /*tosDelta=*/-3,
+             * decision to save lr was made from this flag. KILLS_ACC: it has
+             * nothing to put back in r0 afterwards, unlike the two compares
+             * below — rawmem_ext.ts declares the same. */
+            *decl = extDecl(flags | EXT_FLAG_NEEDS_LR | EXT_FLAG_KILLS_ACC, /*tosDelta=*/-3,
                 /*halfwords=*/16, /*poolWords=*/1);
             return 1;
 

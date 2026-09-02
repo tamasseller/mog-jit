@@ -91,6 +91,7 @@ void Ctx::handleExt(const Instr &instr, uint32_t pc)
     const uint32_t decl = instr.extDecl;
     const uint32_t budget = extDeclHalfwords(decl) * 2;
     const uint32_t tosBefore = this->window.tos;
+    const bool accWasLive = !this->accState.shape().isPoisoned();
 
     ExtSite site(this->a, this->window, this->accState, this->bytes + pc, decl);
 
@@ -107,6 +108,18 @@ void Ctx::handleExt(const Instr &instr, uint32_t pc)
     /* The wire's total_depth was validated against this delta, and nothing
      * re-derives it here. */
     if(this->window.tos != tosBefore + (uint32_t)extDeclTosDelta(decl))
+    {
+        runtimeBail(&a.runtime, RESOURCE_PROGRAM_EXT_UNSUPPORTED);
+    }
+
+    /* The validator read the same declaration off the other half of the
+     * extension (ExtOpEffect.killsAcc), so an emitter that disagrees with it
+     * about acc is a diagnostic here rather than a poisoned read later. */
+    if(extDeclHas(decl, EXT_FLAG_KILLS_ACC))
+    {
+        this->accState.poison();
+    }
+    else if(accWasLive && this->accState.shape().isPoisoned())
     {
         runtimeBail(&a.runtime, RESOURCE_PROGRAM_EXT_UNSUPPORTED);
     }

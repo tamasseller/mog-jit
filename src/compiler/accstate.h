@@ -29,6 +29,9 @@ public:
         }
     }
 
+    /** True while acc holds a value at all — in a register, pending, or in the flags. */
+    bool isLive() const { return !value.isPoisoned(); }
+
     /** True when acc's value is only readable out of `r`. */
     bool livesIn(uint32_t r) const
     {

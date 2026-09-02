@@ -85,9 +85,13 @@ void ExtSite::accInvalidate()
     acc.poison();
 }
 
+/* r0-r3 and r12 are gone across either reach, r0 among them, so the
+ * accumulator does not survive one on its own. */
 void ExtSite::helperCall(uint32_t helperAddr)
 {
     assert(extDeclHas(decl, EXT_FLAG_NEEDS_LR)); // GCOV_EXCL_LINE
+
+    acc.poison();
 
     a.materializeImm32(ENTRY_JUMP_REG, helperAddr);
     a.emit(ArmV6M::blx(ArmV6M::AnyReg((uint16_t)ENTRY_JUMP_REG)));
@@ -96,6 +100,8 @@ void ExtSite::helperCall(uint32_t helperAddr)
 void ExtSite::cHelperCall(uint32_t helperAddr)
 {
     assert(extDeclHas(decl, EXT_FLAG_NEEDS_LR)); // GCOV_EXCL_LINE
+
+    acc.poison();
 
     a.materializeImm32(ENTRY_JUMP_REG, helperAddr);
     a.emit(ArmV6M::mov(ArmV6M::AnyReg(12), ArmV6M::AnyReg(ENTRY_JUMP_REG)));

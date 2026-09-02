@@ -89,33 +89,6 @@ TEST(LoopSumToOne)
     CHECK(r.value == 1);
 }
 
-// ---- The LOOP-body half of the accState-merge-boundary bug that
-// test_br_table.cpp's AccStateMerge{False,True}Case pin down on the dispatch
-// side: the fused condition closing LOOP's own condition sub-block has the
-// identical gap. x = 7 (not 0/1) is forced to 0
-// right inside the body instead of decremented normally, so the loop runs its
-// body exactly once.
-static const Instr accStateMergeInLoopProc0[] = {
-    CONST(7), PUSH(),                        // slot0 = 7 (stale sentinel)
-    CONST(0), PUSH(),                        // slot1 = probe target
-    bare(Op::LOOP),
-        LOAD(0), opImm(Op::GT_S, 0), bare(Op::BLOCK_END),
-        STORE(1),
-        CONST(0), STORE(0),
-    bare(Op::BLOCK_END),
-    LOAD(1),
-    bare(Op::RETURN),
-};
-
-TEST(AccStateMergeInLoopBody)
-{
-    ProcSource procs[] = {PROC(0, accStateMergeInLoopProc0)};
-    ProgramResult r = runProgram(procs, 1, nullptr);
-
-    CHECK(!r.trapped);
-    CHECK(r.value == 1);
-}
-
 // ---- LOOP back-edge forced into the long-branch form. Padded with 20
 // bare(Op::NOT)s inside the loop body (mirroring LongFormBranchGuard*'s
 // technique, but applied to translateLoop's own back-edge rather than an

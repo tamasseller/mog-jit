@@ -748,6 +748,31 @@ const extInLoop: RtlProgram = {
     ],
 }
 
+/** MEMMOVE where acc is already dead going in: a dispatch case starts with
+ *  acc not live (isa-core.md §8.7), and a kill op there has nothing to
+ *  destroy. The arm re-establishes one before the merge, which is what
+ *  makes the whole thing legal. */
+const extKillDeadAcc: RtlProgram = {
+    procedures: [
+        {
+            argCount: 0,
+            body: ret([
+                ...st(0x10, 0x0a0b0c0d, "ST32"),
+                { op: "CONST", imm: 0 },
+                { op: "BR_TABLE", imm: 1 },
+                    { op: "CONST", imm: 0x10 }, { op: "PUSH" },   // src
+                    { op: "CONST", imm: 0x20 }, { op: "PUSH" },   // dst start
+                    { op: "CONST", imm: 0x24 }, { op: "PUSH" },   // dst end
+                    extInstr("MEMMOVE", []),
+                    ...ld(0x20, "LD32"),
+                    { op: "BLOCK_END" },
+                    { op: "CONST", imm: 0 },
+                    { op: "BLOCK_END" },
+            ]),
+        },
+    ],
+}
+
 /** An extension site in a callee, and one in a BR_TABLE arm of the
  *  caller: the buffer is the only state that survives the call, so a
  *  clobbered window register shows up as a wrong answer rather than a
@@ -1084,6 +1109,7 @@ const authored: [string, RtlProgram][] = [
     ["ext_spilled_operands", extSpilledOperands],
     ["ext_in_loop", extInLoop],
     ["ext_across_call", extAcrossCall],
+    ["ext_kill_dead_acc", extKillDeadAcc],
     ["long_branch_span", longBranchSpan],
     ["long_loop_back_edge", longLoopBackEdge],
     ["literal_pool_pressure", literalPoolPressure],

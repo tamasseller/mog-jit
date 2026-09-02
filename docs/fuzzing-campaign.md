@@ -825,6 +825,8 @@ only from fixed unit tests. Wiring it in is what this campaign is.
 | Seeds, before → after | 40 (38 comparable) → 48 (46 comparable), **0 mismatches** either way |
 | Crash campaign, after the extension | assert at ~30k executions — §1 below |
 | Execution sweep, after the extension | 1,200 inputs, 1,140 compared, **0 mismatches, 0 hangs** |
+| Crash campaign, after §1's fix | 800k executions, 100k validator-approved, **0 crashes** |
+| Execution sweep, after §1's fix | 500 inputs, 499 compared, **0 mismatches, 0 hangs**; seeds 52 (50 comparable), **0 mismatches** |
 
 The pre-extension halves are clean. Everything below came from the seam.
 
@@ -877,15 +879,35 @@ it across all six. Every one of them is stream/handle work that a
 jit-armv6m emitter would reach through `cHelperCall`, which clobbers r0. The
 first codec extension emitter written against this seam inherits the bug.
 
-**Open.** It needs an ISA spec decision — a third direction in §11.2, and
-whether "declares neither" should keep meaning "preserves `acc`" or change
-to "leaves it undefined". Either answer changes which programs are legal, so
-it is not a translator patch.
+**Fix.** A third accumulator direction in §11.2, with "declares neither"
+keeping its meaning of *preserves*. Which way to default was measured rather
+than argued: making it *destroys* breaks seven tests across `@ppl/machine`
+and `@ppl/codecs`, because real lowered codec bodies do read `acc` across
+`WRITE`/`STORE_VAL`, while declaring the destroying effect on MEMMOVE and on
+all six `CODEC_EFFECTS` handle ops breaks nothing.
 
-Until it lands, a crash campaign aborts about 30 seconds in: the mutator
-reaches `EXT MEMMOVE` followed by something that reads `acc` almost
-immediately. The seed sweep is unaffected — the eight `ext_*` seeds are all
-comparable and all match.
+`ExtOpEffect.killsAcc` is that declaration, mutually exclusive with
+`writesAcc` (`accOutOf` is the one three-valued read `validate.ts`, `vm.ts`
+and `raise.ts` share). The validator marks `acc` dead after such an op, so
+§8.7's own lattice carries it across merges and back-edges with no new rule,
+and `raise.ts` emits the op as a statement — a destroyed accumulator is
+nobody's value.
+
+Both halves now check the declaration instead of trusting it, which is what
+keeps the codec emitter from inheriting this. On the target,
+`EXT_FLAG_KILLS_ACC` plus two rules: `helperCall`/`cHelperCall` poison
+`AccState` themselves (r0 is an argument register across both reaches), and
+`handleExt` compares what the site left behind against its declaration,
+bailing `EXT_UNSUPPORTED` when an accumulator live on entry isn't live on
+exit. On the reference side `ExecState.acc` was already an accessor pair, so
+`vm.ts` holds every `exec` to the same declaration: a read wants `readsAcc`,
+a write wants `writesAcc`, and a declared `writesAcc` that assigns nothing
+is an error. That caught three toy test extensions under-declaring
+`writesAcc`; the codec extension's own `exec` was already conformant.
+
+The crash campaign that used to abort about 30 seconds in now runs clean —
+`ext_kill_dead_acc` is the corpus's regression seed for the shape, a
+MEMMOVE at the top of a dispatch case where `acc` is already dead.
 
 ## Coverage added
 

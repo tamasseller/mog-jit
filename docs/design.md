@@ -1055,16 +1055,16 @@ producer *or* a write-back-in-place op. Four consequences:
 - **A fused branch's *opening* is a merge point too, in the other
   direction.** Branch-fusion materializes nothing: the comparison leaves
   `Flags(cond)` and the guard consumes it, so no register carries the 0/1
-  anywhere. Past the guard `accState` is seeded with the statically-known
-  constant it is: `Imm(0)` entering `case[0]` — where the test was zero
-  whether or not the comparison fused — and `Imm(1)` entering `case[1]` or
-  a loop body, which only a fused comparison makes known.
+  anywhere. Every successor edge therefore opens `Poisoned`. Seeding the
+  statically-known constant instead — `Imm(0)` entering `case[0]`, `Imm(1)` entering a fused
+  `case[1]` or loop body — is not free and never pays: the only consumer
+  that can see it is the arm's own closing `flushLive`, which materializes
+  it, spending an instruction on a value §8.7 guarantees is dead.
 
-isa-core.md §8.7 makes this a validation error on *entry* to any successor
-of a CFG split (`BR_TABLE`/`LOOP`), which is what makes this backend's
-fusion legal: nothing may read the 0/1 a fused comparison never
-materialized. `validate.ts`/`vm.ts` enforce it, rather than relying on this
-one seeded case alone.
+isa-core.md §8.7 makes reading it a validation error on *entry* to any
+successor of a CFG split (`BR_TABLE`/`LOOP`), which is what makes this
+backend's fusion legal: nothing may read the 0/1 a fused comparison never
+materialized.
 
 Leaving is the other direction, and there the backend has nothing to decide.
 §4.5's dispatch is total, so every edge into the merge is a case body, and
@@ -1746,10 +1746,11 @@ exists, `halfwords` because an extension that outgrows it should be a
 diagnostic rather than arena pressure, `poolWords` because only the
 extension knows how many literals an `ATOMIC` block will add, `CALL_SHAPED`
 because `Executor::run`'s budget takes the *max* of a translation and an extension
-helper rather than their sum, and `tosDelta` — which is not a driver but a
-postcondition, checked against the real `window.tos` after emit, since the
-wire's `total_depth` was validated against it and nothing re-derives it
-here. Everything else an earlier draft declared is derivable or belongs
+helper rather than their sum, and `tosDelta` and `KILLS_ACC` — which are
+not drivers but postconditions, checked against the real `window.tos` and
+`AccState` after emit, since the wire's `total_depth` and the validator's
+acc liveness were decided against them upstream (isa-core.md §11.2) and
+nothing re-derives either here. Everything else an earlier draft declared is derivable or belongs
 upstream: `maxTransient` is already folded into `total_depth` by
 `validate.ts`, `terminates` is honoured in exactly one of three places on
 the TS side, and the opcode byte is at `site.opcode()`.
@@ -1770,6 +1771,16 @@ a spill into the very register `topReg()` names. `pushValue` avoids the
 first only by coincidence — its flush destination happens to be the
 aliasing register — which is not a property an open-coded `mov` + `tos++`
 would inherit.
+
+The accumulator carries a second such invariant: **a helper reach destroys
+it.** r0 is an argument register across both `helperCall` and
+`cHelperCall`, so they poison `AccState` themselves and an op that has to
+keep a value across one stages it on the operand stack, as its own
+`maxTransient`. That is what makes the declaration checkable at all: an
+accumulator live on entry to a site that did not declare `KILLS_ACC` has to
+be live on leaving it, or the site and the validator that approved the
+program disagree, and the translator bails instead of emitting a read of a
+register the helper already clobbered.
 
 The cost is that `halfwords` now budgets core-emitted code too, and the
 worst case per call (2 for `push`/`pop`, 1 for a spilled `load`/`store`,

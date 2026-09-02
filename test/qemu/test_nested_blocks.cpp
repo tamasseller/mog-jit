@@ -53,8 +53,8 @@ TEST(NestedLoopsWithZero)
 // counter&1 (even -> total += counter*10, odd -> total += counter), both
 // cases closed via BLOCK_END so control rejoins the loop's own decrement
 // before the back-edge — the interaction between fused-branch dispatch and a
-// live loop back-edge, distinct from AccStateMergeInLoopBody's fused *loop
-// condition* itself. Body lives in corpus_programs.h.
+// live loop back-edge, distinct from a fused *loop condition* itself. Body
+// lives in corpus_programs.h.
 TEST(BrTableInLoopBodyWithFour)
 {
     ProcSource procs[] = {PROC(1, corpusBrTableInLoopProc0)};

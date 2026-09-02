@@ -282,11 +282,12 @@ TEST(LoopBackEdgeBailsWhenTheBodyExceedsTheEncodableBranchRange)
 {
     // A back-edge past Ioff<1,11>'s +-2048-byte reach must fail, not wrap
     // into a silently retargeted branch.
-    Instr body[404];
+    Instr body[405];
     uint32_t n = 0;
     body[n++] = bare(Op::LOOP);
     body[n++] = CONST(1);
     body[n++] = bare(Op::BLOCK_END);
+    body[n++] = CONST(0); // §8.7: a LOOP body starts with acc dead, and CLZ reads it
     for(uint32_t i = 0; i < 400; i++)
     {
         body[n++] = bare(Op::CLZ);
@@ -1530,7 +1531,17 @@ void cHelperEmit(ExtSite &site)
     site.accIsNowIn(ACC_REG);
 }
 
+/* The same reach with nothing put back in r0 afterwards — what an op with
+ * no result of its own looks like. */
+void helperNoRecoverEmit(ExtSite &site)
+{
+    site.pop(ENTRY_IDX_REG);
+    site.pop(SCRATCH_REG);
+    site.helperCall(FAKE_HELPER_ADDR);
+}
+
 const ExtStub EXT_RAW_HELPER = {helperDecode, rawHelperEmit, 0};
+const ExtStub EXT_HELPER_NO_RECOVER = {helperDecode, helperNoRecoverEmit, 0};
 const ExtStub EXT_C_HELPER = {helperDecode, cHelperEmit, EXT_THUNK_STACK_BYTES};
 
 // True iff `needle` appears anywhere in the first `n` halfwords of `buf`.
@@ -1726,6 +1737,12 @@ uint32_t zeroDeltaDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
     return 1;
 }
 
+uint32_t killsAccDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+{
+    *decl = jitc::extDecl(EXT_FLAG_KILLS_ACC, /*tosDelta=*/0, /*halfwords=*/8);
+    return 1;
+}
+
 // Four pushes, then LOAD <slot> — acc ends up pending on physReg(slot).
 uint32_t windowBody(uint8_t *out, uint32_t loadSlot)
 {
@@ -1772,7 +1789,8 @@ void invalidateEmit(ExtSite &site)
 const ExtStub EXT_IN_WINDOW_LOAD = {zeroDeltaDecode, inWindowLoadEmit};
 const ExtStub EXT_IN_WINDOW_STORE = {zeroDeltaDecode, inWindowStoreEmit};
 const ExtStub EXT_PUSH_POP = {zeroDeltaDecode, pushPopEmit};
-const ExtStub EXT_INVALIDATE = {zeroDeltaDecode, invalidateEmit};
+const ExtStub EXT_INVALIDATE = {killsAccDecode, invalidateEmit};
+const ExtStub EXT_UNDECLARED_INVALIDATE = {zeroDeltaDecode, invalidateEmit};
 
 uint32_t translateWindowCase(FakeRuntime<1> &rt, uint32_t (*body)(uint8_t *))
 {
@@ -1840,7 +1858,7 @@ TEST(APushResolvesAnAccumulatorAliasingItsDestination)
 
 TEST(AnExtensionOpCanLeaveTheAccumulatorUndefined)
 {
-    // accInvalidate is the escape hatch for an op that clobbers r0 without
+    // EXT_FLAG_KILLS_ACC is how an op says it clobbers r0 without
     // establishing a value there; the following CONST re-establishes one.
     FakeRuntime<1> rt(/*arenaBytes=*/256);
     uint8_t *raw = rt.bodyBuf(0, 48);
@@ -1854,6 +1872,38 @@ TEST(AnExtensionOpCanLeaveTheAccumulatorUndefined)
     ExtScope extScope(&EXT_INVALIDATE);
     uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(n > 0);
+}
+
+TEST(AHelperReachDestroysTheAccumulatorByItself)
+{
+    // r0 is an argument register across either reach, so an op that ends in
+    // one and puts nothing back has destroyed acc whether it said so or
+    // not — no accInvalidate call anywhere in this emitter.
+    FakeRuntime<1> rt(/*arenaBytes=*/256);
+    uint8_t *raw = rt.bodyBuf(0, 32);
+    rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/true);
+    ExtScope extScope(&EXT_HELPER_NO_RECOVER);
+
+    EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_EXT_UNSUPPORTED, translateProc(0, rt.runtime(), LRU_TICK));
+}
+
+TEST(AnExtensionOpDestroyingAccWithoutDeclaringItIsReported)
+{
+    // The validator let the acc through this op on the strength of the
+    // other half's declaration, so an emitter that disagrees is caught here
+    // rather than as a poisoned read further down the body.
+    FakeRuntime<1> rt(/*arenaBytes=*/256);
+    uint8_t *raw = rt.bodyBuf(0, 48);
+    const Instr prelude[] = {CONST(1), PUSH(), CONST(2), PUSH()};
+    uint32_t len = encodeBody(prelude, 4, raw, 48);
+    raw[len++] = 0x80;
+    const Instr tail[] = {CONST(9), bare(Op::RETURN)};
+    len += encodeBody(tail, 2, raw + len, 48 - len);
+    rt.setLen(0, /*argCount=*/0, len, /*savesLR=*/false);
+
+    ExtScope extScope(&EXT_UNDECLARED_INVALIDATE);
+
+    EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_EXT_UNSUPPORTED, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
 // ── isa-core.md §4.5's dispatch ─────────────────────────────────────────
@@ -1934,4 +1984,38 @@ TEST(FallthroughEmitsNoBranchOutOfTheCase)
 
     CHECK(falling > 0);
     CHECK(leaving == falling + 1); // the branch to the merge FALLTHROUGH omits
+}
+
+TEST(AnArmThatEstablishesNothingCostsNoInstructionAtItsClose)
+{
+    // §8.7: a case starts with acc dead. An arm that never produces one
+    // reaches the merge with nothing to canonicalize, so its close must
+    // emit no instruction at all.
+    Instr body[] = {
+        CONST(5), opImm(Op::GT_U, 3),
+        brTable(1),
+            CONST(2), bare(Op::BLOCK_END),       // case0
+            bare(Op::BLOCK_END),                 // case1: establishes nothing
+        CONST(0),
+        bare(Op::RETURN),
+    };
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
+    CHECK(halfwordCount == 11);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(5)), // MOVS r0,#5 (CONST 5)
+        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(3)),  // CMP r0,#3 (GT_U, fused)
+        ArmV6M::bhi(ArmV6M::Ioff<1, 8>(2)),                // BHI +2 — to the empty case1
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(2)), // MOVS r0,#2 (case0: CONST 2)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(-2)),                // B to the next halfword — case0's exit branch, over nothing
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)), // MOVS r0,#0 (RETURN's own producer)
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(rt.code()[i] == expected[i]);
+    }
 }

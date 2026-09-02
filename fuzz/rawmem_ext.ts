@@ -55,7 +55,11 @@ const EFFECTS: Readonly<Record<string, ExtOpEffect>> = {
     ST8: {tosDelta: -1, maxTransient: 0, readsAcc: true},
     ST16: {tosDelta: -1, maxTransient: 0, readsAcc: true},
     ST32: {tosDelta: -1, maxTransient: 0, readsAcc: true},
-    MEMMOVE: {tosDelta: -3, maxTransient: 0},
+    /* killsAcc: the emitted code stages three operands into the helper's
+     * argument registers, r0 among them, so acc is gone (isa-core.md
+     * §11.2's third direction) — ext_rawmem.cpp's EXT_FLAG_KILLS_ACC is the
+     * same declaration on the target side. */
+    MEMMOVE: {tosDelta: -3, maxTransient: 0, killsAcc: true},
     MEMCMP: {tosDelta: -3, maxTransient: 0, writesAcc: true},
     /* maxTransient 1: the emitted code pushes the fourth operand for the
      * helper to read. Nothing native reserves that word — validate.ts folds
@@ -121,7 +125,6 @@ export function rawMemExtension(): RawMemExtension
                     src = (src + 1) & ADDR_MASK
                 }
 
-                state.acc = 0 // undefined on the target; never read by a valid program
                 return
             }
 

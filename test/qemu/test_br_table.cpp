@@ -200,43 +200,6 @@ TEST(CondBranchLeAboveTheBoundary)
     CHECK(r.value == 100);
 }
 
-// ---- Regression for the accState-merge-boundary bug — emitComparison never
-// materializes its 0/1 result into any register (only CPU flags carry it into
-// the fused branch), so a case body's own accState was silently left
-// describing whatever it held before the comparison ran, instead of the
-// correct, statically-known "comparison was false"/"comparison was true"
-// constant. A bare STORE right at the top of each case exposes it: slot 1
-// starts at a stale sentinel (77, never 0/1), and each case's own probe
-// should overwrite it with the comparison's real result instead.
-static const Instr accStateMergeProc0[] = {
-    CONST(77), PUSH(),                      // slot1 = 77 (stale sentinel)
-    LOAD(0), opImm(Op::GE_U, 0x80), brTable(1),
-        STORE(1), bare(Op::BLOCK_END),      // case 0 (false): probe
-        STORE(1), bare(Op::BLOCK_END),      // case 1 (true): probe
-    LOAD(1),
-    bare(Op::RETURN),
-};
-
-TEST(AccStateMergeFalseCase)
-{
-    ProcSource procs[] = {PROC(1, accStateMergeProc0)};
-    uint32_t args[] = {5};
-    ProgramResult r = runProgram(procs, 1, args);
-
-    CHECK(!r.trapped);
-    CHECK(r.value == 0);
-}
-
-TEST(AccStateMergeTrueCase)
-{
-    ProcSource procs[] = {PROC(1, accStateMergeProc0)};
-    uint32_t args[] = {200};
-    ProgramResult r = runProgram(procs, 1, args);
-
-    CHECK(!r.trapped);
-    CHECK(r.value == 1);
-}
-
 // ---- Large BR_TABLE (N=20) with a CALL inside one case. A jump table with N
 // well past 4 (stressing brTableJumpHelper's relocation math and the jump
 // table's own literal-pool sizing at real scale) combined with a real CALL

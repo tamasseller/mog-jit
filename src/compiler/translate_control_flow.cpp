@@ -95,14 +95,7 @@ uint32_t Ctx::translateIfThen(uint32_t pc, BranchWidth width)
         return -1;
     }
 
-    if(fused)
-    {
-        this->accState.producer(Shape::ofImm(1));
-    }
-    else
-    {
-        this->accState.poison();
-    }
+    this->accState.poison();
 
     DecodedInstr term;
     if(!this->GUARDED_processUntilTerminator(pc + 1, width, false, term))
@@ -157,23 +150,7 @@ uint32_t Ctx::translateIfThenElse(uint32_t pc, BranchWidth width)
 
     for(uint32_t arm = 0; arm < 2; arm++)
     {
-        // §8.7 says a case starts with acc dead, so no valid program reads
-        // what is left here — but the value is known on the paths where it
-        // is, and saying so costs nothing: case[0] is reached exactly when
-        // acc was zero, and a fused comparison's case[1] exactly when it
-        // would have been one.
-        if(arm == 0)
-        {
-            this->accState.producer(Shape::ofImm(0));
-        }
-        else if(fused)
-        {
-            this->accState.producer(Shape::ofImm(1));
-        }
-        else
-        {
-            this->accState.poison();
-        }
+        this->accState.poison();
 
         DecodedInstr term;
         if(!this->GUARDED_processUntilTerminator(next, width, false, term))
@@ -309,7 +286,6 @@ uint32_t Ctx::translateSwitch(uint32_t pc, BranchWidth width, uint32_t n)
 
 uint32_t Ctx::translateLoop(uint32_t pc, BranchWidth width)
 {
-
     const auto entryTos = this->window.tos;
 
     this->accState.flushLive(a, ACC_REG);
@@ -338,10 +314,7 @@ uint32_t Ctx::translateLoop(uint32_t pc, BranchWidth width)
             return -1;
         }
 
-        if(fused)
-        {
-            this->accState.producer(Shape::ofImm(1));
-        }
+        this->accState.poison();
 
         if(DecodedInstr bodyTerm; this->GUARDED_processUntilTerminator(condTerm.next, width, false, bodyTerm))
         {
