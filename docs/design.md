@@ -920,6 +920,10 @@ is right now.
 - **`Imm(k)`**: a literal, not yet emitted anywhere (from `CONST`).
   Classifying by *result shape* rather than opcode is what keeps the table
   small.
+- **`Flags(cond)`**: in the condition flags — one when `cond` holds, zero
+  otherwise, which is exactly what a comparison leaves behind. A consumer
+  that branches reads `cond()` and emits nothing; any other one materializes
+  it, at the four instructions ARMv6-M's missing compare-and-set costs.
 - **`Poisoned`**: nothing downstream may read `acc` — a write-back-in-place
   combo (`REG_REG`/`PEEK_PEEK`) just ran, or a CFG edge killed it (§8.7).
   `imm()`/`reg()` assert, since reading it is a translator or input-program
@@ -955,7 +959,10 @@ included, per the clobbering convention below.
 Comparison-plus-branch fusion is a *third*, more aggressive axis rather than
 a special case: the destination isn't redirected, it is eliminated, because a
 `BLOCK_END`/`BR_TABLE` test consumes the flags `CMP` already set and nothing
-gets materialized. ARMv6-M has no compare-and-set instruction, so
+gets materialized. The flags are a `Shape` like any other, so this is a
+consumer reading `acc` where it happens to be rather than a channel running
+beside it; the one-token lookahead is only the policy that decides to leave
+it there instead of materializing it on the spot. ARMv6-M has no compare-and-set instruction, so
 materializing a real 0/1 from a bare `CMP` costs about 4-5 instructions on
 its own. Three axes, one mechanism: fold a pending producer in as an operand
 (front), fold a result's destination into a following `STORE` (back), or
@@ -1043,13 +1050,12 @@ producer *or* a write-back-in-place op. Four consequences:
   value rather than whichever case ran. `accState` is therefore flushed
   unconditionally at every case boundary (`blocks.ts`'s `closeBlockEnd`,
   `accstate.ts`'s `flushLive`, a no-op when the value is already there and
-  safe when `Poisoned`, unlike a bare `flush`): cheap when nothing was pending, paid
+  safe when `Poisoned` or `Flags`, unlike a bare `flush`): cheap when nothing was pending, paid
   only in the case that needs it.
 - **A fused branch's *opening* is a merge point too, in the other
-  direction.** Branch-fusion never materializes the comparison's 0/1
-  result anywhere — only CPU flags carry it into the guard — so `accState`
-  is left completely untouched across the fusion unless something
-  re-establishes it. `accState` is seeded with the statically-known
+  direction.** Branch-fusion materializes nothing: the comparison leaves
+  `Flags(cond)` and the guard consumes it, so no register carries the 0/1
+  anywhere. Past the guard `accState` is seeded with the statically-known
   constant it is: `Imm(0)` entering `case[0]` — where the test was zero
   whether or not the comparison fused — and `Imm(1)` entering `case[1]` or
   a loop body, which only a fused comparison makes known.

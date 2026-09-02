@@ -84,12 +84,11 @@ void Ctx::handleGlobalJump(Instr term, uint32_t tos)
 uint32_t Ctx::translateIfThen(uint32_t pc, BranchWidth width)
 {
     const auto entryTos = this->window.tos;
-    const bool fused = this->hasPendingComparisonCondition;
-    this->hasPendingComparisonCondition = false;
+    const bool fused = this->accState.shape().isFlags();
 
     Label end;
 
-    const auto cond = fused ? this->pendingComparisonCondition : testAccNonzero(a, this->accState);
+    const auto cond = fused ? this->accState.shape().cond() : testAccNonzero(a, this->accState);
 
     if(!emitBranch(a, end, ArmV6M::inverse(cond), width))
     {
@@ -141,14 +140,13 @@ uint32_t Ctx::translateIfThen(uint32_t pc, BranchWidth width)
 uint32_t Ctx::translateIfThenElse(uint32_t pc, BranchWidth width)
 {
     const auto entryTos = this->window.tos;
-    const bool fused = this->hasPendingComparisonCondition;
-    this->hasPendingComparisonCondition = false;
+    const bool fused = this->accState.shape().isFlags();
 
     Label end, otherwise;
 
     // Fused, the comparison's own condition is "acc would be 1", which is
     // exactly "not zero" for a value a comparison produced.
-    const auto cond = fused ? this->pendingComparisonCondition : testAccNonzero(a, this->accState);
+    const auto cond = fused ? this->accState.shape().cond() : testAccNonzero(a, this->accState);
 
     if(!emitBranch(a, otherwise, cond, width))
     {
@@ -227,7 +225,7 @@ uint32_t Ctx::translateSwitch(uint32_t pc, BranchWidth width, uint32_t n)
 {
 
     const auto entryTos = this->window.tos;
-    assert(this->hasPendingComparisonCondition == false);
+    assert(!this->accState.shape().isFlags());
 
     this->accState.flush(a, ACC_REG);
     a.materializeImm32(SCRATCH_REG, n);
@@ -330,10 +328,9 @@ uint32_t Ctx::translateLoop(uint32_t pc, BranchWidth width)
             }
         }
 
-        const bool fused = this->hasPendingComparisonCondition;
-        this->hasPendingComparisonCondition = false;
+        const bool fused = this->accState.shape().isFlags();
 
-        const auto cond = fused ? this->pendingComparisonCondition : testAccNonzero(a, this->accState);
+        const auto cond = fused ? this->accState.shape().cond() : testAccNonzero(a, this->accState);
 
         Label out;
         if(!emitBranch(a, out, ArmV6M::inverse(cond), width))

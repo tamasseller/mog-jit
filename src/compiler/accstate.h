@@ -20,9 +20,10 @@ public:
 
     void flush(Assembler &e, uint32_t dstReg);
 
+    /** A flags value is consumed by the branch right after it, never carried to a merge. */
     void flushLive(Assembler &e, uint32_t dstReg)
     {
-        if(!value.isPoisoned())
+        if(value.isImm() || value.isReg())
         {
             flush(e, dstReg);
         }

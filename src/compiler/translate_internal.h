@@ -19,9 +19,6 @@ struct Ctx
     bool savesLR;
     uint32_t initialSpilledCount;
 
-    bool hasPendingComparisonCondition = false;
-    ArmV6M::Condition pendingComparisonCondition = ArmV6M::Condition::EQ;
-
     AccState accState;
 
     Ctx(Runtime& r, uint32_t procIdx, uint32_t lruTick);

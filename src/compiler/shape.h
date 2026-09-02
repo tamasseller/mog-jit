@@ -1,10 +1,12 @@
 // jit-armv6m/compiler — where a value is right now: in a register, still an
-// unmaterialized literal, or nowhere at all.
+// unmaterialized literal, in the condition flags, or nowhere at all.
 #ifndef JIT_ARMV6M_COMPILER_SHAPE_H_
 #define JIT_ARMV6M_COMPILER_SHAPE_H_
 
 #include <cstdint>
 #include <cassert>
+
+#include "armv6.h"
 
 namespace jitc
 {
@@ -17,6 +19,7 @@ class Shape
     {
         Imm,
         Reg,
+        Flags,
         Poisoned
     };
 
@@ -30,10 +33,12 @@ public:
 
     static constexpr Shape ofImm(int32_t v) { return Shape(Kind::Imm, (uint32_t)v); }
     static constexpr Shape ofReg(uint32_t r) { return Shape(Kind::Reg, r); }
+    static constexpr Shape ofFlags(ArmV6M::Condition c) { return Shape(Kind::Flags, (uint32_t)c); }
     static constexpr Shape poisoned() { return Shape(Kind::Poisoned, 0); }
 
     bool isImm() const { return kind == Kind::Imm; }
     bool isReg() const { return kind == Kind::Reg; }
+    bool isFlags() const { return kind == Kind::Flags; }
     bool isPoisoned() const { return kind == Kind::Poisoned; }
 
     int32_t imm() const
@@ -46,6 +51,13 @@ public:
     {
         assert(kind == Kind::Reg); // GCOV_EXCL_LINE — a translator-logic bug, never legitimate input
         return bits;
+    }
+
+    /** The condition under which the value is one; it is zero otherwise. */
+    ArmV6M::Condition cond() const
+    {
+        assert(kind == Kind::Flags); // GCOV_EXCL_LINE — a translator-logic bug, never legitimate input
+        return (ArmV6M::Condition)bits;
     }
 
     /** Puts the value in `dstReg`. */

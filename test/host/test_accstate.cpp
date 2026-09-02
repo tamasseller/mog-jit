@@ -85,3 +85,23 @@ TEST(setCleanThenPoisonThenProducerSupersedes)
     Shape s2 = acc.shape(); // producer supersedes Poisoned without issue
     CHECK(!s2.isImm() && s2.reg() == 2);
 }
+
+TEST(flagsShapeMaterializesTheZeroOneSelect)
+{
+    TestAssembler e_ta(8);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
+    AccState acc;
+    acc.producer(Shape::ofFlags(ArmV6M::Condition::NE));
+    CHECK(e.halfwordCount() == 0); // a comparison's own CMP is all a fused consumer needs
+
+    acc.flush(e, 3);
+    CHECK(e.halfwordCount() == 4);
+    CHECK(buf[0] == ArmV6M::condBranch(ArmV6M::Condition::EQ, ArmV6M::Ioff<1, 8>(2)));
+    CHECK(buf[1] == ArmV6M::movs(ArmV6M::LoReg(3), ArmV6M::Imm<8>(1)));
+    CHECK(buf[2] == ArmV6M::b(ArmV6M::Ioff<1, 11>(0)));
+    CHECK(buf[3] == ArmV6M::movs(ArmV6M::LoReg(3), ArmV6M::Imm<8>(0)));
+
+    Shape s = acc.shape();
+    CHECK(!s.isImm() && s.reg() == 3);
+}

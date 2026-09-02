@@ -350,7 +350,7 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
             case Op::GT_U:
             case Op::GE_U:
             {
-                auto trueCondition = this->handleComparisonEmission(instr);
+                this->accState.producer(Shape::ofFlags(this->handleComparisonEmission(instr)));
 
                 if(afterInstr < this->bytesLen)
                 {
@@ -365,36 +365,14 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
 
                     if(fusesIntoBrTable || fusesIntoLoopExit)
                     {
-                        this->pendingComparisonCondition = trueCondition;
-                        this->hasPendingComparisonCondition = true;
-                        this->accState.poison();
-                        
                         pc = afterInstr;
                         break;
                     }
                 }
 
                 FoldResult fold = peekStoreFold(this->bytes, this->bytesLen, afterInstr, this->window.tos);
-                uint32_t dest = fold.redirectReg(ACC_REG);
 
-                Label falseLabel;
-                if(!a.branchTo(falseLabel, ArmV6M::inverse(trueCondition))) return false;
-                
-                a.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(1)));
-
-                Label endLabel;
-                const auto endOk = a.branchTo(endLabel);
-                assert(endOk);
-
-                const auto falseOk = a.bind(falseLabel);
-                assert(falseOk);
-
-                a.emit(ArmV6M::movs(R((uint16_t)dest), ArmV6M::Imm<8>(0)));
-                
-                const auto endBound = a.bind(endLabel);
-                assert(endBound);
-
-                this->accState.setClean(dest);
+                this->accState.flush(a, fold.redirectReg(ACC_REG));
 
                 pc = fold.redirectAfterNext(afterInstr);
                 break;
@@ -437,7 +415,7 @@ bool Ctx::GUARDED_processUntilTerminator(uint32_t pc, BranchWidth width, bool is
 
             default:
                 assert(isTerminator(instr));
-                assert(!this->hasPendingComparisonCondition || (isThisLoopCondBlock && instr.op == Op::BLOCK_END)); // GCOV_EXCL_LINE — comparison fused into nothing; malformed program
+                assert(!this->accState.shape().isFlags() || (isThisLoopCondBlock && instr.op == Op::BLOCK_END)); // GCOV_EXCL_LINE — comparison fused into nothing; malformed program
 
                 out = DecodedInstr{.instr = instr, .next = afterInstr};
                 return true;
