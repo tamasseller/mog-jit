@@ -54,7 +54,10 @@ void Ctx::handleGlobalJump(Instr term, uint32_t tos)
 {
     if(term.op == Op::RETURN)
     {
-        this->accState.flush(a, ACC_REG);
+        // A void procedure reaches here with acc dead (isa-core.md §8.7) and
+        // has nothing to canonicalize — no valid program reads what r0 then
+        // holds, and deciding that is the validator's job, not this one's.
+        this->accState.flushLive(a, ACC_REG);
 
         if(!this->window.discard(a))
         {
