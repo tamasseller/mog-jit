@@ -36,8 +36,12 @@ static bool emitBranch(Assembler &a, Label &label, ArmV6M::Condition condition, 
 
 ArmV6M::Condition testAccNonzero(Assembler &a, AccState &accState)
 {
-    uint32_t r = accState.shape().sourceReg(a, SCRATCH_REG);
-    a.emit(ArmV6M::cmp(R(r), ArmV6M::Imm<8>(0)));
+    if(!accState.hasLiveZ())
+    {
+        uint32_t r = accState.shape().sourceReg(a, SCRATCH_REG);
+        a.emit(ArmV6M::cmp(R(r), ArmV6M::Imm<8>(0)));
+    }
+
     return ArmV6M::Condition::NE;
 }
 

@@ -194,12 +194,12 @@ static inline ShiftDecomposition unshift(uint32_t value)
     }
 }
 
-void Assembler::materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoIsnSeq)
+bool Assembler::materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoIsnSeq)
 {
     if(ArmV6M::fitsImm8(value))
     {
         emit(ArmV6M::movs(R((uint16_t)dstReg), ArmV6M::Imm<8>(value)));
-        return;
+        return true;
     }
 
     if(allowTwoIsnSeq)
@@ -208,7 +208,7 @@ void Assembler::materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoI
         {
             emit(ArmV6M::movs(R((uint16_t)dstReg), ArmV6M::Imm<8>(~value)));
             emit(ArmV6M::mvns(R((uint16_t)dstReg), R((uint16_t)dstReg)));
-            return;
+            return true;
         }
 
         const auto decomposed = unshift(value);
@@ -218,12 +218,13 @@ void Assembler::materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoI
         {
             emit(ArmV6M::movs(R((uint16_t)dstReg), ArmV6M::Imm<8>(decomposed.pattern)));
             emit(ArmV6M::lsls(R((uint16_t)dstReg), R((uint16_t)dstReg), ArmV6M::Imm<5>(decomposed.shift)));
-            return;
+            return true;
         }
     }
 
     ensurePoolRoom(1);
     parkPoolSite(dstReg, value);
+    return false;
 }
 
 void Assembler::patchPoolSite(uint32_t siteOffset, uint32_t word)

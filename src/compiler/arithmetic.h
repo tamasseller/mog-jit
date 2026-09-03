@@ -11,11 +11,13 @@ namespace jitc
 
 class Assembler;
 
-void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const Shape &rhs, uint32_t dest);
+/* Both return whether the last instruction they emitted left N/Z set from
+ * `dest`, which is what lets a following truthy branch skip its own CMP. */
+bool emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const Shape &rhs, uint32_t dest);
 
 ArmV6M::Condition emitComparison(Assembler &a, Shape left, Op op, const Shape &operand);
 
-void emitUnary(Assembler &e, Op op, uint32_t dest, uint32_t src);
+bool emitUnary(Assembler &e, Op op, uint32_t dest, uint32_t src);
 
 } // namespace jitc
 

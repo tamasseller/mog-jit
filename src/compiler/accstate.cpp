@@ -7,7 +7,7 @@ namespace jitc
 void AccState::flush(Assembler &e, uint32_t dstReg)
 {
     value.materialize(e, dstReg);
-    value = Shape::ofReg(dstReg);
+    setClean(dstReg);
 }
 
 } // namespace jitc

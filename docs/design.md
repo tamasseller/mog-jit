@@ -1044,6 +1044,22 @@ consumer (back, zero-destination). Without the front and back folds,
 `if`/`while` conditions cost several instructions more than assumed
 elsewhere in this document; the Appendix gives counts across all four tiers.
 
+A truthy test reuses the flags its producer already set, where there is one.
+On ARMv6-M every ALU-class encoding sets N/Z from its result, and Z is
+exactly what a nonzero test reads, so a `BR_TABLE 1`/`BLOCK_END` on an
+arithmetic value needs no `CMP` of its own. The claim is a return value from
+`emitBinaryOp`/`emitUnary`/`materializeImm32` rather than tracked state:
+each knows which encoding it just emitted, and the operand-dependent cases
+that end on a flag-preserving `MOV` or emit nothing at all — add of zero,
+shift by zero, a register shift's tail move, a pool load — report false
+where they arise instead of being re-derived by a caller. `AccState` carries
+it from that producer to the next instruction only and drops it on every
+other transition; what may run in between is closed, being window fixups and
+a spliced literal pool, none of which touch the flags. It is sound for the
+`EQ`/`NE` pair alone — only Z agrees with what a `CMP #0` would leave — so a
+relational test still goes through `Flags(cond)`, and a `LOAD`, `CALL`,
+extend or helper result still pays for its own `CMP`.
+
 **Classification is by native-encoding shape, not opcode**, and this is a
 hard ARMv6-M constraint:
 
@@ -1414,7 +1430,7 @@ Per Generic Core opcode, native Thumb instruction count:
 | `PUSH`/`POP`, no window boundary crossed | 0 (pure relabeling) |
 | `PUSH`/`POP`, crossing the 4-deep boundary | 1 (`STR`/`LDR`) |
 | `CONST`/`LOAD`/`STORE` | 1-2 |
-| `if`/`if-else` (`BR_TABLE 1`) | 2-3 (`CMP` plus branches), fused or not |
+| `if`/`if-else` (`BR_TABLE 1`) | 2-3 (`CMP` plus branches); 1-2 when a comparison or an arithmetic producer already set the flags |
 | `CALL` | up to about 8 for the shuffle (§6: `1+≤2` to spill the caller's resident window, `+1` to fill the callee's args, `+≤4` to reload the caller's window after return) plus the 5-7 instruction call sequence and `callHelper`'s 6; nothing at all for the shuffle in the common `argCount ≤ 1` case |
 | `RETURN` | 3 (helper-vector load plus `BX`), plus the shared tail's 6 |
 

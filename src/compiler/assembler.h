@@ -84,7 +84,8 @@ public:
 
     void patchRawHalfword(uint32_t siteOffset, uint16_t value);
 
-    void materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoIsnSeq = true);
+    /** Returns whether it left N/Z set from `dstReg` — false for the pool load. */
+    bool materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoIsnSeq = true);
 
     uint32_t finalize(uint32_t procIdx);
 

@@ -14,6 +14,7 @@ class Assembler;
 class AccState
 {
     Shape value = Shape::ofReg(ACC_REG);
+    bool zLive = false;
 
 public:
     const Shape &shape() const { return value; }
@@ -30,6 +31,12 @@ public:
             flush(e, dstReg);
         }
     }
+
+    /** True while N/Z still reflect acc's value, so a truthy test needs no CMP of
+     *  its own. Only a producer that ends on a flag-setting instruction claims it;
+     *  every other transition here drops it, and window.cpp — the one thing that
+     *  emits between such a producer and its branch — never touches the flags. */
+    bool hasLiveZ() const { return zLive; }
 
     /** True while acc holds a value at all — in a register, pending, or in the flags. */
     bool isLive() const { return !value.isPoisoned(); }
@@ -49,9 +56,9 @@ public:
         }
     }
 
-    void producer(Shape s) { value = s; }
-    void setClean(uint32_t r) { value = Shape::ofReg(r); }
-    void poison() { value = Shape::poisoned(); }
+    void producer(Shape s) { value = s; zLive = false; }
+    void setClean(uint32_t r, bool zLive = false) { value = Shape::ofReg(r); this->zLive = zLive; }
+    void poison() { value = Shape::poisoned(); zLive = false; }
 };
 
 } // namespace jitc

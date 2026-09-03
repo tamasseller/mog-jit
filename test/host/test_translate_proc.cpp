@@ -1928,3 +1928,134 @@ TEST(AnArmThatEstablishesNothingCostsNoInstructionAtItsClose)
         CHECK(rt.code()[i] == expected[i]);
     }
 }
+
+TEST(TruthyBranchReusesTheFlagsItsArithmeticProducerAlreadySet)
+{
+    // ANDS sets N/Z from its result, which is all a nonzero test reads, so
+    // testAccNonzero has nothing left to emit (design.md §10.1).
+    Instr body[] = {
+        CONST(1), opReg(Op::AND, 0),
+        brTable(1),
+            bare(Op::BLOCK_END),
+            CONST(7), bare(Op::RETURN),
+        CONST(9), bare(Op::RETURN),
+    };
+    FakeRuntime<1> rt;
+    rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
+    CHECK(halfwordCount == 14);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)), // MOV r7, r0  (callee prologue)
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(1)), // MOVS r0, #1  (CONST 1, AND's left operand)
+        ArmV6M::ands(ArmV6M::LoReg(0), ArmV6M::LoReg(7)),  // ANDS r0, r7  — and no CMP after it
+        ArmV6M::beq(ArmV6M::Ioff<1, 8>(6)),                // BEQ — inverse(NE), straight off the ANDS
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(7)),
+        RETURN_VIA_LR,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(9)),
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(rt.code()[i] == expected[i]);
+    }
+}
+
+TEST(AnExtendProducerLeavesNoFlagsSoTheTruthyTestStillCompares)
+{
+    // UXTB emits an instruction but sets no flags — the case an
+    // opcode-level table of "arithmetic producers" would get wrong.
+    Instr body[] = {
+        LOAD(0), bare(Op::UXTB),
+        brTable(1),
+            bare(Op::BLOCK_END),
+            CONST(7), bare(Op::RETURN),
+        CONST(9), bare(Op::RETURN),
+    };
+    FakeRuntime<1> rt;
+    rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
+    CHECK(halfwordCount == 14);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),
+        ArmV6M::uxtb(ArmV6M::LoReg(0), ArmV6M::LoReg(7)),  // UXTB r0, r7
+        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)),  // CMP r0, #0  — testAccNonzero's fallback
+        ArmV6M::beq(ArmV6M::Ioff<1, 8>(6)),
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(7)),
+        RETURN_VIA_LR,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(9)),
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(rt.code()[i] == expected[i]);
+    }
+}
+
+TEST(ADegenerateAddOfZeroInPlaceEmitsNothingSoTheTruthyTestStillCompares)
+{
+    // Whether an ADD leaves usable flags depends on its operands, not its
+    // opcode: adding zero to a register in place emits nothing at all.
+    Instr body[] = {
+        LOAD(0), opImm(Op::ADD, 0), STORE(0),
+        brTable(1),
+            bare(Op::BLOCK_END),
+            CONST(7), bare(Op::RETURN),
+        CONST(9), bare(Op::RETURN),
+    };
+    FakeRuntime<1> rt;
+    rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
+    CHECK(halfwordCount == 13);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),
+        ArmV6M::cmp(ArmV6M::LoReg(7), ArmV6M::Imm<8>(0)),  // CMP r7, #0  — testAccNonzero's fallback
+        ArmV6M::beq(ArmV6M::Ioff<1, 8>(6)),
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(7)),
+        RETURN_VIA_LR,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(9)),
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(rt.code()[i] == expected[i]);
+    }
+}
+
+TEST(AnIdentityOperandCopiesThroughTheFlagSettingEncodingSoTheTestStillFuses)
+{
+    // Same degenerate ADD, but into a different register: the copy it
+    // collapses to is emitted as LSLS #0 (the MOVS Rd,Rm encoding) rather
+    // than MOV, which costs the same and leaves N/Z set.
+    Instr body[] = {
+        LOAD(0), opImm(Op::ADD, 0),
+        brTable(1),
+            bare(Op::BLOCK_END),
+            CONST(7), bare(Op::RETURN),
+        CONST(9), bare(Op::RETURN),
+    };
+    FakeRuntime<1> rt;
+    rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
+    CHECK(halfwordCount == 13);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),
+        ArmV6M::lsls(ArmV6M::LoReg(0), ArmV6M::LoReg(7), ArmV6M::Imm<5>(0)), // MOVS r0, r7 — and no CMP after it
+        ArmV6M::beq(ArmV6M::Ioff<1, 8>(6)),
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(7)),
+        RETURN_VIA_LR,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(9)),
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(rt.code()[i] == expected[i]);
+    }
+}

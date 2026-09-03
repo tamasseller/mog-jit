@@ -15,7 +15,7 @@ enum class AddSubRsubOp
     Add, Sub, Rsub
 };
 
-static void addOrSubWithImm(AddSubRsubOp which, Assembler &e, uint32_t dest, uint32_t n, int32_t k)
+static bool addOrSubWithImm(AddSubRsubOp which, Assembler &e, uint32_t dest, uint32_t n, int32_t k)
 {
     if(k == 0)
     {
@@ -28,10 +28,13 @@ static void addOrSubWithImm(AddSubRsubOp which, Assembler &e, uint32_t dest, uin
             /*
              * Add or take away zero is nop, except if destination is different.
              */
-            if(dest != n)
+            if(dest == n)
             {
-                e.emit(ArmV6M::mov(R((uint16_t)dest), R((uint16_t)n)));
+                return false;
             }
+
+            // `LSLS #0` is the `MOVS Rd, Rm` encoding; a `MOV` sets no flags.
+            e.emit(ArmV6M::lsls(R((uint16_t)dest), R((uint16_t)n), ArmV6M::Imm<5>(0)));
         }
         else
         {
@@ -49,7 +52,6 @@ static void addOrSubWithImm(AddSubRsubOp which, Assembler &e, uint32_t dest, uin
         e.emit(which == AddSubRsubOp::Sub
             ? ArmV6M::subs(R((uint16_t)dest), R((uint16_t)n), ArmV6M::Imm<3>((uint16_t)k))
             : ArmV6M::adds(R((uint16_t)dest), R((uint16_t)n), ArmV6M::Imm<3>((uint16_t)k)));
-        
     }
     else if(which != AddSubRsubOp::Rsub && ArmV6M::fitsImm8(k) && dest == n)
     {
@@ -74,9 +76,11 @@ static void addOrSubWithImm(AddSubRsubOp which, Assembler &e, uint32_t dest, uin
             case AddSubRsubOp::Rsub: e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)t), R((uint16_t)n))); break;
         }
     }
+
+    return true;
 }
 
-void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const Shape &rhs, uint32_t dest)
+bool emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const Shape &rhs, uint32_t dest)
 {
     if(accShape.isImm() && rhs.isImm())
     {
@@ -86,17 +90,17 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
         */
         switch (op)
         {
-            case Op::ADD:  e.materializeImm32(dest, (uint32_t)accShape.imm() + (uint32_t)rhs.imm()); break;
-            case Op::SUB:  e.materializeImm32(dest, (uint32_t)accShape.imm() - (uint32_t)rhs.imm()); break;
-            case Op::RSUB: e.materializeImm32(dest, (uint32_t)rhs.imm() - (uint32_t)accShape.imm()); break;
-            case Op::MUL:  e.materializeImm32(dest, (uint32_t)accShape.imm() * (uint32_t)rhs.imm()); break;
-            case Op::AND:  e.materializeImm32(dest, accShape.imm() & rhs.imm()); break;
-            case Op::OR:   e.materializeImm32(dest, accShape.imm() | rhs.imm()); break;
-            case Op::XOR:  e.materializeImm32(dest, accShape.imm() ^ rhs.imm()); break;
-            case Op::SHL:  e.materializeImm32(dest, (uint32_t)accShape.imm() << (rhs.imm() & 31)); break;
-            case Op::SHR:  e.materializeImm32(dest, (uint32_t)accShape.imm() >> (rhs.imm() & 31)); break;
-            case Op::ASR:  e.materializeImm32(dest, (uint32_t)((int32_t)accShape.imm() >> (rhs.imm() & 31))); break;
-            default: assert(false);
+            case Op::ADD:  return e.materializeImm32(dest, (uint32_t)accShape.imm() + (uint32_t)rhs.imm());
+            case Op::SUB:  return e.materializeImm32(dest, (uint32_t)accShape.imm() - (uint32_t)rhs.imm());
+            case Op::RSUB: return e.materializeImm32(dest, (uint32_t)rhs.imm() - (uint32_t)accShape.imm());
+            case Op::MUL:  return e.materializeImm32(dest, (uint32_t)accShape.imm() * (uint32_t)rhs.imm());
+            case Op::AND:  return e.materializeImm32(dest, accShape.imm() & rhs.imm());
+            case Op::OR:   return e.materializeImm32(dest, accShape.imm() | rhs.imm());
+            case Op::XOR:  return e.materializeImm32(dest, accShape.imm() ^ rhs.imm());
+            case Op::SHL:  return e.materializeImm32(dest, (uint32_t)accShape.imm() << (rhs.imm() & 31));
+            case Op::SHR:  return e.materializeImm32(dest, (uint32_t)accShape.imm() >> (rhs.imm() & 31));
+            case Op::ASR:  return e.materializeImm32(dest, (uint32_t)((int32_t)accShape.imm() >> (rhs.imm() & 31)));
+            default: assert(false); // GCOV_EXCL_LINE
         }
     }
     else if(op == Op::ADD || op == Op::SUB || op == Op::RSUB)
@@ -116,6 +120,8 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
                 case Op::RSUB: e.emit(ArmV6M::subs(R((uint16_t)dest), R((uint16_t)rhs.reg()), R((uint16_t)accShape.reg()))); break;
                 default: assert(false); // GCOV_EXCL_LINE
             }
+
+            return true;
         }
         else if(rhs.isImm())
         {
@@ -124,9 +130,9 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
              */
             switch(op)
             {
-                case Op::ADD:  addOrSubWithImm(AddSubRsubOp::Add, e, dest, accShape.reg(), rhs.imm()); break;
-                case Op::SUB:  addOrSubWithImm(AddSubRsubOp::Sub, e, dest, accShape.reg(), rhs.imm()); break;
-                case Op::RSUB: addOrSubWithImm(AddSubRsubOp::Rsub, e, dest, accShape.reg(), rhs.imm()); break;
+                case Op::ADD:  return addOrSubWithImm(AddSubRsubOp::Add, e, dest, accShape.reg(), rhs.imm());
+                case Op::SUB:  return addOrSubWithImm(AddSubRsubOp::Sub, e, dest, accShape.reg(), rhs.imm());
+                case Op::RSUB: return addOrSubWithImm(AddSubRsubOp::Rsub, e, dest, accShape.reg(), rhs.imm());
                 default: assert(false); // GCOV_EXCL_LINE
             }
         }
@@ -139,9 +145,9 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
             assert(accShape.isImm());
             switch(op)
             {
-                case Op::ADD:  addOrSubWithImm(AddSubRsubOp::Add, e, dest, rhs.reg(), accShape.imm()); break;
-                case Op::SUB:  addOrSubWithImm(AddSubRsubOp::Rsub, e, dest, rhs.reg(), accShape.imm()); break;
-                case Op::RSUB: addOrSubWithImm(AddSubRsubOp::Sub, e, dest, rhs.reg(), accShape.imm()); break;
+                case Op::ADD:  return addOrSubWithImm(AddSubRsubOp::Add, e, dest, rhs.reg(), accShape.imm());
+                case Op::SUB:  return addOrSubWithImm(AddSubRsubOp::Rsub, e, dest, rhs.reg(), accShape.imm());
+                case Op::RSUB: return addOrSubWithImm(AddSubRsubOp::Sub, e, dest, rhs.reg(), accShape.imm());
                 default: assert(false); // GCOV_EXCL_LINE
             }
         }
@@ -158,20 +164,22 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
             const auto m = accShape.sourceReg(e, SCRATCH_REG);
 
             uint32_t shift = (uint32_t)rhs.imm() & 31u;
-            switch(op)
+
+            // All three are the identity at zero, and `LSLS #0` is the
+            // `MOVS Rd, Rm` encoding; a `MOV` sets no flags.
+            if(shift == 0)
             {
-                case Op::SHL:
-                    e.emit(ArmV6M::lsls(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift)));
-                    break;
-                case Op::SHR:
-                    if(shift == 0) e.emit(ArmV6M::mov(ArmV6M::AnyReg(dest), ArmV6M::AnyReg(m)));
-                    else e.emit(ArmV6M::lsrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift)));
-                    break;
-                case Op::ASR:
-                    if(shift == 0) e.emit(ArmV6M::mov(ArmV6M::AnyReg(dest), ArmV6M::AnyReg(m)));
-                    else e.emit(ArmV6M::asrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift)));
-                    break;
-                default: assert(false); // GCOV_EXCL_LINE
+                e.emit(ArmV6M::lsls(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>(0)));
+            }
+            else
+            {
+                switch(op)
+                {
+                    case Op::SHL: e.emit(ArmV6M::lsls(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift)));
+                    case Op::SHR: e.emit(ArmV6M::lsrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift)));
+                    case Op::ASR: e.emit(ArmV6M::asrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift)));
+                    default: assert(false); // GCOV_EXCL_LINE
+                }
             }
         }
         else
@@ -234,6 +242,8 @@ void emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
             }
         }
     }
+
+    return true;
 }
 
 static constexpr ArmV6M::Condition DIRECT_CONDITION[10] = 
@@ -298,17 +308,17 @@ ArmV6M::Condition emitComparison(Assembler &a, Shape left, Op op, const Shape &o
     return condition;
 }
 
-void emitUnary(Assembler &e, Op op, uint32_t dest, uint32_t src)
+bool emitUnary(Assembler &e, Op op, uint32_t dest, uint32_t src)
 {
     if(op == Op::NEG)
     {
         e.emit(ArmV6M::negs(R((uint16_t)dest), R((uint16_t)src)));
-        return;
+        return true;
     }
     if(op == Op::NOT)
     {
         e.emit(ArmV6M::mvns(R((uint16_t)dest), R((uint16_t)src)));
-        return;
+        return true;
     }
     if(op == Op::SXTB || op == Op::SXTH || op == Op::UXTB || op == Op::UXTH)
     {
@@ -316,7 +326,7 @@ void emitUnary(Assembler &e, Op op, uint32_t dest, uint32_t src)
         e.emit(op == Op::SXTB ? ArmV6M::sxtb(d, m)
             : (op == Op::SXTH ? ArmV6M::sxth(d, m)
             : (op == Op::UXTB ? ArmV6M::uxtb(d, m) : ArmV6M::uxth(d, m))));
-        return;
+        return false;
     }
 
     assert(src == ACC_REG); // GCOV_EXCL_LINE — clzHelper/revbitsHelper hardcode ACC_REG, caller's job to flush there first
@@ -334,6 +344,8 @@ void emitUnary(Assembler &e, Op op, uint32_t dest, uint32_t src)
     {
         e.emit(ArmV6M::mov(ArmV6M::AnyReg((uint16_t)dest), ArmV6M::AnyReg((uint16_t)ACC_REG)));
     }
+
+    return false;
 }
 
 } // namespace jitc

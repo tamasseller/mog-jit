@@ -24,7 +24,7 @@ g++ -std=c++17 -O1 -g -m32 -I ../src/compiler -I ../src/runtime -I . \
     ../fuzz/dump_code.cpp \
     ext_sampstream.cpp "${TMPDIR:-/tmp}/ppl-bench-samples-stub.cpp" \
     ../src/compiler/{ext,ext_default,window,accstate,assembler,arithmetic,shape,abi_strategy,decode_instr,proc_scan,translate_proc,translate_data_flow,translate_control_flow}.cpp \
-    ../src/runtime/runtime.cpp \
+    ../src/runtime/{runtime,bytecode_default}.cpp \
     -o "${TMPDIR:-/tmp}/ppl-bench-dump_code"
 
 "${TMPDIR:-/tmp}/ppl-bench-dump_code" "$ENVELOPE" "$OUT"

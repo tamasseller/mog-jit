@@ -141,8 +141,7 @@ bool Ctx::GUARDED_processUntilTerminator(BranchWidth width, bool isThisLoopCondB
                 uint32_t dest = foldDest(this->peekStoreFold(), ACC_REG);
                 uint32_t src = this->accState.shape().sourceReg(a, dest);
 
-                emitUnary(a, instr.op, dest, src);
-                this->accState.setClean(dest);
+                this->accState.setClean(dest, emitUnary(a, instr.op, dest, src));
                 break;
             }
             case Op::CLZ:
@@ -151,8 +150,7 @@ bool Ctx::GUARDED_processUntilTerminator(BranchWidth width, bool isThisLoopCondB
                 this->accState.flush(a, ACC_REG);
                 uint32_t dest = foldDest(this->peekStoreFold(), ACC_REG);
 
-                emitUnary(a, instr.op, dest, ACC_REG);
-                this->accState.setClean(dest);
+                this->accState.setClean(dest, emitUnary(a, instr.op, dest, ACC_REG));
                 break;
             }
             case Op::LOAD:
@@ -197,8 +195,7 @@ bool Ctx::GUARDED_processUntilTerminator(BranchWidth width, bool isThisLoopCondB
                 else
                 {
                     uint32_t target = foldDest(this->peekStoreFold(), ACC_REG);
-                    a.materializeImm32(target, (uint32_t)instr.imm);
-                    this->accState.setClean(target);
+                    this->accState.setClean(target, a.materializeImm32(target, (uint32_t)instr.imm));
                 }
                 break;
             }
@@ -260,8 +257,8 @@ bool Ctx::GUARDED_processUntilTerminator(BranchWidth width, bool isThisLoopCondB
                 else
                 {
                     const auto dest = foldDest(this->peekStoreFold(), ACC_REG);
-                    emitBinaryOp(a, instr.op, instr.combo, this->accState.shape(), operandStorage, dest);
-                    this->accState.setClean(dest);
+                    const bool zLive = emitBinaryOp(a, instr.op, instr.combo, this->accState.shape(), operandStorage, dest);
+                    this->accState.setClean(dest, zLive);
 
                     if(instr.combo == Combo::POP_ACC)
                     {
