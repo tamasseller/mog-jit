@@ -34,16 +34,6 @@ static bool emitBranch(Assembler &a, Label &label, ArmV6M::Condition condition, 
     }
 }
 
-ArmV6M::Condition testAccNonzero(Assembler &a, AccState &accState)
-{
-    if(!accState.hasLiveZ())
-    {
-        uint32_t r = accState.shape().sourceReg(a, SCRATCH_REG);
-        a.emit(ArmV6M::cmp(R(r), ArmV6M::Imm<8>(0)));
-    }
-
-    return ArmV6M::Condition::NE;
-}
 
 void Ctx::localJumpCleanup(uint32_t tos)
 {
@@ -91,11 +81,10 @@ void Ctx::handleGlobalJump(Instr term, uint32_t tos)
 bool Ctx::translateIfThen(BranchWidth width)
 {
     const auto entryTos = this->window.tos;
-    const bool fused = this->accState.shape().isFlags();
 
     Label end;
 
-    const auto cond = fused ? this->accState.shape().cond() : testAccNonzero(a, this->accState);
+    const auto cond = this->accState.testNonzero(a);
 
     if(!emitBranch(a, end, ArmV6M::inverse(cond), width))
     {
@@ -140,13 +129,10 @@ bool Ctx::translateIfThen(BranchWidth width)
 bool Ctx::translateIfThenElse(BranchWidth width)
 {
     const auto entryTos = this->window.tos;
-    const bool fused = this->accState.shape().isFlags();
 
     Label end, otherwise;
 
-    // Fused, the comparison's own condition is "acc would be 1", which is
-    // exactly "not zero" for a value a comparison produced.
-    const auto cond = fused ? this->accState.shape().cond() : testAccNonzero(a, this->accState);
+    const auto cond = this->accState.testNonzero(a);
 
     if(!emitBranch(a, otherwise, cond, width))
     {
@@ -200,7 +186,7 @@ bool Ctx::translateIfThenElse(BranchWidth width)
 bool Ctx::translateSwitch(BranchWidth width, uint32_t n)
 {
     const auto entryTos = this->window.tos;
-    assert(!this->accState.shape().isFlags());
+    assert(!this->accState.isBoolean());
 
     this->accState.flush(a, ACC_REG);
     a.materializeImm32(SCRATCH_REG, n);
@@ -278,6 +264,9 @@ bool Ctx::translateLoop(BranchWidth width)
     const auto entryTos = this->window.tos;
 
     this->accState.flushLive(a, ACC_REG);
+
+    // The back edge lands here too, carrying its own flags.
+    this->accState.dropFlags();
     const auto start = a.pc();
 
     Instr condTerm;
@@ -297,9 +286,7 @@ bool Ctx::translateLoop(BranchWidth width)
         }
     }
 
-    const bool fused = this->accState.shape().isFlags();
-
-    const auto cond = fused ? this->accState.shape().cond() : testAccNonzero(a, this->accState);
+    const auto cond = this->accState.testNonzero(a);
 
     Label out;
     if(!emitBranch(a, out, ArmV6M::inverse(cond), width))

@@ -189,12 +189,13 @@ void Window::pushFrom(Assembler &e, AccState &accState, uint32_t srcReg)
     tos += 1;
 }
 
-void Window::finishPop(Assembler &e)
+void Window::finishPop(Assembler &e, AccState &accState)
 {
     bool popUncovers = (tos - 1) >= WINDOW_SIZE;
     uint32_t uncoveredByPop = tos - 1 - WINDOW_SIZE;
     if(popUncovers)
     {
+        accState.clobbered(physReg(uncoveredByPop));
         e.emit(ArmV6M::pop(oneReg(physReg(uncoveredByPop))));
     }
     tos -= 1;

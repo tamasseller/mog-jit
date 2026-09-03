@@ -11,19 +11,19 @@ using namespace jitc;
 TEST(startsCleanInAccReg)
 {
     AccState acc;
-    Shape s = acc.shape();
+    Shape s = acc.operand();
     CHECK(!s.isImm() && s.reg() == ACC_REG);
 }
 
-TEST(producerLeavesTheShapePendingUnmaterialized)
+TEST(pendingLeavesTheShapeUnmaterialized)
 {
     TestAssembler e_ta(4);
     Assembler &e = e_ta.a;
     const uint16_t *buf = e_ta.code();
     AccState acc;
-    acc.producer(Shape::ofImm(42));
-    CHECK(e.halfwordCount() == 0); // producer alone never emits
-    Shape s = acc.shape();
+    acc.pending(Shape::ofImm(42));
+    CHECK(e.halfwordCount() == 0); // pending alone never emits
+    Shape s = acc.operand();
     CHECK(s.isImm() && s.imm() == 42);
     CHECK(e.halfwordCount() == 0); // reading it doesn't discharge it either
 }
@@ -34,11 +34,11 @@ TEST(flushMaterializesPendingAndBecomesClean)
     Assembler &e = e_ta.a;
     const uint16_t *buf = e_ta.code();
     AccState acc;
-    acc.producer(Shape::ofImm(3));
+    acc.pending(Shape::ofImm(3));
     acc.flush(e, 5);
     CHECK(e.halfwordCount() == 1);
     CHECK(buf[0] == ArmV6M::movs(ArmV6M::LoReg(5), ArmV6M::Imm<8>(3))); // MOVS r5, #3
-    Shape s = acc.shape();
+    Shape s = acc.operand();
     CHECK(!s.isImm() && s.reg() == 5);
 }
 
@@ -70,30 +70,32 @@ TEST(flushLiveOnPoisonedAccIsANoOp)
     CHECK(e.halfwordCount() == 0);
 }
 
-TEST(setCleanThenPoisonThenProducerSupersedes)
+TEST(setCleanThenPoisonThenPendingSupersedes)
 {
     AccState acc;
     acc.setClean(7);
-    Shape s = acc.shape();
+    Shape s = acc.operand();
     CHECK(!s.isImm() && s.reg() == 7);
 
     acc.poison();
-    // Reading a poisoned value's imm()/reg() asserts (a translator-logic
+    CHECK(!acc.isLive());
+    // Reading a dead accumulator's operand() asserts (a translator-logic
     // bug, never legitimate input) — not exercised here.
 
-    acc.producer(Shape::ofReg(2));
-    Shape s2 = acc.shape(); // producer supersedes Poisoned without issue
+    acc.pending(Shape::ofReg(2));
+    Shape s2 = acc.operand(); // pending supersedes Dead without issue
     CHECK(!s2.isImm() && s2.reg() == 2);
 }
 
-TEST(flagsShapeMaterializesTheZeroOneSelect)
+TEST(aBooleanAccumulatorMaterializesTheZeroOneSelect)
 {
     TestAssembler e_ta(8);
     Assembler &e = e_ta.a;
     const uint16_t *buf = e_ta.code();
     AccState acc;
-    acc.producer(Shape::ofFlags(ArmV6M::Condition::NE));
+    acc.boolean(ArmV6M::Condition::NE);
     CHECK(e.halfwordCount() == 0); // a comparison's own CMP is all a fused consumer needs
+    CHECK(acc.isBoolean());
 
     acc.flush(e, 3);
     CHECK(e.halfwordCount() == 4);
@@ -102,6 +104,5 @@ TEST(flagsShapeMaterializesTheZeroOneSelect)
     CHECK(buf[2] == ArmV6M::b(ArmV6M::Ioff<1, 11>(0)));
     CHECK(buf[3] == ArmV6M::movs(ArmV6M::LoReg(3), ArmV6M::Imm<8>(0)));
 
-    Shape s = acc.shape();
-    CHECK(!s.isImm() && s.reg() == 3);
+    CHECK(!acc.isBoolean() && acc.operand().reg() == 3);
 }

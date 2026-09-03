@@ -984,8 +984,12 @@ one free destination, with no ternary form, so combining never chains more
 than one bytecode instruction deep in either direction. It resolves *at* the
 next instruction, never several ahead.
 
-**The state** (`src/compiler/shape.h`) is one `Shape`: where `acc`'s value
-is right now.
+**The state** is three types, one per thing being described.
+
+`Shape` (`src/compiler/shape.h`) is **where a value is**, and it is the
+operand type `emitBinaryOp`/`emitComparison` take — so folding `acc` in is
+passing its own shape through. Both of its kinds are legal wherever a
+`Shape` is accepted, which is what keeps it usable as an operand:
 
 - **`Reg(r)`**: in a physical register — usually `r0`, sometimes an alias
   left by an earlier destination-fold, sometimes the window register a
@@ -993,20 +997,28 @@ is right now.
 - **`Imm(k)`**: a literal, not yet emitted anywhere (from `CONST`).
   Classifying by *result shape* rather than opcode is what keeps the table
   small.
-- **`Flags(cond)`**: in the condition flags — one when `cond` holds, zero
-  otherwise, which is exactly what a comparison leaves behind. A consumer
-  that branches reads `cond()` and emits nothing; any other one materializes
-  it, at the four instructions ARMv6-M's missing compare-and-set costs.
-- **`Poisoned`**: nothing downstream may read `acc` — a write-back-in-place
-  combo (`REG_REG`/`PEEK_PEEK`) just ran, or a CFG edge killed it (§8.7).
-  `imm()`/`reg()` assert, since reading it is a translator or input-program
-  bug.
 
-`Shape` is also the operand type `emitBinaryOp`/`emitComparison` take, so
-folding `acc` in is passing its own shape through; only `Poisoned` never
-appears in operand position. `AccState` adds what is specific to `acc`: the
-flush that records where the value landed, and the `ACC_REG` dependency
-tracking `Window` and the extension surface drive.
+`FlagState` (`flagstate.h`) is **what NZCV hold**: a statement about the
+processor, not about any one value. `ZeroOf(r)` means N/Z are what
+`CMP r, #0` would leave; `Compare(cond)` means a comparison established the
+relation `cond`. Producers set it, consumers read it in place of emitting a
+`CMP`, and anything opaque forgets it.
+
+`AccState` (`accstate.h`) is **the accumulator**, and owns the coupling
+between the two:
+
+- **`Pending(Shape)`**: a value with a home already.
+- **`Boolean`**: a comparison's one-or-zero, materialized nowhere — it *is*
+  the flag state, so this kind is legal only while that state is `Compare`.
+  A consumer that branches reads the condition and emits nothing; any other
+  one materializes it, at the four instructions ARMv6-M's missing
+  compare-and-set costs.
+- **`Dead`**: nothing downstream may read `acc` — a write-back-in-place
+  combo (`REG_REG`/`PEEK_PEEK`) just ran, or a CFG edge killed it (§8.7).
+  `operand()` asserts, since reading it is a translator or input-program bug.
+
+`AccState` also carries the `ACC_REG` dependency tracking `Window` and the
+extension surface drive.
 
 **The transitions**, one bytecode instruction at a time:
 
@@ -1052,10 +1064,17 @@ arithmetic value needs no `CMP` of its own. The claim is a return value from
 each knows which encoding it just emitted, and the operand-dependent cases
 that end on a flag-preserving `MOV` or emit nothing at all — add of zero,
 shift by zero, a register shift's tail move, a pool load — report false
-where they arise instead of being re-derived by a caller. `AccState` carries
-it from that producer to the next instruction only and drops it on every
-other transition; what may run in between is closed, being window fixups and
-a spliced literal pool, none of which touch the flags. It is sound for the
+where they arise instead of being re-derived by a caller. The claim names the register the
+flags describe rather than acc itself, which is what lets it survive the two
+transitions that emit nothing at all: a `LOAD` naming the register a result
+was just folded into (`x = a + b; if (x)`), and the write-back-in-place
+combos, where acc is poisoned but the flags still describe the target
+(`s = s + a; if (s)`). Everything else drops it. What invalidates a
+claim is anything that changes N/Z or overwrites the register named — so a
+`POP` uncovering a spill into that register clears it, an extension emitter
+clears it unconditionally (an emitter is opaque), and a loop head clears it
+because the back edge lands there carrying its own flags. A spliced literal
+pool is transparent: a `B` over words that are never executed. It is sound for the
 `EQ`/`NE` pair alone — only Z agrees with what a `CMP #0` would leave — so a
 relational test still goes through `Flags(cond)`, and a `LOAD`, `CALL`,
 extend or helper result still pays for its own `CMP`.

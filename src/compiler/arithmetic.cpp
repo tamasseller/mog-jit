@@ -175,9 +175,9 @@ bool emitBinaryOp(Assembler &e, Op op, Combo combo, const Shape &accShape, const
             {
                 switch(op)
                 {
-                    case Op::SHL: e.emit(ArmV6M::lsls(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift)));
-                    case Op::SHR: e.emit(ArmV6M::lsrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift)));
-                    case Op::ASR: e.emit(ArmV6M::asrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift)));
+                    case Op::SHL: e.emit(ArmV6M::lsls(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift))); break;
+                    case Op::SHR: e.emit(ArmV6M::lsrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift))); break;
+                    case Op::ASR: e.emit(ArmV6M::asrs(R((uint16_t)dest), R((uint16_t)m), ArmV6M::Imm<5>((uint16_t)shift))); break;
                     default: assert(false); // GCOV_EXCL_LINE
                 }
             }

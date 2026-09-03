@@ -55,7 +55,7 @@ TEST(spillOffsetGetsSavesLRAdjustmentOnlyForOriginalOutOfWindowArgs)
     Assembler &e = e_ta.a;
     const uint16_t *buf = e_ta.code();
     AccState acc;
-    acc.producer(Shape::ofImm(99));
+    acc.pending(Shape::ofImm(99));
     nonLeaf.pushValue(e, acc); // tos: 5 -> 6, evicts k=1 to the real stack
     CHECK(nonLeaf.spillOffset(0) == 4 + 4); // k=0 still adjusted (raw offset grew with tos)
     CHECK(nonLeaf.spillOffset(1) == 0);     // k=1 (self-spilled) — not adjusted
@@ -71,7 +71,7 @@ TEST(pushValueEvictsAtWindowBoundary)
     int values[] = {10, 20, 30, 40, 50};
     for(int v : values)
     {
-        acc.producer(Shape::ofImm(v));
+        acc.pending(Shape::ofImm(v));
         w.pushValue(e, acc);
     }
 
@@ -94,12 +94,12 @@ TEST(finishPopReloadsWhatPushEvicted)
     AccState acc;
     for(int v : {10, 20, 30, 40, 50})
     {
-        acc.producer(Shape::ofImm(v));
+        acc.pending(Shape::ofImm(v));
         w.pushValue(e, acc);
     }
     uint32_t before = e.halfwordCount();
 
-    w.finishPop(e); // pops the top slot (tos=5 -> 4); must reload k=0's spilled r7
+    w.finishPop(e, acc); // pops the top slot (tos=5 -> 4); must reload k=0's spilled r7
     CHECK(e.halfwordCount() == before + 1);
     CHECK(buf[before] == ArmV6M::pop(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(7)))); // POP {r7}
     CHECK(w.tos == 4);

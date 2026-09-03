@@ -50,7 +50,7 @@ public:
 
     void pushFrom(Assembler &e, AccState &accState, uint32_t srcReg);
 
-    void finishPop(Assembler &e);
+    void finishPop(Assembler &e, AccState &accState);
 
     uint32_t spillOffset(uint32_t k) const;
 

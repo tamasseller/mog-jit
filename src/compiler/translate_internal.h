@@ -50,9 +50,10 @@ struct Ctx
         return this->lookahead;
     }
 
-    /** The window register a following `STORE` folds into, or -1 — consuming
-     *  that `STORE` when it does. */
-    int32_t peekStoreFold();
+    /** The register a following `STORE` folds the result into — consuming that
+     *  `STORE` when there is one — or `otherwise` where the result would land
+     *  anyway. */
+    uint32_t peekStoreFold(uint32_t otherwise);
 
     /* Out of line on purpose: its ExtSite would otherwise sit in
      * GUARDED_processUntilTerminator's frame on every path through the switch. */
@@ -65,11 +66,5 @@ struct Ctx
     bool translateSwitch(BranchWidth width, uint32_t n);
     bool translateBody(BranchWidth width);
 };
-
-/** `fold`'s register if it took, `otherwise` if it declined. */
-inline uint32_t foldDest(int32_t fold, uint32_t otherwise)
-{
-    return fold >= 0 ? (uint32_t)fold : otherwise;
-}
 
 }

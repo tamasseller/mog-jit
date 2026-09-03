@@ -66,7 +66,7 @@ void ExtSite::pop(uint32_t dstReg)
     }
 
     moveIfNeeded(a, dstReg, src);
-    window.finishPop(a); // must run after the read above — same register
+    window.finishPop(a, acc); // must run after the read above — same register
 }
 
 uint32_t ExtSite::accInto(uint32_t dstReg)

@@ -2059,3 +2059,103 @@ TEST(AnIdentityOperandCopiesThroughTheFlagSettingEncodingSoTheTestStillFuses)
         CHECK(rt.code()[i] == expected[i]);
     }
 }
+
+TEST(AStoreFoldedResultReloadedFromItsOwnRegisterKeepsTheFlags)
+{
+    // `x = a + b; if (x)`, the shape lower.ts produces for an assignment
+    // read straight back: the LOAD names the register the ADD folded into,
+    // and emits nothing, so the flags cannot have moved.
+    Instr body[] = {
+        LOAD(0), opReg(Op::ADD, 1), STORE(0), LOAD(0),
+        brTable(1),
+            bare(Op::BLOCK_END),
+            CONST(7), bare(Op::RETURN),
+        CONST(9), bare(Op::RETURN),
+    };
+    FakeRuntime<1> rt;
+    rt.set(0, 2, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
+    CHECK(halfwordCount == 13);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(6), ArmV6M::AnyReg(0)),                        // MOV r6, r0  (callee prologue)
+        ArmV6M::adds(ArmV6M::LoReg(7), ArmV6M::LoReg(7), ArmV6M::LoReg(6)),       // ADDS r7, r7, r6  — folded into STORE(0)'s target
+        ArmV6M::beq(ArmV6M::Ioff<1, 8>(6)),                                       // straight off the ADDS, no CMP
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(7)),
+        RETURN_VIA_LR,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(9)),
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(rt.code()[i] == expected[i]);
+    }
+}
+
+TEST(AWriteBackInPlaceComboLeavesTheFlagsDescribingItsTarget)
+{
+    // `s = s + a; if (s)`: REG_REG poisons acc (rtl.ts's COMBO table), but
+    // the flags still describe the register the result landed in, which the
+    // following LOAD names.
+    Instr body[] = {
+        LOAD(1), opRegWriteback(Op::ADD, 0), LOAD(0),
+        brTable(1),
+            bare(Op::BLOCK_END),
+            CONST(7), bare(Op::RETURN),
+        CONST(9), bare(Op::RETURN),
+    };
+    FakeRuntime<1> rt;
+    rt.set(0, 2, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
+    CHECK(halfwordCount == 13);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(6), ArmV6M::AnyReg(0)),
+        ArmV6M::adds(ArmV6M::LoReg(7), ArmV6M::LoReg(6), ArmV6M::LoReg(7)),       // ADDS r7, r6, r7  — write-back in place
+        ArmV6M::beq(ArmV6M::Ioff<1, 8>(6)),
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(7)),
+        RETURN_VIA_LR,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(9)),
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(rt.code()[i] == expected[i]);
+    }
+}
+
+TEST(ALoopHeadDropsAnIncomingFlagsClaimBecauseTheBackEdgeLandsThereToo)
+{
+    // The ADD lands in ACC_REG, so the loop's entry flushLive is a self-move
+    // and emits nothing — but `start` is a merge, and the back edge arrives
+    // carrying the body's flags. An empty condition sub-block would otherwise
+    // let testAccNonzero fuse against the claim the ADD left.
+    Instr body[] = {
+        LOAD(0), opReg(Op::ADD, 1),
+        bare(Op::LOOP), bare(Op::BLOCK_END),
+        CONST(42), bare(Op::RETURN),
+        CONST(9), bare(Op::RETURN),
+    };
+    FakeRuntime<1> rt;
+    rt.set(0, 2, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
+    CHECK(halfwordCount == 14);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::mov(ArmV6M::AnyReg(6), ArmV6M::AnyReg(0)),
+        ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(7), ArmV6M::LoReg(6)), // ADDS r0, r7, r6
+        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)),                   // CMP r0, #0 — the claim does not cross the loop head
+        ArmV6M::beq(ArmV6M::Ioff<1, 8>(6)),
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(42)),
+        RETURN_VIA_LR,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(9)),
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(rt.code()[i] == expected[i]);
+    }
+}
