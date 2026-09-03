@@ -6,6 +6,7 @@ SOURCES += ../../src/runtime/runtime.S
 SOURCES += ../../src/runtime/runtime.cpp
 SOURCES += ../../src/runtime/executor.cpp
 SOURCES += ../../src/runtime/dispatch_abi.cpp
+SOURCES += ../../src/runtime/bytecode_default.cpp
 
 # The compiler itself
 SOURCES += ../../src/compiler/window.cpp

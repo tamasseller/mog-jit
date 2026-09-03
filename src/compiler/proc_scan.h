@@ -4,21 +4,22 @@
 #include <cstdint>
 
 #include "resource_codes.h"
-#include "ext.h"
+#include "bytecode.h"
 
 namespace jitc
 {
 
 struct BodyScanResult
 {
-    uint32_t bodyBytes;  
-    bool needsLRSave;    
-    bool ok;             
-    uint32_t failCode;   
+    uint32_t bodyBytes;
+    bool needsLRSave;
+    bool ok;
+    uint32_t failCode;
 };
 
-BodyScanResult scanProcBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t startOffset,
-    uint32_t stackFloor = 0);
+/** Consumes one body off `r`, which is left just past it — so the walk over a
+ *  whole program is one cursor, procedure after procedure. */
+BodyScanResult scanProcBody(BcReader &r, uint32_t stackFloor = 0);
 
 } // namespace jitc
 

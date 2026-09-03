@@ -1,4 +1,5 @@
 #include "decode_instr.h"
+#include "wire.h"
 #include "abi_strategy.h"
 #include "Test.h"
 #include "ext.h"
@@ -47,10 +48,9 @@ public:
             procs[i] = ProcSource{0, trivialBody, 1};
         }
         uint32_t len = encodeProgram(procs, procCount, programBytes, sizeof(programBytes));
-        uint32_t bodyOffset;
-        decodeLeb128(programBytes, 0, bodyOffset); // past proc_count's own LEB128
         new(bytes) Runtime(procCount, arena);
-        uint32_t code = (*this)->loadProgram(programBytes, len, bodyOffset);
+        BcReader wire = wireAtBodies(programBytes, len);
+        uint32_t code = (*this)->loadProgram(wire);
         assert(code == 0); // GCOV_EXCL_LINE — this file's own encoding setup, not the thing under test
         (void)code;
     }
@@ -216,14 +216,13 @@ TEST(WalkFailsWithoutTouchingDispatchStateWhenAProcedureCantBeScanned)
     ProcSource procs[] = {ProcSource{0, body, 1}};
     uint8_t programBytes[16];
     uint32_t len = encodeProgram(procs, 1, programBytes, sizeof(programBytes));
-    uint32_t bodyOffset;
-    decodeLeb128(programBytes, 0, bodyOffset);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
     register uint32_t sp asm("sp");
     CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/sp);
     Runtime *runtime = new(bytes) Runtime(1, arena);
-    CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == RESOURCE_EXHAUSTED_SCAN_STACK);
+    BcReader wire = wireAtBodies(programBytes, len);
+    CHECK(runtime->loadProgram(wire) == RESOURCE_EXHAUSTED_SCAN_STACK);
 }
 
 TEST(WalkReportsAnUnterminatedBodySeparatelyFromRunningOutOfStack)
@@ -232,13 +231,12 @@ TEST(WalkReportsAnUnterminatedBodySeparatelyFromRunningOutOfStack)
     ProcSource procs[] = {ProcSource{0, body, 2}};
     uint8_t programBytes[16];
     uint32_t len = encodeProgram(procs, 1, programBytes, sizeof(programBytes));
-    uint32_t bodyOffset;
-    decodeLeb128(programBytes, 0, bodyOffset);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
     CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
     Runtime *runtime = new(bytes) Runtime(1, arena);
-    CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == RESOURCE_PROGRAM_BODY_UNTERMINATED);
+    BcReader wire = wireAtBodies(programBytes, len);
+    CHECK(runtime->loadProgram(wire) == RESOURCE_PROGRAM_BODY_UNTERMINATED);
 }
 
 TEST(WalkReportsAnArgCountPastProcSlotsOwnFieldWidth)
@@ -247,13 +245,12 @@ TEST(WalkReportsAnArgCountPastProcSlotsOwnFieldWidth)
     ProcSource procs[] = {ProcSource{ProcSlot::MAX_ARG_COUNT + 1, body, 1}};
     uint8_t programBytes[16];
     uint32_t len = encodeProgram(procs, 1, programBytes, sizeof(programBytes));
-    uint32_t bodyOffset;
-    decodeLeb128(programBytes, 0, bodyOffset);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
     CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
     Runtime *runtime = new(bytes) Runtime(1, arena);
-    CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == RESOURCE_LIMIT_ARG_COUNT);
+    BcReader wire = wireAtBodies(programBytes, len);
+    CHECK(runtime->loadProgram(wire) == RESOURCE_LIMIT_ARG_COUNT);
 }
 
 TEST(WalkReportsAProcCountPastTheCallRecordsOwnProcIdxField)
@@ -266,7 +263,8 @@ TEST(WalkReportsAProcCountPastTheCallRecordsOwnProcIdxField)
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
     CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
     Runtime *runtime = new(bytes) Runtime(jitc::MAX_PROC_IDX + 2, arena);
-    CHECK(runtime->loadProgram(programBytes, sizeof(programBytes), 0) == RESOURCE_LIMIT_PROC_COUNT);
+    BcReader wire = wireOver(programBytes, sizeof(programBytes));
+    CHECK(runtime->loadProgram(wire) == RESOURCE_LIMIT_PROC_COUNT);
 }
 
 TEST(WalkAcceptsTheLargestProcCountTheCallRecordCanStillAddress)
@@ -275,47 +273,46 @@ TEST(WalkAcceptsTheLargestProcCountTheCallRecordCanStillAddress)
     ProcSource procs[] = {ProcSource{0, body, 1}};
     uint8_t programBytes[16];
     uint32_t len = encodeProgram(procs, 1, programBytes, sizeof(programBytes));
-    uint32_t bodyOffset;
-    decodeLeb128(programBytes, 0, bodyOffset);
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
     // The boundary itself is not the rejection — one procedure walked under a
     // procCount at the ceiling still has to pass.
     CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
     Runtime *runtime = new(bytes) Runtime(1, arena);
-    CHECK(runtime->loadProgram(programBytes, len, bodyOffset) == 0);
+    BcReader wire = wireAtBodies(programBytes, len);
+    CHECK(runtime->loadProgram(wire) == 0);
     CHECK(jitc::MAX_PROC_IDX + 1 == 0x8000u);
 }
 
 TEST(WalkReportsAnUnknownOpcodeAsADeploymentMismatch)
 {
     uint8_t programBytes[] = {0x01, 0x00, 0x80}; // proc_count=1, arg_count=0, body=[EXT 0x80]
-    const uint32_t bodyOffset = 1;
 
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
     CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
     Runtime *runtime = new(bytes) Runtime(1, arena);
-    CHECK(runtime->loadProgram(programBytes, sizeof(programBytes), bodyOffset) == RESOURCE_PROGRAM_EXT_UNKNOWN);
+    BcReader wire = wireAtBodies(programBytes, sizeof(programBytes));
+    CHECK(runtime->loadProgram(wire) == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
 
 // ── the extension seam at the program walk (compiler/src/ext.h) ─────────
 
 namespace
 {
-uint32_t extInlineDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+bool extInlineDescribe(uint8_t, BcReader &, uint32_t *desc)
 {
-    *decl = jitc::extDecl(0, /*tosDelta=*/0, /*halfwords=*/2);
-    return 1;
+    *desc = jitc::extDesc(0, /*tosDelta=*/0);
+    return true;
 }
 
-uint32_t extCallShapedDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+bool extCallShapedDescribe(uint8_t, BcReader &, uint32_t *desc)
 {
-    *decl = jitc::extDecl(jitc::EXT_FLAG_CALL_SHAPED, 0, 2);
-    return 1;
+    *desc = jitc::extDesc(jitc::EXT_FLAG_CALL_SHAPED, 0);
+    return true;
 }
 
-const ExtStub EXT_OK = {extInlineDecode};
-const ExtStub EXT_CALL_SHAPED = {extCallShapedDecode};
+const ExtStub EXT_OK = {extInlineDescribe};
+const ExtStub EXT_CALL_SHAPED = {extCallShapedDescribe};
 
 uint32_t extProgram(uint8_t *out)
 {
@@ -336,7 +333,8 @@ TEST(WalkAcceptsAWellFormedExtensionDeclaration)
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
     CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
     Runtime *runtime = new(bytes) Runtime(1, arena);
-    CHECK(runtime->loadProgram(programBytes, len, 1) == 0);
+    BcReader wire = wireAtBodies(programBytes, len);
+    CHECK(runtime->loadProgram(wire) == 0);
 }
 
 
@@ -349,5 +347,6 @@ TEST(WalkRejectsACallShapedExtensionDeclarationAsUnsupported)
     alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
     CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
     Runtime *runtime = new(bytes) Runtime(1, arena);
-    CHECK(runtime->loadProgram(programBytes, len, 1) == RESOURCE_PROGRAM_EXT_UNSUPPORTED);
+    BcReader wire = wireAtBodies(programBytes, len);
+    CHECK(runtime->loadProgram(wire) == RESOURCE_PROGRAM_EXT_UNSUPPORTED);
 }

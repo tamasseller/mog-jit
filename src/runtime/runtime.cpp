@@ -3,26 +3,29 @@
 #include "decode_instr.h"
 #include "abi_strategy.h"
 
-uint32_t Runtime::loadProgram(const uint8_t *programBytes, uint32_t programSize, uint32_t bodyOffset)
+/* One cursor for the whole directory: the procedures sit end to end, so each
+ * body's scan leaves it exactly where the next arg_count starts. */
+uint32_t Runtime::loadProgram(BcReader &r)
 {
     if(dispatch.getProcCount() > jitc::MAX_PROC_IDX + 1)
     {
         return RESOURCE_LIMIT_PROC_COUNT;
     }
 
-    uint32_t pos = bodyOffset;
     for(uint32_t i = 0; i < dispatch.getProcCount(); i++)
     {
-        assert(pos < programSize); // GCOV_EXCL_LINE — malformed/truncated program, matching decode_instr.cpp's own convention
-        
-        uint32_t argCount = jitc::decodeLeb128(programBytes, pos, pos);
-        uint32_t bodyStart = pos;
+        assert(!r.atEnd()); // GCOV_EXCL_LINE — malformed/truncated program, matching decode_instr.cpp's own convention
 
-        jitc::BodyScanResult scan = jitc::scanProcBody(programBytes, programSize, bodyStart, memory.getStackLimit());
+        uint32_t argCount = 0;
+        jitc::decodeLeb128(r, argCount);
+
+        const BcHandle body = r.here();
+
+        jitc::BodyScanResult scan = jitc::scanProcBody(r, memory.getStackLimit());
 
         if(!scan.ok)
         {
-            return scan.failCode; 
+            return scan.failCode;
         }
         if(argCount > ProcSlot::MAX_ARG_COUNT)
         {
@@ -36,10 +39,8 @@ uint32_t Runtime::loadProgram(const uint8_t *programBytes, uint32_t programSize,
         ProcSlot &s = dispatch.slot(i);
         s.setCodePtr(trampolineAddr);
         s.lastUsed = 0;
-        s.bodyPtr = (uint32_t)(uintptr_t)(programBytes + bodyStart);
+        s.bodyHandle = body;
         s.setStaticInfo(argCount, scan.bodyBytes, scan.needsLRSave);
-
-        pos = bodyStart + scan.bodyBytes;
     }
 
     return 0;

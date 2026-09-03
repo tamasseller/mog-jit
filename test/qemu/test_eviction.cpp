@@ -31,7 +31,7 @@ static ProgramResult enterProgramWithSharedArena(
     const uint8_t *programBytes, uint32_t programSize, uint32_t arenaSize)
 {
     return Executor::split((uint32_t)(uintptr_t)sharedArena, arenaSize, stackLimitAboveBss(), /*interruptReserve=*/0)
-        .run(programBytes, programSize, args, argCount);
+        .run(bcMapped(programBytes), programSize, args, argCount);
 }
 
 TEST(EvictionThreeDeepCallChain)

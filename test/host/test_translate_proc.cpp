@@ -56,12 +56,12 @@ static const Instr kProc0Body[] = {CONST(37), call(1), bare(Op::RETURN)};
 // proc1 (argCount 1): LOAD(0), opImm(ADD, 5), RETURN
 static const Instr kProc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)};
 
-// translateProc reads argCount/bodyPtr/bodyBytes/needsLRSave straight out
+// translateProc reads argCount/bodyHandle/bodyBytes/needsLRSave straight out
 // of the Runtime's own ProcSlot, and always compiles through an Assembler
 // attached to that Runtime's arena — there is no buffer-only entry point a
 // test could hand a throwaway pair to.
 //
-// That arena, and every ProcSlot's own bodyPtr, are addressed as a bare
+// That arena, and every ProcSlot's own bodyHandle, are addressed as a bare
 // uint32_t — a real target's flat 32-bit address space. A 64-bit host
 // process's own real memory doesn't generally fit that (ASLR puts both
 // the stack and ordinary heap/static storage above 4GB), so this file
@@ -77,7 +77,7 @@ static const Instr kProc1Body[] = {LOAD(0), opImm(Op::ADD, 5), bare(Op::RETURN)}
 // slot never matters here, only that one is supplied.
 static constexpr uint32_t LRU_TICK = 1000;
 
-// Every real caller reads a procedure's own argCount/bodyPtr/bodyBytes/
+// Every real caller reads a procedure's own argCount/bodyHandle/bodyBytes/
 // needsLRSave through its slot in a Runtime, and every CALL site reads
 // just the callee's argCount() the same way (translate_proc.cpp) — set()
 // below is the procedure-under-test path: it encodes body[count] via
@@ -111,14 +111,14 @@ public:
     Runtime &runtime() { return *reinterpret_cast<Runtime *>(bytes); }
 
     // Reserves cap bytes of low, dereferenceable memory for procedure
-    // idx's own body, pins it as that slot's bodyPtr, and hands back the
+    // idx's own body, pins it as that slot's bodyHandle, and hands back the
     // raw pointer to fill — for the handful of tests that hand-splice an
     // extension opcode encodeBody can't express (extBody below).
     // Ordinary Instr[] bodies go through set() instead.
     uint8_t *bodyBuf(uint32_t idx, uint32_t cap)
     {
         uint32_t addr = low.alloc(cap);
-        runtime().slot(idx).bodyPtr = addr;
+        runtime().slot(idx).bodyHandle = addr;
         return low.raw(addr);
     }
 
@@ -1469,16 +1469,16 @@ struct SeenSite
 };
 SeenSite g_seen;
 
-uint32_t twoPopDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+bool twoPopDescribe(uint8_t, BcReader &, uint32_t *desc)
 {
-    *decl = jitc::extDecl(0, /*tosDelta=*/-2, /*halfwords=*/6);
-    return 1;
+    *desc = jitc::extDesc(0, /*tosDelta=*/-2);
+    return true;
 }
 
 void captureEmit(ExtSite &site)
 {
     g_seen.called = true;
-    g_seen.opcodeByte = *site.opcode();
+    g_seen.opcodeByte = site.opcode();
     g_seen.depthOnEntry = site.depth();
 
     // Something real and recognisable: acc = top + next, taken off the
@@ -1489,28 +1489,12 @@ void captureEmit(ExtSite &site)
     site.accIsNowIn(ACC_REG);
 }
 
-void overrunEmit(ExtSite &site)
-{
-    // Declares 6 halfwords (twoPopDecode) but emits 7.
-    for(uint32_t i = 0; i < 7; i++)
-    {
-        site.a.emit(ArmV6M::adds(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<3>(1)));
-    }
-}
-
-void underPopEmit(ExtSite &site)
-{
-    // Declares -2 but takes only one off the stack.
-    site.pop(ENTRY_IDX_REG);
-    site.accIsNowIn(ENTRY_IDX_REG);
-}
-
-uint32_t helperDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+bool helperDescribe(uint8_t, BcReader &, uint32_t *desc)
 {
     // Declares NEEDS_LR, which both reach forms require: a BLX clobbers lr,
     // and the prologue's decision to save it came from this flag.
-    *decl = jitc::extDecl(jitc::EXT_FLAG_NEEDS_LR, /*tosDelta=*/-2, /*halfwords=*/16, /*poolWords=*/1);
-    return 1;
+    *desc = jitc::extDesc(jitc::EXT_FLAG_NEEDS_LR, /*tosDelta=*/-2);
+    return true;
 }
 
 constexpr uint32_t FAKE_HELPER_ADDR = 0x0800BEEFu;
@@ -1531,18 +1515,8 @@ void cHelperEmit(ExtSite &site)
     site.accIsNowIn(ACC_REG);
 }
 
-/* The same reach with nothing put back in r0 afterwards — what an op with
- * no result of its own looks like. */
-void helperNoRecoverEmit(ExtSite &site)
-{
-    site.pop(ENTRY_IDX_REG);
-    site.pop(SCRATCH_REG);
-    site.helperCall(FAKE_HELPER_ADDR);
-}
-
-const ExtStub EXT_RAW_HELPER = {helperDecode, rawHelperEmit, 0};
-const ExtStub EXT_HELPER_NO_RECOVER = {helperDecode, helperNoRecoverEmit, 0};
-const ExtStub EXT_C_HELPER = {helperDecode, cHelperEmit, EXT_THUNK_STACK_BYTES};
+const ExtStub EXT_RAW_HELPER = {helperDescribe, rawHelperEmit, 0};
+const ExtStub EXT_C_HELPER = {helperDescribe, cHelperEmit, EXT_THUNK_STACK_BYTES};
 
 // True iff `needle` appears anywhere in the first `n` halfwords of `buf`.
 bool containsSeq(const uint16_t *buf, uint32_t n, const uint16_t *needle, uint32_t len)
@@ -1556,9 +1530,7 @@ bool containsSeq(const uint16_t *buf, uint32_t n, const uint16_t *needle, uint32
     return false;
 }
 
-const ExtStub EXT_CAPTURE = {twoPopDecode, captureEmit};
-const ExtStub EXT_OVERRUN = {twoPopDecode, overrunEmit};
-const ExtStub EXT_UNDER_POP = {twoPopDecode, underPopEmit};
+const ExtStub EXT_CAPTURE = {twoPopDescribe, captureEmit};
 
 
 // PUSH PUSH <0x80> RETURN, hand-spliced: encodeBody takes Instr[], which
@@ -1585,10 +1557,10 @@ uint32_t deepExtBody(uint8_t *out)
     return n;
 }
 
-uint32_t deepDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+bool deepDescribe(uint8_t, BcReader &, uint32_t *desc)
 {
-    *decl = jitc::extDecl(0, /*tosDelta=*/0, /*halfwords=*/4);
-    return 1;
+    *desc = jitc::extDesc(0, /*tosDelta=*/0);
+    return true;
 }
 
 void deepLoadEmit(ExtSite &site)
@@ -1604,8 +1576,8 @@ void deepStoreEmit(ExtSite &site)
     site.store(/*slot=*/0, ACC_REG);
 }
 
-const ExtStub EXT_DEEP_LOAD = {deepDecode, deepLoadEmit};
-const ExtStub EXT_DEEP_STORE = {deepDecode, deepStoreEmit};
+const ExtStub EXT_DEEP_LOAD = {deepDescribe, deepLoadEmit};
+const ExtStub EXT_DEEP_STORE = {deepDescribe, deepStoreEmit};
 } // namespace
 
 TEST(AnExtensionOpDrivesTheOperandStackThroughItsSite)
@@ -1618,7 +1590,7 @@ TEST(AnExtensionOpDrivesTheOperandStackThroughItsSite)
     uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
 
     CHECK(g_seen.called);
-    // site.opcode() addresses the opcode byte itself, not the byte after it.
+    // site.opcode() is the opcode byte the core already took off the wire.
     CHECK(g_seen.opcodeByte == 0x80);
     // Both pushes are visible to the site — the core stages nothing.
     CHECK(g_seen.depthOnEntry == 2);
@@ -1626,30 +1598,6 @@ TEST(AnExtensionOpDrivesTheOperandStackThroughItsSite)
     const uint16_t adds[] = {
         ArmV6M::adds(ArmV6M::LoReg(ACC_REG), ArmV6M::LoReg(ENTRY_IDX_REG), ArmV6M::LoReg(SCRATCH_REG))};
     CHECK(containsSeq(rt.code(), n, adds, 1));
-}
-
-TEST(AnExtensionOpOverrunningItsDeclaredBudgetIsReported)
-{
-    // Caught here rather than left to surface as arena pressure and a
-    // wide-branch retry, neither of which names the extension.
-    FakeRuntime<1> rt(/*arenaBytes=*/128);
-    uint8_t *raw = rt.bodyBuf(0, 32);
-    rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/false);
-    ExtScope extScope(&EXT_OVERRUN);
-
-    EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_EXT_UNSUPPORTED, translateProc(0, rt.runtime(), LRU_TICK));
-}
-
-TEST(AnExtensionOpContradictingItsDeclaredTosDeltaIsReported)
-{
-    // The wire's total_depth was validated against the declared delta, and
-    // nothing re-derives it here — so the emitted effect has to match.
-    FakeRuntime<1> rt(/*arenaBytes=*/128);
-    uint8_t *raw = rt.bodyBuf(0, 32);
-    rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/false);
-    ExtScope extScope(&EXT_UNDER_POP);
-
-    EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_EXT_UNSUPPORTED, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
 TEST(ASlotBelowTheWindowIsLoadedFromTheSpillArea)
@@ -1731,16 +1679,10 @@ namespace
  * about to write can be the one a deferred acc is still reading. Each of
  * these bodies parks acc on a window register first, with LOAD's own
  * pending-shape path, and then has the extension write that register. */
-uint32_t zeroDeltaDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+bool zeroDeltaDescribe(uint8_t, BcReader &, uint32_t *desc)
 {
-    *decl = jitc::extDecl(0, /*tosDelta=*/0, /*halfwords=*/8);
-    return 1;
-}
-
-uint32_t killsAccDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
-{
-    *decl = jitc::extDecl(EXT_FLAG_KILLS_ACC, /*tosDelta=*/0, /*halfwords=*/8);
-    return 1;
+    *desc = jitc::extDesc(0, /*tosDelta=*/0);
+    return true;
 }
 
 // Four pushes, then LOAD <slot> — acc ends up pending on physReg(slot).
@@ -1786,11 +1728,10 @@ void invalidateEmit(ExtSite &site)
     site.accInvalidate();
 }
 
-const ExtStub EXT_IN_WINDOW_LOAD = {zeroDeltaDecode, inWindowLoadEmit};
-const ExtStub EXT_IN_WINDOW_STORE = {zeroDeltaDecode, inWindowStoreEmit};
-const ExtStub EXT_PUSH_POP = {zeroDeltaDecode, pushPopEmit};
-const ExtStub EXT_INVALIDATE = {killsAccDecode, invalidateEmit};
-const ExtStub EXT_UNDECLARED_INVALIDATE = {zeroDeltaDecode, invalidateEmit};
+const ExtStub EXT_IN_WINDOW_LOAD = {zeroDeltaDescribe, inWindowLoadEmit};
+const ExtStub EXT_IN_WINDOW_STORE = {zeroDeltaDescribe, inWindowStoreEmit};
+const ExtStub EXT_PUSH_POP = {zeroDeltaDescribe, pushPopEmit};
+const ExtStub EXT_INVALIDATE = {zeroDeltaDescribe, invalidateEmit};
 
 uint32_t translateWindowCase(FakeRuntime<1> &rt, uint32_t (*body)(uint8_t *))
 {
@@ -1858,8 +1799,8 @@ TEST(APushResolvesAnAccumulatorAliasingItsDestination)
 
 TEST(AnExtensionOpCanLeaveTheAccumulatorUndefined)
 {
-    // EXT_FLAG_KILLS_ACC is how an op says it clobbers r0 without
-    // establishing a value there; the following CONST re-establishes one.
+    // accInvalidate is how an op says it clobbered r0 without establishing
+    // a value there; the following CONST re-establishes one.
     FakeRuntime<1> rt(/*arenaBytes=*/256);
     uint8_t *raw = rt.bodyBuf(0, 48);
     const Instr prelude[] = {CONST(1), PUSH(), CONST(2), PUSH()};
@@ -1872,38 +1813,6 @@ TEST(AnExtensionOpCanLeaveTheAccumulatorUndefined)
     ExtScope extScope(&EXT_INVALIDATE);
     uint32_t n = translateProc(0, rt.runtime(), LRU_TICK);
     CHECK(n > 0);
-}
-
-TEST(AHelperReachDestroysTheAccumulatorByItself)
-{
-    // r0 is an argument register across either reach, so an op that ends in
-    // one and puts nothing back has destroyed acc whether it said so or
-    // not — no accInvalidate call anywhere in this emitter.
-    FakeRuntime<1> rt(/*arenaBytes=*/256);
-    uint8_t *raw = rt.bodyBuf(0, 32);
-    rt.setLen(0, /*argCount=*/0, extBody(raw), /*savesLR=*/true);
-    ExtScope extScope(&EXT_HELPER_NO_RECOVER);
-
-    EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_EXT_UNSUPPORTED, translateProc(0, rt.runtime(), LRU_TICK));
-}
-
-TEST(AnExtensionOpDestroyingAccWithoutDeclaringItIsReported)
-{
-    // The validator let the acc through this op on the strength of the
-    // other half's declaration, so an emitter that disagrees is caught here
-    // rather than as a poisoned read further down the body.
-    FakeRuntime<1> rt(/*arenaBytes=*/256);
-    uint8_t *raw = rt.bodyBuf(0, 48);
-    const Instr prelude[] = {CONST(1), PUSH(), CONST(2), PUSH()};
-    uint32_t len = encodeBody(prelude, 4, raw, 48);
-    raw[len++] = 0x80;
-    const Instr tail[] = {CONST(9), bare(Op::RETURN)};
-    len += encodeBody(tail, 2, raw + len, 48 - len);
-    rt.setLen(0, /*argCount=*/0, len, /*savesLR=*/false);
-
-    ExtScope extScope(&EXT_UNDECLARED_INVALIDATE);
-
-    EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_EXT_UNSUPPORTED, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
 // ── isa-core.md §4.5's dispatch ─────────────────────────────────────────

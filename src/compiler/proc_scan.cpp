@@ -10,10 +10,6 @@ namespace jitc
 {
 static bool triggersLRSave(const Instr &instr)
 {
-    if(instr.op == Op::EXT)
-    {
-        return extDeclHas(instr.extDecl, EXT_FLAG_NEEDS_LR);
-    }
     return instr.op == Op::CALL
         || (instr.op == Op::BR_TABLE && (uint32_t)instr.imm >= 2)
         || instr.op == Op::CLZ
@@ -32,7 +28,7 @@ struct ScanFrame
     bool dispatch;
 };
 
-static void GUARDED_scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &pc, bool &needsLRSave, ScanFrame *frame, uint32_t stackFloor, bool &stop, bool &foundEnd, uint32_t &failCode)
+static void GUARDED_scanBody(BcReader &r, bool &needsLRSave, ScanFrame *frame, uint32_t stackFloor, bool &stop, bool &foundEnd, uint32_t &failCode)
 {
     register uint32_t sp asm("sp");
     if(sp < SCAN_STACK_MARGIN || sp - SCAN_STACK_MARGIN < stackFloor)
@@ -42,59 +38,60 @@ static void GUARDED_scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &
         return;
     }
 
-    while(pc < maxBytes)
+    while(!r.atEnd())
     {
-        if(bytes[pc] >= MISC_BASE && bytes[pc] <= LAST_CORE_OPCODE)
+        Instr instr;
+        if(!decodeInstr(r.next(), r, instr))
         {
-            /* An escape's operand shape is defined only when its sub-code is
-             * assigned (§5.3), so an unassigned one cannot even be skipped. */
-            uint32_t sub = 0, next = 0;
-            if(!decodeLeb128Checked(bytes, maxBytes, pc + 1, sub, next)
-                || !miscSubCodeAssigned(bytes[pc], sub))
-            {
-                stop = true;
-                failCode = RESOURCE_PROGRAM_RESERVED_OPCODE;
-                return;
-            }
+            stop = true;
+            failCode = RESOURCE_PROGRAM_RESERVED_OPCODE;
+            return;
         }
 
-        if(bytes[pc] > LAST_CORE_OPCODE)
+        if(instr.op == Op::EXT)
         {
-            uint32_t decl = 0;
-            if(extDecodeLength(bytes, maxBytes, pc, decl) == 0)
+            /* The only place an extension's operands are stepped over, and
+             * the only place its declaration is read at all. */
+            uint32_t desc = 0;
+            if(!extDescribe((uint8_t)instr.extOpcode, r, &desc))
             {
                 stop = true;
                 failCode = RESOURCE_PROGRAM_EXT_UNKNOWN;
                 return;
             }
+
             /* Executor::run's budget rests on the first of these: a helper
              * that could reach a dispatch would nest under the translator. */
-            if(extDeclHas(decl, EXT_FLAG_CALL_SHAPED) || extDeclTosDelta(decl) > 0)
+            if(extDescHas(desc, EXT_FLAG_CALL_SHAPED) || extDescTosDelta(desc) > 0)
             {
                 stop = true;
                 failCode = RESOURCE_PROGRAM_EXT_UNSUPPORTED;
                 return;
             }
+
+            if(extDescHas(desc, EXT_FLAG_NEEDS_LR))
+            {
+                needsLRSave = true;
+            }
+            continue;
         }
 
-        DecodedInstr d = decodeInstr(bytes, maxBytes, pc);
-        if(triggersLRSave(d.instr))
+        if(triggersLRSave(instr))
         {
             needsLRSave = true;
         }
-        pc = d.next;
 
-        if(d.instr.op == Op::BR_TABLE || d.instr.op == Op::LOOP)
+        if(instr.op == Op::BR_TABLE || instr.op == Op::LOOP)
         {
-            ScanFrame inner = d.instr.op == Op::BR_TABLE
-                ? ScanFrame{(uint32_t)d.instr.imm + 1, true}
+            ScanFrame inner = instr.op == Op::BR_TABLE
+                ? ScanFrame{(uint32_t)instr.imm + 1, true}
                 : ScanFrame{2, false};
-            GUARDED_scanBody(bytes, maxBytes, pc, needsLRSave, &inner, stackFloor, stop, foundEnd, failCode);
+            GUARDED_scanBody(r, needsLRSave, &inner, stackFloor, stop, foundEnd, failCode);
             if(stop) return;
             continue;
         }
 
-        if(d.instr.op == Op::FALLTHROUGH)
+        if(instr.op == Op::FALLTHROUGH)
         {
             // Closes this case and continues into the next one, so the frame
             // stays open with one fewer case to go (isa-core.md §4.5).
@@ -103,14 +100,14 @@ static void GUARDED_scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &
             continue;
         }
 
-        if(d.instr.op == Op::BLOCK_END)
+        if(instr.op == Op::BLOCK_END)
         {
             assert(frame != nullptr); // GCOV_EXCL_LINE — malformed input: BLOCK_END with no open block
             if(--frame->remaining == 0) return; // construct fully closed — unwind to the enclosing level
             continue;
         }
 
-        if(isProcTerminator(d.instr))
+        if(isProcTerminator(instr))
         {
             if(frame == nullptr)
             {
@@ -127,22 +124,22 @@ static void GUARDED_scanBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t &
     }
 }
 
-BodyScanResult scanProcBody(const uint8_t *bytes, uint32_t maxBytes, uint32_t startOffset, uint32_t stackFloor)
+BodyScanResult scanProcBody(BcReader &r, uint32_t stackFloor)
 {
-    uint32_t pc = startOffset;
+    const uint32_t before = r.remaining();
     bool needsLRSave = false;
     bool stop = false;
     bool foundEnd = false;
     uint32_t failCode = 0;
 
-    GUARDED_scanBody(bytes, maxBytes, pc, needsLRSave, nullptr, stackFloor, stop, foundEnd, failCode);
+    GUARDED_scanBody(r, needsLRSave, nullptr, stackFloor, stop, foundEnd, failCode);
 
     if(!foundEnd && failCode == 0)
     {
         failCode = RESOURCE_PROGRAM_BODY_UNTERMINATED;
     }
-    
-    return BodyScanResult{pc - startOffset, needsLRSave, failCode == 0, failCode};
+
+    return BodyScanResult{before - r.remaining(), needsLRSave, failCode == 0, failCode};
 }
 
 } // namespace jitc

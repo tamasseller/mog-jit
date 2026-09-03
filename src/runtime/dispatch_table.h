@@ -4,13 +4,15 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "bytecode.h"
+
 extern const uint32_t trampolineAddr;
 
 struct ProcSlot
 {
     uint32_t codePtr;    
     uint32_t lastUsed;   
-    uint32_t bodyPtr;
+    BcHandle bodyHandle;
     uint32_t staticInfo; 
 
     static constexpr uint32_t MAX_ARG_COUNT = (1u << 11) - 1;
@@ -65,7 +67,7 @@ public:
     inline explicit DispatchTable(uint32_t procCount): procCount(procCount)
     {
         slots[0].lastUsed = 0;
-        slots[0].bodyPtr = 0;
+        slots[0].bodyHandle = 0;
         slots[0].staticInfo = 0;
     }
 
@@ -91,7 +93,7 @@ public:
 
     inline uint32_t savedSp() const
     {
-        return slots[0].bodyPtr;
+        return slots[0].bodyHandle;
     }
 
     inline bool isResident(uint32_t idx) const

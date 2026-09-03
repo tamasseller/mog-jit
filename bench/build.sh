@@ -45,6 +45,7 @@ FIXED_SOURCES=(
     "$QEMU_EXEC/vectors.S"
     ../src/runtime/runtime.S
     ../src/runtime/runtime.cpp
+    ../src/runtime/bytecode_default.cpp
     ../src/runtime/executor.cpp
     ../src/runtime/dispatch_abi.cpp
     ../src/compiler/window.cpp

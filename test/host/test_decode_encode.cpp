@@ -5,6 +5,7 @@
 // implementation here to check against directly.
 #include "Test.h"
 #include "decode_instr.h"
+#include "wire.h"
 #include "encode_instr.h"
 
 #include <cstring>
@@ -52,9 +53,9 @@ TEST(DecodeInstrRoundTripsEveryShape)
         uint32_t len = 0;
         encodeInstr(kCases[i], bytes, len, sizeof(bytes));
 
-        DecodedInstr d = decodeInstr(bytes, len, 0);
+        WireInstr d = decodeOne(bytes, len);
         CHECK(sameInstr(d.instr, kCases[i]));
-        CHECK(d.next == len);
+        CHECK(d.consumed == len);
     }
 }
 
@@ -64,14 +65,12 @@ TEST(DecodeInstrAdvancesThroughARunOfInstructions)
     uint8_t bytes[32];
     uint32_t len = encodeBody(program, 3, bytes, sizeof(bytes));
 
-    uint32_t pos = 0;
+    BcReader r = wireOver(bytes, len);
     for(uint32_t i = 0; i < 3; i++)
     {
-        DecodedInstr d = decodeInstr(bytes, len, pos);
-        CHECK(sameInstr(d.instr, program[i]));
-        pos = d.next;
+        CHECK(sameInstr(decodeFrom(r).instr, program[i]));
     }
-    CHECK(pos == len);
+    CHECK(r.atEnd());
 }
 
 TEST(EncodeConstSmallImmFitsOneByte)
@@ -108,10 +107,11 @@ TEST(EncodeLeb128MultiByteRoundTrips)
     encodeLeb128(300, bytes, len, sizeof(bytes)); // 300 = 0b1_0010_1100 -> 2 LEB128 bytes
     CHECK(len == 2);
 
-    uint32_t next;
-    uint32_t value = decodeLeb128(bytes, 0, next);
+    BcReader r = wireOver(bytes, len);
+    uint32_t value = 0;
+    CHECK(decodeLeb128(r, value));
     CHECK(value == 300);
-    CHECK(next == 2);
+    CHECK(r.atEnd());
 }
 
 // ── encodeProgram/encodeJitProgram (isa-core.md §5.5) ───────────────────
@@ -147,28 +147,26 @@ TEST(EncodeProgramBodyDecodesBackToTheSameInstructions)
     uint8_t bytes[32];
     uint32_t len = encodeProgram(procs, 2, bytes, sizeof(bytes));
 
-    uint32_t pos;
-    uint32_t procCount = decodeLeb128(bytes, 0, pos);
+    BcReader r = wireOver(bytes, len);
+    uint32_t procCount = 0, argCount = 0;
+
+    CHECK(decodeLeb128(r, procCount));
     CHECK(procCount == 2);
 
-    uint32_t argCount0 = decodeLeb128(bytes, pos, pos);
-    CHECK(argCount0 == 0);
+    CHECK(decodeLeb128(r, argCount));
+    CHECK(argCount == 0);
     for(uint32_t i = 0; i < 3; i++)
     {
-        DecodedInstr d = decodeInstr(bytes, len, pos);
-        CHECK(sameInstr(d.instr, body0[i]));
-        pos = d.next;
+        CHECK(sameInstr(decodeFrom(r).instr, body0[i]));
     }
 
-    uint32_t argCount1 = decodeLeb128(bytes, pos, pos);
-    CHECK(argCount1 == 1);
+    CHECK(decodeLeb128(r, argCount));
+    CHECK(argCount == 1);
     for(uint32_t i = 0; i < 3; i++)
     {
-        DecodedInstr d = decodeInstr(bytes, len, pos);
-        CHECK(sameInstr(d.instr, body1[i]));
-        pos = d.next;
+        CHECK(sameInstr(decodeFrom(r).instr, body1[i]));
     }
-    CHECK(pos == len);
+    CHECK(r.atEnd());
 }
 
 TEST(EncodeJitProgramPrependsTheStatsAndAppendsTheFrame)
@@ -182,17 +180,24 @@ TEST(EncodeJitProgramPrependsTheStatsAndAppendsTheFrame)
     uint8_t jit[16];
     uint32_t jitLen = encodeJitProgram(3, 300, procs, 1, jit, sizeof(jit));
 
-    uint32_t pos;
-    uint32_t maxCallDepth = decodeLeb128(jit, 0, pos);
+    BcReader r = wireOver(jit, jitLen);
+    uint32_t maxCallDepth = 0, totalDepth = 0;
+
+    CHECK(decodeLeb128(r, maxCallDepth));
     CHECK(maxCallDepth == 3);
-    uint32_t totalDepth = decodeLeb128(jit, pos, pos);
+    CHECK(decodeLeb128(r, totalDepth));
     CHECK(totalDepth == 300); // multi-byte LEB128 — proves the chain, not just a single byte
+
+    const uint32_t pos = jitLen - r.remaining();
     CHECK(jitLen - pos == plainLen + PROGRAM_FRAME_BYTES);
     CHECK(memcmp(jit + pos, plain, plainLen) == 0);
 
     const uint32_t payload = jitLen - PROGRAM_FRAME_BYTES;
-    CHECK(programFrameHash(jit, payload) == (uint16_t)(jit[payload] | (jit[payload + 1] << 8)));
-    CHECK(programFrameOk(jit, jitLen));
+    BcReader hash = wireOver(jit, payload);
+    CHECK(programFrameHash(hash, payload) == (uint16_t)(jit[payload] | (jit[payload + 1] << 8)));
+
+    BcReader whole = wireOver(jit, jitLen);
+    CHECK(programFrameOk(whole, jitLen));
 }
 
 // ── The decode table against isa-core.md §5.2 itself ────────────────────
@@ -242,7 +247,7 @@ TEST(DecodeTableAgreesWithTheSpecsOwnFormulas)
         // A 2-byte LEB128 tail, so a decoder that wrongly expects an
         // operand (or wrongly skips one) lands on the wrong `next`.
         const uint8_t bytes[] = {(uint8_t)code, 0x81, 0x01, 0x00};
-        DecodedInstr d = decodeInstr(bytes, sizeof(bytes), 0);
+        WireInstr d = decodeOne(bytes, sizeof(bytes));
 
         Op expectOp;
         Combo expectCombo = Combo::NONE;
@@ -267,7 +272,7 @@ TEST(DecodeTableAgreesWithTheSpecsOwnFormulas)
 
         CHECK(d.instr.op == expectOp);
         CHECK(d.instr.combo == expectCombo);
-        CHECK(d.next == (specHasTrailingOperand(code) ? 3u : 1u));
+        CHECK(d.consumed == (specHasTrailingOperand(code) ? 3u : 1u));
     }
 }
 
@@ -277,28 +282,28 @@ TEST(DecodeSuppliesTheImplicitAuxValuesTheSpecPromises)
     // than a trailing operand (§5.2's IMM_SMALL, BR_TABLE#1, TRAP#0,
     // CONST#0..15) — the ones a table has to carry as constants.
     const uint8_t brTable1[] = {98}, trap0[] = {103};
-    CHECK(decodeInstr(brTable1, 1, 0).instr.imm == 1);
-    CHECK(decodeInstr(trap0, 1, 0).instr.imm == 0);
+    CHECK(decodeOne(brTable1, 1).instr.imm == 1);
+    CHECK(decodeOne(trap0, 1).instr.imm == 0);
 
     // §5.4's bias: the extended form's operand is N - 2, so it starts at 2
     // and neither 0 nor 1 has a second spelling.
     const uint8_t brTableExt0[] = {100, 0}, brTableExt1[] = {100, 1};
-    CHECK(decodeInstr(brTableExt0, 2, 0).instr.imm == 2);
-    CHECK(decodeInstr(brTableExt1, 2, 0).instr.imm == 3);
+    CHECK(decodeOne(brTableExt0, 2).instr.imm == 2);
+    CHECK(decodeOne(brTableExt1, 2).instr.imm == 3);
 
     for(uint32_t i = 0; i < 16; i++)
     {
         const uint8_t small[] = {(uint8_t)(109 + i)};
-        DecodedInstr d = decodeInstr(small, 1, 0);
+        WireInstr d = decodeOne(small, 1);
         CHECK(d.instr.op == Op::CONST);
         CHECK(d.instr.imm == (int32_t)i);
-        CHECK(d.next == 1);
+        CHECK(d.consumed == 1);
     }
 
     for(uint32_t cmp = 0; cmp < 10; cmp++)
     {
         const uint8_t immSmall[] = {(uint8_t)(50 + cmp * 4 + 2)};
-        DecodedInstr d = decodeInstr(immSmall, 1, 0);
+        WireInstr d = decodeOne(immSmall, 1);
         CHECK(d.instr.combo == Combo::IMM_ACC);
         CHECK(d.instr.imm == 0);
     }
@@ -311,10 +316,10 @@ TEST(MiscUnaryEscapeDecodesItsAssignedSubCodes)
     for(uint32_t sub = 0; sub < 2; sub++)
     {
         const uint8_t bytes[] = {(uint8_t)MISC_UNARY, (uint8_t)sub, 0x00};
-        DecodedInstr d = decodeInstr(bytes, sizeof(bytes), 0);
+        WireInstr d = decodeOne(bytes, sizeof(bytes));
         CHECK(d.instr.op == SPEC_MISC_UNARY[sub]);
         CHECK(d.instr.combo == Combo::NONE);
-        CHECK(d.next == 2);
+        CHECK(d.consumed == 2);
 
         uint8_t reencoded[8];
         uint32_t len = 0;
@@ -348,15 +353,15 @@ TEST(EveryAssignedOpcodeSurvivesAnEncodeDecodeCycle)
     for(uint32_t code = 0; code < MISC_BASE; code++)
     {
         const uint8_t bytes[] = {(uint8_t)code, 0x81, 0x01, 0x00};
-        DecodedInstr first = decodeInstr(bytes, sizeof(bytes), 0);
+        WireInstr first = decodeOne(bytes, sizeof(bytes));
 
         uint8_t reencoded[8];
         uint32_t len = 0;
         encodeInstr(first.instr, reencoded, len, sizeof(reencoded));
         CHECK(len > 0);
 
-        DecodedInstr second = decodeInstr(reencoded, len, 0);
+        WireInstr second = decodeOne(reencoded, len);
         CHECK(sameInstr(first.instr, second.instr));
-        CHECK(second.next == len);
+        CHECK(second.consumed == len);
     }
 }

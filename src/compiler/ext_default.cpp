@@ -2,9 +2,9 @@
 #include "assembler.h"
 #include "runtime.h"
 
-extern "C" __attribute__((weak)) uint32_t extDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *)
+extern "C" __attribute__((weak)) bool extDescribe(uint8_t, BcReader &, uint32_t *)
 {
-    return 0;
+    return false;
 }
 
 extern "C" __attribute__((weak)) void extEmit(ExtSite &site)

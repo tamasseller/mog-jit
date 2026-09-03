@@ -131,7 +131,7 @@ ProgramResult runWith(Executor &ex, const ProcSource *procs, uint32_t procCount,
     uint8_t bytes[PROGRAM_CAPACITY];
     const uint32_t len = encodeJitProgram(MAX_CALL_DEPTH, TOTAL_DEPTH, procs, procCount, bytes, sizeof(bytes));
 
-    return ex.run(bytes, len, args, procs[0].argCount);
+    return ex.run(bcMapped(bytes), len, args, procs[0].argCount);
 }
 
 // Long enough that translation is finished and the tick lands in compiled

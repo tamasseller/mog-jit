@@ -198,7 +198,10 @@ uint32_t appendProgramFrame(uint8_t *out, uint32_t len, uint32_t outCapacity)
     assert(len + PROGRAM_FRAME_BYTES <= outCapacity); // GCOV_EXCL_LINE
     (void)outCapacity;
 
-    const uint16_t frame = programFrameHash(out, len);
+    BcReader wire;
+    wire.open(bcMapped(out), len);
+
+    const uint16_t frame = programFrameHash(wire, len);
     out[len] = (uint8_t)frame;
     out[len + 1] = (uint8_t)(frame >> 8);
 

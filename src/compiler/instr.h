@@ -42,18 +42,13 @@ struct Instr
         int32_t imm = 0;      // CONST's value / IMM_ACC operand / TRAP's code / BR_TABLE's N
         uint32_t target;      // LOAD/STORE/REG_ACC/REG_REG's slot index k
         uint32_t calleeIndex; // CALL only
-        uint32_t extDecl;     // EXT only: the packed declaration, ext.h's own layout.
-                              // Not the operands — those stay on the wire (§11.3) and the
-                              // extension re-reads them at emit time, so nothing about an
-                              // extension's operand shape can widen this struct.
+        uint32_t extOpcode;   // EXT only: the opcode byte. Not the operands — those stay
+                              // on the wire (§11.3), still unread, because only the
+                              // extension knows how many of them there are.
     };
 };
 
-// The union above is what keeps an extension's declaration free: it rides in
-// storage that already existed, so DecodedInstr stays off the sret path in
-// proc_scan/blocks' recursion, where the margin against SCAN_STACK_MARGIN is
-// only ~56 bytes.
-static_assert(sizeof(Instr) == 8, "Instr must stay two words — see the union's own comment");
+static_assert(sizeof(Instr) == 8, "Instr must stay two words — it is returned by value from every decode");
 
 constexpr Instr CONST(int32_t v)
 {

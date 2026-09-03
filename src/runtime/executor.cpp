@@ -15,23 +15,23 @@ struct ProgramHeader
     uint32_t maxCallDepth;
     uint32_t totalDepth;
     uint32_t procCount;
-    uint32_t bodyOffset;
 };
 
-static ProgramHeader parseProgramHeader(const uint8_t *bytes, uint32_t size)
+/* Leaves `r` on the first procedure's arg_count, where loadProgram picks up. */
+static ProgramHeader parseProgramHeader(BcReader &r)
 {
-    uint32_t pos = 0;
+    ProgramHeader hdr{};
 
-    assert(pos < size); // GCOV_EXCL_LINE malformed/truncated program
-    uint32_t maxCallDepth = jitc::decodeLeb128(bytes, pos, pos);
+    assert(!r.atEnd()); // GCOV_EXCL_LINE malformed/truncated program
+    jitc::decodeLeb128(r, hdr.maxCallDepth);
 
-    assert(pos < size); // GCOV_EXCL_LINE malformed/truncated program
-    uint32_t totalDepth = jitc::decodeLeb128(bytes, pos, pos);
+    assert(!r.atEnd()); // GCOV_EXCL_LINE malformed/truncated program
+    jitc::decodeLeb128(r, hdr.totalDepth);
 
-    assert(pos < size); // GCOV_EXCL_LINE malformed/truncated program
-    uint32_t procCount = jitc::decodeLeb128(bytes, pos, pos);
-    
-    return ProgramHeader{maxCallDepth, totalDepth, procCount, pos};
+    assert(!r.atEnd()); // GCOV_EXCL_LINE malformed/truncated program
+    jitc::decodeLeb128(r, hdr.procCount);
+
+    return hdr;
 }
 
 static uint32_t requiredStackBytes(
@@ -82,16 +82,20 @@ static uint32_t codeLimitFor(uint32_t needed, uint32_t stackLimit)
     return (sp - needed) >= stackLimit ? sp - needed : 0;
 }
 
-ProgramResult Executor::run(const uint8_t *programBytes, uint32_t programSize, uint32_t *args, uint32_t argCount)
+ProgramResult Executor::run(BcHandle program, uint32_t programSize, uint32_t *args, uint32_t argCount)
 {
-    if(!programFrameOk(programBytes, programSize))
+    BcReader wire;
+
+    wire.open(program, programSize);
+    if(!programFrameOk(wire, programSize))
     {
         return ProgramResult{ RESOURCE_PROGRAM_FRAME, LANDING_RESOURCE_ERROR };
     }
 
     const uint32_t payloadSize = programSize - PROGRAM_FRAME_BYTES;
 
-    ProgramHeader hdr = parseProgramHeader(programBytes, payloadSize);
+    wire.open(program, payloadSize);
+    ProgramHeader hdr = parseProgramHeader(wire);
     uint32_t operandStackBytes = hdr.totalDepth * 4;
 
     const uint32_t codeLimit = codeLimitFor(
@@ -113,7 +117,7 @@ ProgramResult Executor::run(const uint8_t *programBytes, uint32_t programSize, u
     alignas(Runtime) unsigned char runtimeStorage[Runtime::storageBytesFor(hdr.procCount)];
     auto runtime = new(runtimeStorage) Runtime(hdr.procCount, arena);
 
-    if(uint32_t code = runtime->loadProgram(programBytes, payloadSize, hdr.bodyOffset))
+    if(uint32_t code = runtime->loadProgram(wire))
     {
         return ProgramResult{ code, LANDING_RESOURCE_ERROR };
     }

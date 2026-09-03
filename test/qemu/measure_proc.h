@@ -13,6 +13,7 @@
 #include "encode_instr.h"
 #include "translate_proc.h"
 #include "runtime.h"
+#include "bytecode_default.h"
 
 namespace jitc
 {
@@ -42,7 +43,7 @@ inline uint32_t measuredHalfwords(const Proc &proc, uint32_t procIdx, const uint
         r.slot(i).codePtr = trampolineAddr;
         r.slot(i).setStaticInfo(calleeArgCounts[i], /*bodyBytes=*/0, i == procIdx && savesLR);
     }
-    r.slot(procIdx).bodyPtr = (uint32_t)(uintptr_t)proc.body;
+    r.slot(procIdx).bodyHandle = bcMapped(proc.body);
     r.slot(procIdx).setStaticInfo(proc.argCount, proc.bodyBytes, savesLR);
 
     return translateProc(procIdx, r, /*lruTick=*/0);

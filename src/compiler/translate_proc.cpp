@@ -10,11 +10,15 @@ Ctx::Ctx(Runtime& r, uint32_t procIdx, uint32_t lruTick): a(r, lruTick)
     const auto &procSlot = r.slot(procIdx);
 
     this->window = Window{procSlot.argCount(), procSlot.needsLRSave()};
-    this->bytes = (const uint8_t *)(uintptr_t)procSlot.bodyPtr;
-    this->bytesLen = procSlot.bodyBytes();
     this->savesLR = procSlot.needsLRSave();
-    this->procIdx = procIdx; 
+    this->procIdx = procIdx;
     this->initialSpilledCount = procSlot.argCount() > WINDOW_SIZE ? procSlot.argCount() - WINDOW_SIZE : 0;
+    this->hasLookahead = false;
+
+    /* The scan that produced bodyBytes could not be hinted; every pass after
+     * it can, and there are at least two (§1.2). */
+    bcHint(procSlot.bodyHandle, procSlot.bodyBytes());
+    this->body.open(procSlot.bodyHandle, procSlot.bodyBytes());
 }
 
 extern "C" uint32_t translateProc(uint32_t procIdx, Runtime& r, uint32_t lruTick)
@@ -32,4 +36,3 @@ extern "C" uint32_t translateProc(uint32_t procIdx, Runtime& r, uint32_t lruTick
     runtimeBail(&r, RESOURCE_LIMIT_BRANCH_RANGE);
     return -1;
 }
-

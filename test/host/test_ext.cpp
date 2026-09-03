@@ -1,7 +1,7 @@
-// jit-armv6m/compiler/test — the extension seam's decode/declaration half
-// (compiler/src/ext.h): the core learns an extension instruction's byte
-// length and its declared effect, and rejects every declaration asking for
-// something it doesn't implement. Codegen lives in test_translate_proc.cpp.
+// jit-armv6m/compiler/test — the extension seam's scan-phase half
+// (compiler/src/ext.h): the core steps over an extension instruction without
+// knowing its encoding, and rejects every description asking for something it
+// doesn't implement. Codegen lives in test_translate_proc.cpp.
 #include "Test.h"
 #include "ext.h"
 #include "ext_stub.h"
@@ -9,6 +9,7 @@
 #include "proc_scan.h"
 #include "encode_instr.h"
 #include "instr.h"
+#include "wire.h"
 
 using namespace jitc;
 
@@ -16,150 +17,120 @@ namespace
 {
 
 // Opcode bytes this fake extension owns. One shape per thing worth testing.
-constexpr uint8_t EXT_INLINE = 0x80;      // one LEB128 operand, 2 halfwords, no lr
+constexpr uint8_t EXT_INLINE = 0x80;      // one LEB128 operand, no lr
 constexpr uint8_t EXT_HELPER = 0x81;      // no operand, clobbers lr, pops one
 constexpr uint8_t EXT_CALL_SHAPED = 0x82; // rejected: call-shaped
 constexpr uint8_t EXT_NET_PUSH = 0x85;    // rejected: net TOS push
-constexpr uint8_t EXT_DECLINED = 0x86;    // decode declines outright
+constexpr uint8_t EXT_DECLINED = 0x86;    // describe declines outright
 
-uint32_t fakeDecode(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t *decl)
+bool fakeDescribe(uint8_t opcode, BcReader &wire, uint32_t *desc)
 {
-    switch(bytes[offset])
+    switch(opcode)
     {
         case EXT_INLINE:
         {
-            // A real operand, decoded with the bounded LEB128 ext.h mandates:
-            // this runs from Runtime::init's walk on unvalidated bytes.
-            uint32_t value, next;
-            if(!decodeLeb128Checked(bytes, bytesLen, offset + 1, value, next))
+            uint32_t value;
+            if(!decodeLeb128(wire, value))
             {
-                return 0;
+                return false;
             }
-            *decl = extDecl(0, /*tosDelta=*/0, /*halfwords=*/2);
-            return next - offset;
+            *desc = extDesc(0, /*tosDelta=*/0);
+            return true;
         }
         case EXT_HELPER:
-            *decl = extDecl(EXT_FLAG_NEEDS_LR, -1, 6);
-            return 1;
+            *desc = extDesc(EXT_FLAG_NEEDS_LR, -1);
+            return true;
         case EXT_CALL_SHAPED:
-            *decl = extDecl(EXT_FLAG_CALL_SHAPED, 0, 4);
-            return 1;
+            *desc = extDesc(EXT_FLAG_CALL_SHAPED, 0);
+            return true;
         case EXT_NET_PUSH:
-            *decl = extDecl(0, /*tosDelta=*/1, 2);
-            return 1;
+            *desc = extDesc(0, /*tosDelta=*/1);
+            return true;
         default:
-            return 0; // EXT_DECLINED and anything else
+            return false; // EXT_DECLINED and anything else
     }
 }
 
-// Claims a length running past the buffer — the core must not trust it.
-uint32_t overrunDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
+// Claims every byte it is shown.
+bool greedyDescribe(uint8_t, BcReader &, uint32_t *desc)
 {
-    *decl = extDecl(0, 0, 2);
-    return 999;
+    *desc = extDesc(0, 0);
+    return true;
 }
 
-// Claims no forward progress — would hang every walk if trusted.
-uint32_t zeroLengthDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
-{
-    *decl = extDecl(0, 0, 2);
-    return 0;
-}
-
-uint32_t greedyDecode(const uint8_t *, uint32_t, uint32_t, uint32_t *decl)
-{
-    *decl = extDecl(0, 0, 2);
-    return 1; // claims every byte it is shown
-}
-
-const ExtStub FAKE = {fakeDecode};
-const ExtStub GREEDY = {greedyDecode};
-const ExtStub OVERRUN = {overrunDecode};
-const ExtStub ZERO_LENGTH = {zeroLengthDecode};
+const ExtStub FAKE = {fakeDescribe};
+const ExtStub GREEDY = {greedyDescribe};
 
 } // namespace
 
-TEST(ExtDeclRoundTripsEveryField)
+TEST(ExtDescRoundTripsEveryField)
 {
-    uint32_t w = extDecl(EXT_FLAG_NEEDS_LR | EXT_FLAG_ATOMIC, -3, EXT_MAX_HALFWORDS, EXT_MAX_POOL_WORDS);
-    CHECK(extDeclHas(w, EXT_FLAG_NEEDS_LR));
-    CHECK(extDeclHas(w, EXT_FLAG_ATOMIC));
-    CHECK(!extDeclHas(w, EXT_FLAG_CALL_SHAPED));
-    CHECK(extDeclTosDelta(w) == -3); // sign-extended back out of 4 bits
-    CHECK(extDeclHalfwords(w) == EXT_MAX_HALFWORDS);
-    CHECK(extDeclPoolWords(w) == EXT_MAX_POOL_WORDS);
+    uint32_t w = extDesc(EXT_FLAG_NEEDS_LR, -3);
+    CHECK(extDescHas(w, EXT_FLAG_NEEDS_LR));
+    CHECK(!extDescHas(w, EXT_FLAG_CALL_SHAPED));
+    CHECK(extDescTosDelta(w) == -3); // sign-extended back out of 4 bits
 }
 
-TEST(ExtDeclHandlesTheExtremesOfTheSignedTosDeltaField)
+TEST(ExtDescHandlesTheExtremesOfTheSignedTosDeltaField)
 {
-    CHECK(extDeclTosDelta(extDecl(0, 0, 0)) == 0);
-    CHECK(extDeclTosDelta(extDecl(0, -1, 0)) == -1);
-    CHECK(extDeclTosDelta(extDecl(0, EXT_TOS_DELTA_MIN, 0)) == EXT_TOS_DELTA_MIN);
-    CHECK(extDeclTosDelta(extDecl(0, 7, 0)) == 7);
+    CHECK(extDescTosDelta(extDesc(0, 0)) == 0);
+    CHECK(extDescTosDelta(extDesc(0, -1)) == -1);
+    CHECK(extDescTosDelta(extDesc(0, EXT_TOS_DELTA_MIN)) == EXT_TOS_DELTA_MIN);
+    CHECK(extDescTosDelta(extDesc(0, 7)) == 7);
 }
 
-TEST(DecodeLeb128CheckedRefusesToReadPastTheBuffer)
+TEST(DecodeLeb128RefusesAnOverlongEncoding)
 {
-    // Every byte continuing, so an unbounded decoder walks off the end.
-    const uint8_t truncated[] = {0x80, 0x80, 0x80};
-    uint32_t value = 0, next = 0;
-    CHECK(!decodeLeb128Checked(truncated, sizeof(truncated), 0, value, next));
-
-    // Starting at or past the end.
-    CHECK(!decodeLeb128Checked(truncated, sizeof(truncated), 3, value, next));
-
-    // Overlong for a u32: six continuation bytes.
+    // Six continuation bytes: more than a u32 can hold.
     const uint8_t overlong[] = {0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00};
-    CHECK(!decodeLeb128Checked(overlong, sizeof(overlong), 0, value, next));
+    BcReader r = wireOver(overlong, sizeof(overlong));
+    uint32_t value = 0;
+    CHECK(!decodeLeb128(r, value));
 
     // And the ordinary case still works.
     const uint8_t fine[] = {0xe5, 0x8e, 0x26};
-    CHECK(decodeLeb128Checked(fine, sizeof(fine), 0, value, next));
+    BcReader ok = wireOver(fine, sizeof(fine));
+    CHECK(decodeLeb128(ok, value));
     CHECK(value == 624485);
-    CHECK(next == 3);
+    CHECK(ok.atEnd());
 }
 
-TEST(DecodeInstrYieldsOpExtWithTheDeclarationAndLength)
+TEST(DecodeLeb128RefusesAValueTheBodyEndsInTheMiddleOf)
 {
-    ExtScope ext(&FAKE);
-    const uint8_t bytes[] = {EXT_INLINE, 0xe5, 0x8e, 0x26}; // operand 624485, 3 LEB128 bytes
+    // Every byte continuing, so an unbounded decoder walks off the end.
+    const uint8_t truncated[] = {0x80, 0x80, 0x80};
+    BcReader r = wireOver(truncated, sizeof(truncated));
+    uint32_t value = 0;
 
-    DecodedInstr d = decodeInstr(bytes, sizeof(bytes), 0);
+    CHECK(!decodeLeb128(r, value));
+}
+
+TEST(DecodeInstrYieldsOpExtWithItsOpcodeAndNoOperandsRead)
+{
+    // The core learns which extension byte it is looking at and nothing
+    // else — the operands stay standing for whichever phase asks next.
+    const uint8_t bytes[] = {EXT_INLINE, 0xe5, 0x8e, 0x26};
+
+    WireInstr d = decodeOne(bytes, sizeof(bytes));
+    CHECK(d.ok);
     CHECK(d.instr.op == Op::EXT);
-    CHECK(extDeclHalfwords(d.instr.extDecl) == 2);
-    CHECK(d.next == 4); // opcode + its own three operand bytes
+    CHECK(d.instr.extOpcode == EXT_INLINE);
+    CHECK(d.consumed == 1);
 }
 
-TEST(ExtDecodeLengthRejectsALengthPastTheBuffer)
-{
-    // The core checks the claimed length rather than trusting it: an
-    // extension that overruns must produce a rejection, not an overrun.
-    ExtScope ext(&OVERRUN);
-    const uint8_t bytes[] = {EXT_INLINE, 0x00};
-    uint32_t decl = 0;
-    CHECK(extDecodeLength(bytes, sizeof(bytes), 0, decl) == 0);
-}
-
-TEST(ExtDecodeLengthRejectsNoForwardProgress)
-{
-    // A zero length would hang every walk that steps by it.
-    ExtScope ext(&ZERO_LENGTH);
-    const uint8_t bytes[] = {EXT_INLINE, 0x00};
-    uint32_t decl = 0;
-    CHECK(extDecodeLength(bytes, sizeof(bytes), 0, decl) == 0);
-}
-
-TEST(ExtDecodeLengthRejectsWhenNoExtensionWasPassed)
+TEST(ScanProcBodyReportsAnOpcodeNoExtensionWasPassedFor)
 {
     const uint8_t bytes[] = {EXT_INLINE, 0x00};
-    uint32_t decl = 0;
-    CHECK(extDecodeLength(bytes, sizeof(bytes), 0, decl) == 0);
+
+    BodyScanResult r = scanBytes(bytes, sizeof(bytes));
+    CHECK(!r.ok);
+    CHECK(r.failCode == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
 
-TEST(ScanProcBodyStepsOverAnExtensionOpUsingItsDeclaredLength)
+TEST(ScanProcBodyStepsOverAnExtensionOpUsingWhatItConsumed)
 {
-    // The whole point of hooking the decoder: this walk finds the body
-    // boundary without knowing anything about the extension.
+    // The whole point of hooking the walk: it finds the body boundary
+    // without knowing anything about the extension.
     ExtScope ext(&FAKE);
     uint8_t bytes[16];
     uint32_t n = 0;
@@ -170,17 +141,17 @@ TEST(ScanProcBodyStepsOverAnExtensionOpUsingItsDeclaredLength)
     const Instr tail[] = {bare(Op::RETURN)};
     n += encodeBody(tail, 1, bytes + n, sizeof(bytes) - n);
 
-    BodyScanResult r = scanProcBody(bytes, n, 0);
+    BodyScanResult r = scanBytes(bytes, n);
     CHECK(r.ok);
     CHECK(r.failCode == 0);
     CHECK(r.bodyBytes == n);
     CHECK(!r.needsLRSave);
 }
 
-TEST(ScanProcBodyTakesNeedsLRSaveFromTheDeclaration)
+TEST(ScanProcBodyTakesNeedsLRSaveFromTheDescription)
 {
     // The prologue is emitted from ProcSlot's needsLRSave long before
-    // codegen sees the op, so the declaration has to settle it here.
+    // codegen sees the op, so the description has to settle it here.
     ExtScope ext(&FAKE);
     uint8_t bytes[8];
     uint32_t n = 0;
@@ -188,7 +159,7 @@ TEST(ScanProcBodyTakesNeedsLRSaveFromTheDeclaration)
     const Instr tail[] = {bare(Op::RETURN)};
     n += encodeBody(tail, 1, bytes + n, sizeof(bytes) - n);
 
-    BodyScanResult r = scanProcBody(bytes, n, 0);
+    BodyScanResult r = scanBytes(bytes, n);
     CHECK(r.ok);
     CHECK(r.needsLRSave);
 }
@@ -205,7 +176,7 @@ TEST(ScanProcBodyRejectsEachCapabilityV1DoesNotImplement)
         const Instr tail[] = {bare(Op::RETURN)};
         n += encodeBody(tail, 1, bytes + n, sizeof(bytes) - n);
 
-        BodyScanResult r = scanProcBody(bytes, n, 0);
+        BodyScanResult r = scanBytes(bytes, n);
         CHECK(!r.ok);
         CHECK(r.failCode == RESOURCE_PROGRAM_EXT_UNSUPPORTED); // a newer core, not a different image
     }
@@ -216,7 +187,7 @@ TEST(ScanProcBodyReportsAnOpcodeTheExtensionDeclines)
     ExtScope ext(&FAKE);
     const uint8_t bytes[] = {EXT_DECLINED};
 
-    BodyScanResult r = scanProcBody(bytes, sizeof(bytes), 0);
+    BodyScanResult r = scanBytes(bytes, sizeof(bytes));
     CHECK(!r.ok);
     CHECK(r.failCode == RESOURCE_PROGRAM_EXT_UNKNOWN);
 }
@@ -230,18 +201,18 @@ TEST(TheTopOfCoreOpcodeSpaceIsNeverOfferedToAnExtension)
     // escapes, which are core too however their sub-codes are resolved.
     ExtScope ext(&GREEDY);
     const uint8_t lastConst[] = {124, 102 /* RETURN */};
-    BodyScanResult constScan = scanProcBody(lastConst, sizeof(lastConst), 0);
+    BodyScanResult constScan = scanBytes(lastConst, sizeof(lastConst));
     CHECK(constScan.ok);
     CHECK(constScan.failCode == 0);
 
     const uint8_t escape[] = {127, 0, 102 /* RETURN */};
-    BodyScanResult escapeScan = scanProcBody(escape, sizeof(escape), 0);
+    BodyScanResult escapeScan = scanBytes(escape, sizeof(escape));
     CHECK(!escapeScan.ok);
     CHECK(escapeScan.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE); // core's own reason, never the extension's
 
     // ...and 128 is the first byte it legitimately does get.
     const uint8_t first[] = {0x80, 102 /* RETURN */};
-    BodyScanResult r = scanProcBody(first, sizeof(first), 0);
+    BodyScanResult r = scanBytes(first, sizeof(first));
     CHECK(r.ok);
     CHECK(r.failCode == 0);
 }

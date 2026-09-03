@@ -16,6 +16,7 @@
 #include "translate_proc.h"
 #include "decode_instr.h"
 #include "runtime.h"
+#include "envelope.h"
 
 using namespace jitc;
 
@@ -47,11 +48,9 @@ int main(int argc, char **argv)
         if(in.empty()) continue;
         const uint8_t *data = in.data();
 
-        uint32_t pos = 0;
-        jitc::decodeLeb128(data, pos, pos); // max_call_depth
-        jitc::decodeLeb128(data, pos, pos); // total_depth
-        uint32_t procCount = jitc::decodeLeb128(data, pos, pos);
-        uint32_t bodyOffset = pos;
+        const Envelope env = readEnvelope(data, (uint32_t)in.size());
+        const uint32_t procCount = env.procCount;
+        const uint32_t bodyOffset = env.bodyOffset;
 
         printf("%-32s procCount=%u\n", argv[ai], procCount);
 
@@ -67,7 +66,8 @@ int main(int argc, char **argv)
             memset(g_arena, 0, arenaSize);
             CodeArena arena = CodeArena::region(ARENA_BASE, arenaSize, /*stackLimit=*/0);
             Runtime &rt = *new(storage) Runtime(procCount, arena);
-            if(uint32_t code = rt.loadProgram(data, (uint32_t)in.size(), bodyOffset); code != 0)
+            BcReader wire = wireAtBodies(data, (uint32_t)in.size(), bodyOffset);
+            if(uint32_t code = rt.loadProgram(wire); code != 0)
             {
                 printf("    arena %5u: walk rejected %08x\n", arenaSize, code);
                 continue;

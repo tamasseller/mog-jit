@@ -57,8 +57,8 @@ const EFFECTS: Readonly<Record<string, ExtOpEffect>> = {
     ST32: {tosDelta: -1, maxTransient: 0, readsAcc: true},
     /* killsAcc: the emitted code stages three operands into the helper's
      * argument registers, r0 among them, so acc is gone (isa-core.md
-     * §11.2's third direction) — ext_rawmem.cpp's EXT_FLAG_KILLS_ACC is the
-     * same declaration on the target side. */
+     * §11.2's third direction) — ext_rawmem.cpp's emitMemmove says the same
+     * to the core by calling accInvalidate. */
     MEMMOVE: {tosDelta: -3, maxTransient: 0, killsAcc: true},
     MEMCMP: {tosDelta: -3, maxTransient: 0, writesAcc: true},
     /* maxTransient 1: the emitted code pushes the fourth operand for the

@@ -120,65 +120,59 @@ void emitTrigger(ExtSite &site, uint32_t kind)
     a.emit(ArmV6M::str(packed, base, count));
 }
 
-/* The kind is a LEB128 operand, and a benchmark never needs more than the
- * one byte TRIGGER_MAX_KIND fits in — a longer field is a malformed
- * program, reported as an undecodable opcode. */
-uint32_t decodeKind(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t *kind)
-{
-    if(offset + 1 >= bytesLen) return 0;
-
-    const uint8_t b = bytes[offset + 1];
-    if(b > TRIGGER_MAX_KIND) return 0;
-
-    *kind = b;
-    return 2;
-}
 } // namespace
 
-extern "C" uint32_t extDecode(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t *decl)
+/* TRIGGER's kind is a LEB128 operand, and a benchmark never needs more than
+ * the one byte TRIGGER_MAX_KIND fits in — a longer field is a malformed
+ * program, reported as an undecodable opcode. Both phases consume that byte;
+ * the cursor is the core's position too. */
+extern "C" bool extDescribe(uint8_t opcode, BcReader &wire, uint32_t *desc)
 {
-    const uint32_t flags = EXT_FLAG_ATOMIC;
-
-    switch(bytes[offset])
+    switch(opcode)
     {
         case SAMPSTREAM_SAMPLE_AT:
-            *decl = extDecl(flags, /*tosDelta=*/0, /*halfwords=*/8, /*poolWords=*/1);
-            return 1;
+            *desc = extDesc(0, /*tosDelta=*/0);
+            return true;
 
         case SAMPSTREAM_OUT_AT:
-            *decl = extDecl(flags, /*tosDelta=*/-1, /*halfwords=*/10, /*poolWords=*/1);
-            return 1;
+            *desc = extDesc(0, /*tosDelta=*/-1);
+            return true;
 
         case SAMPSTREAM_TRIGGER:
-        {
-            uint32_t kind = 0;
-            const uint32_t len = decodeKind(bytes, bytesLen, offset, &kind);
-            if(len == 0) return 0;
+            if(wire.atEnd() || wire.next() > TRIGGER_MAX_KIND)
+            {
+                return false;
+            }
 
-            *decl = extDecl(flags, /*tosDelta=*/0, /*halfwords=*/18, /*poolWords=*/1);
-            return len;
-        }
+            *desc = extDesc(0, /*tosDelta=*/0);
+            return true;
 
         default:
-            return 0;
+            return false;
     }
 }
 
+/* Each op reserves its own AtomicBlock: its emitted halfwords have to stay
+ * contiguous, and the size covers the core's service code too. */
 extern "C" void extEmit(ExtSite &site)
 {
-    const uint8_t opcode = *site.opcode();
+    const uint8_t opcode = site.opcode();
 
     if(opcode == SAMPSTREAM_SAMPLE_AT)
     {
+        Assembler::AtomicBlock atomic(site.a, /*poolEntries=*/1, /*extraBytes=*/16);
         emitSampleAt(site);
     }
     else if(opcode == SAMPSTREAM_OUT_AT)
     {
+        Assembler::AtomicBlock atomic(site.a, /*poolEntries=*/1, /*extraBytes=*/20);
         emitOutAt(site);
     }
     else
     {
-        emitTrigger(site, *site.operands());
+        const uint8_t kind = site.operand();
+        Assembler::AtomicBlock atomic(site.a, /*poolEntries=*/1, /*extraBytes=*/36);
+        emitTrigger(site, kind);
     }
 }
 

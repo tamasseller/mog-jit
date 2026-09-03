@@ -8,6 +8,7 @@
 #include "resource_codes.h"
 #include "code_arena.h"
 #include "dispatch_table.h"
+#include "bytecode.h"
 
 class Runtime;
 
@@ -70,7 +71,7 @@ public:
 
     /* Runs before anything is compiled — the body scan checks itself against
      * stackLimit alone, which is only a floor while the arena is still empty. */
-    uint32_t loadProgram(const uint8_t *programBytes, uint32_t programSize, uint32_t bodyOffset);
+    uint32_t loadProgram(BcReader &r);
 
     inline uint32_t getProcCount() const { return dispatch.getProcCount(); }
     inline ProcSlot &slot(uint32_t idx) { return dispatch.slot(idx); }

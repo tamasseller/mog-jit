@@ -47,17 +47,34 @@ program, several rounds, compiling only cold slots — that is what reaches
 `finalize`'s dispatch registration.
 
 The drivers build `-m32`, because `Runtime` addresses its arena and every
-`ProcSlot::bodyPtr` as a bare `uint32_t`; the arena is ordinary static
+`ProcSlot::bodyHandle` as a bare `uint32_t`; the arena is ordinary static
 storage, so ASan catches an emitted halfword landing past `arenaEnd`.
 
 `probe_arena.sh` reports, per arena size, whether a given program actually
 reaches eviction — worth running after changing the sizing, since an arena
 that is too generous silently exercises none of it. `repro.sh` builds and
 replays one saved input (`last_input.bin` after a crash) through the same
-harness. `build_afl.sh` is the coverage-guided build for a machine that has
-AFL++ (this one doesn't, so `harness.cpp`'s own `main()` is a mutation loop
-whose only feedback signal is validator approval — enough to keep the
-corpus accumulating structure).
+harness.
+
+`build_afl.sh` is the coverage-guided build: `afl-clang-fast++`,
+`harness.cpp`'s `__AFL_COMPILER` persistent-mode `main()`, ASan on by
+default. Debian's amd64 `afl++` ships no `afl-compiler-rt-32.o`, so
+`afl-cc` refuses `-m32`; the i386 package of the same version has that
+object, and a private `AFL_PATH` holding it beside the amd64 passes is all
+it takes:
+
+```sh
+dpkg-deb -x afl++_4.04c-4_i386.deb i386pkg   # deb.debian.org/debian/pool/main/a/aflplusplus/
+cp -a /usr/lib/afl aflpath
+cp i386pkg/usr/lib/afl/afl-compiler-rt-32.o aflpath/
+export AFL_PATH=$PWD/aflpath
+./build_afl.sh
+afl-fuzz -i seeds -o out -m none -t 5000 -- ./fuzz_driver_afl
+```
+
+`build.sh`'s driver remains the zero-dependency fallback: its only feedback
+signal is validator approval, enough to keep the corpus accumulating
+structure.
 
 ## QEMU half — miscompilation
 

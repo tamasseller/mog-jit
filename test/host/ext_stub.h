@@ -7,7 +7,7 @@
  * implementations per case; production builds bind them directly. */
 struct ExtStub
 {
-    uint32_t (*decode)(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t *decl);
+    bool (*describe)(uint8_t opcode, BcReader &wire, uint32_t *desc);
     void (*emit)(ExtSite &site);
     uint32_t helperStackBytes;
 };

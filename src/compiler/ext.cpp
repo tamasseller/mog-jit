@@ -89,7 +89,7 @@ void ExtSite::accInvalidate()
  * accumulator does not survive one on its own. */
 void ExtSite::helperCall(uint32_t helperAddr)
 {
-    assert(extDeclHas(decl, EXT_FLAG_NEEDS_LR)); // GCOV_EXCL_LINE
+    assert(lrSaved); // GCOV_EXCL_LINE — a reach whose site never declared NEEDS_LR
 
     acc.poison();
 
@@ -99,7 +99,7 @@ void ExtSite::helperCall(uint32_t helperAddr)
 
 void ExtSite::cHelperCall(uint32_t helperAddr)
 {
-    assert(extDeclHas(decl, EXT_FLAG_NEEDS_LR)); // GCOV_EXCL_LINE
+    assert(lrSaved); // GCOV_EXCL_LINE — a reach whose site never declared NEEDS_LR
 
     acc.poison();
 

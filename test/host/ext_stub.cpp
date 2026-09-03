@@ -14,14 +14,14 @@ ExtScope::~ExtScope()
     active = prev;
 }
 
-extern "C" uint32_t extDecode(const uint8_t *bytes, uint32_t bytesLen, uint32_t offset, uint32_t *decl)
+extern "C" bool extDescribe(uint8_t opcode, BcReader &wire, uint32_t *desc)
 {
-    if(active == nullptr || active->decode == nullptr)
+    if(active == nullptr || active->describe == nullptr)
     {
-        return 0;
+        return false;
     }
 
-    return active->decode(bytes, bytesLen, offset, decl);
+    return active->describe(opcode, wire, desc);
 }
 
 extern "C" void extEmit(ExtSite &site)

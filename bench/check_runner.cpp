@@ -18,6 +18,7 @@
 
 #include "semihost.h"
 #include "executor.h"
+#include "bytecode_default.h"
 #include "dispatch_abi.h"
 
 #include "ext_sampstream.h"
@@ -60,7 +61,7 @@ int main()
             (uint32_t)(uintptr_t)g_codeArena, CODE_ARENA_BYTES,
             /*stackLimit=*/(uint32_t)(uintptr_t)(g_codeArena + CODE_ARENA_BYTES),
             /*interruptReserve=*/0)
-        .run(g_checkProgram, g_checkProgramLen, entryArgs, g_checkArgCount);
+        .run(bcMapped(g_checkProgram), g_checkProgramLen, entryArgs, g_checkArgCount);
 
     if (r.trapped == LANDING_TRAP)
     {
