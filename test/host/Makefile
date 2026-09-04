@@ -24,35 +24,22 @@ SOURCES += bc_stub.cpp
 SOURCES += bc_buffered.cpp
 SOURCES += ../encode_instr.cpp
 
-# The compiler itself (armv6.h is header-only — test_armv6_encoding.cpp
-# reaches it straight off INCLUDE_DIRS, no extra .cpp to compile)
-SOURCES += ../../src/compiler/window.cpp
-SOURCES += ../../src/compiler/ext.cpp
-SOURCES += ../../src/compiler/accstate.cpp
-SOURCES += ../../src/compiler/assembler.cpp
-SOURCES += ../../src/compiler/arithmetic.cpp
-SOURCES += ../../src/compiler/shape.cpp
-SOURCES += ../../src/compiler/abi_strategy.cpp
-SOURCES += ../../src/compiler/decode_instr.cpp
-SOURCES += ../../src/compiler/proc_scan.cpp
-SOURCES += ../../src/compiler/translate_proc.cpp
-SOURCES += ../../src/compiler/translate_data_flow.cpp
-SOURCES += ../../src/compiler/translate_control_flow.cpp
+# The translator, all three layers. ext-default.mk is left out: ext_stub.cpp
+# above is this suite's extension set.
+include ../../src/compiler/compiler-all.mk
 
-# The runtime's own entry layer. Compiles and links cleanly on the host —
-# its only target-specific dependency is enterDispatch, which
-# test_executor.cpp fakes so the descriptor it is handed can be
-# inspected without booting an emulator.
-SOURCES += ../../src/runtime/executor.cpp
-SOURCES += ../../src/runtime/runtime.cpp
+# The runtime's own entry layer. Compiles and links cleanly on the host — its
+# only target-specific dependency is enterDispatch, which test_executor.cpp
+# fakes so the descriptor it is handed can be inspected without booting an
+# emulator. dispatch.mk is target-only; host_runtime_support.cpp stands in.
+include ../../src/runtime/runtime-all.mk
+include ../../src/runtime/executor.mk
 
 # 1test library
 SOURCES += ../../vendor/1test/TestRunner.cpp
 SOURCES += ../../vendor/1test/PrintfOutput.cpp
 
-INCLUDE_DIRS += ..               
-INCLUDE_DIRS += ../../src/runtime
-INCLUDE_DIRS += ../../src/compiler
+INCLUDE_DIRS += ..
 INCLUDE_DIRS += ../../vendor/1test
 
 ASMFLAGS += -m32

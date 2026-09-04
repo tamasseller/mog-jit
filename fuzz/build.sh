@@ -7,29 +7,19 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+JIT_MK=(../src/compiler/compiler-all.mk ../src/compiler/emit/ext-default.mk ../src/runtime/runtime-all.mk ../src/runtime/bytecode-default.mk)
+JIT_SOURCES=($(../tools/srclist.sh "${JIT_MK[@]}"))
+JIT_INCLUDES=($(../tools/srclist.sh --includes "${JIT_MK[@]}"))
+
 g++ -std=c++17 -O1 -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -fno-sanitize=shift-base \
     -m32 \
-    -I ../src/compiler -I ../src/runtime -I ../test \
+    "${JIT_INCLUDES[@]}" -I ../test \
     harness.cpp \
-    ../src/compiler/window.cpp \
-    ../src/compiler/ext.cpp \
-    ../src/compiler/ext_default.cpp \
+    "${JIT_SOURCES[@]}" \
     ../test/ext_rawmem.cpp \
     rawmem_helper_host.cpp \
-    ../src/compiler/accstate.cpp \
-    ../src/compiler/assembler.cpp \
-    ../src/compiler/arithmetic.cpp \
-    ../src/compiler/shape.cpp \
-    ../src/compiler/abi_strategy.cpp \
-    ../src/compiler/decode_instr.cpp \
-    ../src/compiler/proc_scan.cpp \
-    ../src/compiler/translate_proc.cpp \
-    ../src/compiler/translate_data_flow.cpp \
-    ../src/compiler/translate_control_flow.cpp \
-    ../src/runtime/runtime.cpp \
-    ../src/runtime/bytecode_default.cpp \
     -o fuzz_driver
 
 echo "built ./fuzz_driver"

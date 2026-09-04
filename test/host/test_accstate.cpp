@@ -70,15 +70,14 @@ TEST(flushLiveOnPoisonedAccIsANoOp)
     CHECK(e.halfwordCount() == 0);
 }
 
-TEST(setCleanThenPoisonThenPendingSupersedes)
+TEST(pendingThenPoisonThenPendingSupersedes)
 {
     AccState acc;
-    acc.setClean(7);
+    acc.pending(Shape::ofReg(7));
     Shape s = acc.operand();
     CHECK(!s.isImm() && s.reg() == 7);
 
     acc.poison();
-    CHECK(!acc.isLive());
     // Reading a dead accumulator's operand() asserts (a translator-logic
     // bug, never legitimate input) — not exercised here.
 
@@ -93,7 +92,7 @@ TEST(aBooleanAccumulatorMaterializesTheZeroOneSelect)
     Assembler &e = e_ta.a;
     const uint16_t *buf = e_ta.code();
     AccState acc;
-    acc.boolean(ArmV6M::Condition::NE);
+    acc.apply(Effect::comparison(ArmV6M::Condition::NE));
     CHECK(e.halfwordCount() == 0); // a comparison's own CMP is all a fused consumer needs
     CHECK(acc.isBoolean());
 

@@ -3,12 +3,30 @@
 All three workloads are in and measured. Run:
 
 ```sh
-bench/plugin/selftest.sh                              # is the counter honest?
-bench/check.sh                                        # do the extension's halves agree?
-npx ts-node --transpile-only bench/check-workload.ts  # do the workloads agree?
-bench/build.sh                                        # 18 images
-npx ts-node --transpile-only bench/bench.ts
+bench/src/plugin-selftest/selftest.sh                    # is the counter honest?
+bench/check.sh                                           # do the extension's halves agree?
+npx ts-node --transpile-only bench/ts/check-workload.ts  # do the workloads agree?
+bench/build.sh                                           # 18 images
+npx ts-node --transpile-only bench/ts/bench.ts
 ```
+
+## Layout
+
+| Path | What |
+|---|---|
+| `ts/` | one program per file — the driver (`bench.ts`), the generators (`gen-*.ts`) and the reference-half checks (`check-*.ts`, `compare-check.ts`) |
+| `ts/lib/` | components those share: the sample-stream extension's reference half, the two sample counts every measurement is taken at, and the workloads |
+| `src/common/` | native components every image shares: the extension's target half, the region markers, the linker script |
+| `src/bench/` | the benchmark image — one per (workload, level), built from its own `Makefile` |
+| `src/check/` | the acceptance-gate image |
+| `src/emitted/` | the host tool `dump-emitted.sh` disassembles |
+| `src/plugin/` | the QEMU TCG plugin (a host `.so`, not part of any image) |
+| `src/plugin-selftest/` | the image that proves the plugin counts what it claims |
+
+Each `src/*` directory is one native output with an ultimate-makefile
+`Makefile`; the scripts above only generate, invoke `make`, run QEMU and
+compare. Shared bare-metal support (vector table, semihosting, the ARM flags)
+comes from `fuzz/qemu_exec/qemu-image.mk`.
 
 ## Results
 
@@ -17,21 +35,21 @@ agrees with the reference VM on its return value and on every byte it wrote.
 
 | workload | JIT cycles/sample | vs -Os | vs best level | emitted / bytecode |
 |---|---|---|---|---|
-| pulse-trigger | 27.79 | 1.03x | 1.61x | 150 B / 83 B |
-| iq-preamble | 19.23 | 2.06x | 2.38x | 210 B / 111 B |
-| median5 | 151.00 | 1.99x | 2.10x | 298 B / 240 B |
+| pulse-trigger | 29.77 | 1.10x | 1.72x | 144 B / 80 B |
+| iq-preamble | 14.36 | 1.39x | 1.68x | 190 B / 101 B |
+| median5 | 148.38 | 1.96x | 2.16x | 298 B / 240 B |
 
 Against docs/design.md: §14 predicted throughput within "roughly 2-4x" of
-`-Os` C, and the measured 1.03x-2.06x sits at or below the bottom of that
-range; against each workload's best level it is 1.61x-2.38x. §15 estimated
+`-Os` C, and the measured 1.10x-1.96x sits at or below the bottom of that
+range; against each workload's best level it is 1.68x-2.16x. §15 estimated
 4-10 KB of flash for the whole JIT, and ~9.8 KB is inside it. Cold start is
-21k-49k instructions depending on program size, paid once per procedure.
+23k-57k instructions depending on program size, paid once per procedure.
 
 The three workloads are chosen to be different shapes, and they behave like
 it:
 
 **pulse-trigger** — a two-state machine with hysteresis, on unsigned ADC
-codes. Almost no arithmetic, and the closest result: 1.03x against `-Os`.
+codes. Almost no arithmetic, and the closest result: 1.10x against `-Os`.
 
 **iq-preamble** — quadrature demodulation of a tone sampled at four times
 its frequency, where the mixer coefficients are [1,0,-1,0] and [0,1,0,-1],
@@ -47,11 +65,18 @@ neither gets to hide the work in a conditional move.
 
 ### Where the JIT loses, concretely
 
-**Registers, on median5.** 35 of its 147 emitted instructions are
-SP-relative spill and fill — the 4-register TOS window against seven live
-locals (the validator reports `totalDepth` 9). GCC has eight low registers
-here and spills far less. This is the workload with the worst ratio against
-`-O2`, and that is why.
+**Registers, on median5.** 40 of the 126 instructions in its loop body are
+stack traffic — the 4-register TOS window against seven live locals (the
+validator reports `totalDepth` 9). GCC has eight low registers here and
+spills far less. This is the workload with the worst ratio against `-O2`,
+and that is why.
+
+**Loop-invariant addresses, on iq-preamble.** Every extension op
+materializes its buffer base itself, two instructions for the pinned
+`0x00030000`, four times an iteration. GCC loads the same address into a
+register once, outside the loop. That is 8 of the 14 cycles per iteration
+still separating the two, and it is what remains after the spills are gone:
+there is no hoisting pass, and no spare register to hoist into.
 
 **Range fusion and hoisting, on pulse-trigger.** GCC fuses
 `run >= 12 && run <= 60` into one `subs`/`cmp`/`bhi`, and hoists the event
@@ -61,6 +86,53 @@ reloads it per trigger. Both visible in the disassembly, both legitimate.
 Where the JIT wins is `-O0`, by better than 2x on every workload — which is
 worth stating only because "received bytecode is slower than compiled C" is
 not unconditionally true.
+
+## How the body is spelled
+
+Each workload's DSL body and its C kernel are one program written twice,
+statement for statement, differing only where the languages must: `i32` for
+`int32_t`, no `const`, `&` where C would tempt `&&`. That is a constraint on
+the suite and not a courtesy — the lowerer is not an optimizing compiler and
+does not want to be, so the spelling reaches the emitted code almost
+directly while GCC is indifferent to nearly all of it. A body written for
+the lowerer's convenience would report a ratio that says nothing.
+
+Cumulative from the top, both sides spelled the same way. The last row of
+each is what the suite runs.
+
+| iq-preamble | JIT | -Os |
+|---|---|---|
+| locals declared up front, `while (i != n)` | 19.23 | 9.34 |
+| induction variable in a `for` init | 16.28 | 9.34 |
+| `mi`/`mq` scoped to the `if` that computes them | 15.11 | 9.34 |
+| `acci += x - y` for `acci = acci + x - y` | 14.36 | 10.32 |
+
+| pulse-trigger | JIT | -Os |
+|---|---|---|
+| locals declared up front, `while (i != n)` | 27.77 | 26.96 |
+| induction variable in a `for` init | 27.77 | 26.96 |
+| `s` scoped to the loop body | 29.77 | 26.96 |
+
+median5 goes 151.00 to 148.38 on the `for` init and has nowhere else to go:
+its temporaries are live across the whole body.
+
+**Declaration order decides window residency.** The window covers the top
+four slots, so the first-declared local is the one that lives in memory —
+an induction variable declared first is reloaded at every use, six times an
+iteration in iq-preamble, worth 15% of it. pulse-trigger's four locals fit
+either way and the same edit buys nothing.
+
+**Block scoping cuts both ways**, and per-iteration liveness is the
+dividing line. iq-preamble's `mi`/`mq` are live one iteration in sixteen, so
+scoping them frees two window registers for the other fifteen.
+pulse-trigger's `s` is live every iteration, and scoping it trades one
+reload of `n` for a push and a pop.
+
+**GCC is indifferent to all of it** — the `-Os` column does not move — with
+one exception, and it is the row where the JIT gains least. `acci += x - y`
+holds both samples live at once where `acci = acci + x - y` needs one: that
+suits a stack machine and costs a register allocator, so most of that row's
+improvement is the C side getting worse rather than the JIT getting better.
 
 ## Where the cycle figures come from
 
@@ -86,9 +158,10 @@ statically, and the +2 is added only when the next translated block does
 not start at the previous block's fall-through address. A not-taken branch
 lands exactly on fall-through and costs nothing extra.
 
-It matters. The JIT materializes pooled literals where C keeps values in
+It matters. The JIT reaches locals in memory where C keeps them in
 registers, so it issues proportionally more loads; weighting them moved the
-`-O2` ratio from 1.52x to 1.54x and the `-Os` ratio from 1.13x to 1.03x.
+`-Os` ratio on pulse-trigger from 1.21x counting instructions to 1.10x
+counting cycles, and its `-O2` ratio the other way, 1.62x to 1.67x.
 
 `MUL` is a knob (`mul=` plugin argument, default 1) because Cortex-M0
 permits both a 1-cycle and a 32-cycle multiplier and the choice is
@@ -114,14 +187,20 @@ The same subtraction against an `N=0` phase gives the cold-start cost.
 
 **The stack figures are not comparable as printed.** On every workload the
 JIT excursion and a translate-only run reach exactly the same depth, so
-those 1.1-1.5 KB are the *translator's* peak and not the cost of running
+those 1.0-1.4 KB are the *translator's* peak and not the cost of running
 the program — the programs' own operand stacks are 6 to 9 words. The
-compiled kernels' 128 bytes is an ordinary call frame. Separating the JIT's
+compiled kernels' 136 bytes is an ordinary call frame. Separating the JIT's
 steady-state execution depth from its translation depth would need a
 repaint from inside `Executor::run`, which there is no hook for.
 
 **The fixed-footprint figure is approximate.** It sums `.text` by symbol
 name prefix, not from a link map.
+
+**Cold start and the fixed footprint are figures about the translator**, so
+they move whenever `src/compiler` does, while the per-sample figures move
+only when the emitted code does — differencing takes the translator out of
+those entirely. Two builds whose emitted code was byte-identical reported
+27846 and 28116 instructions of cold start on iq-preamble.
 
 **Three workloads on one core.** Every number here is Cortex-M0 with
 zero-wait-state memory and the single-cycle multiplier assumed. Nothing has
@@ -136,9 +215,12 @@ specification) and `ext_sampstream.{h,cpp}` (target half):
 
 | op | shape | emitted |
 |---|---|---|
-| `sample_at(i)` | index in acc → sign-extended `i16` in acc | 4 instructions |
+| `sample_at(i)` | index in acc → sign-extended `i16` in acc | 4-5 instructions |
 | `out_at(i, v)` | value in acc, index popped | 4 instructions |
 | `trigger(kind, i)` | index in acc, `kind` a literal; acc preserved | 11 instructions |
+
+The spread is the base address: one pooled load, or two instructions where
+the value decomposes, as the bench images' pinned `0x00030000` does.
 
 Every op emits inline. That is the point rather than a convenience: the
 suite compares emitted Thumb against C doing the same work, and an op
@@ -168,7 +250,7 @@ unmodified runtime, runs the emitted Thumb under QEMU, and compares the
 return value, a hash of all 1024 output samples, the trigger count and every
 event-ring slot against `@ppl/machine`'s VM.
 
-`bench.ts` gates every measurement the same way, on every one of the six
+`bench.ts` gates every measurement the same way, on every one of the 18
 images, before printing anything. A number from two sides that disagree
 about the answer is not a measurement.
 
@@ -190,7 +272,8 @@ loop touches no memory at all.
 
 ## Reproducibility
 
-Only `kernels_ref.cpp`'s optimization level varies across the six images, so
+Only `kernels_ref.cpp`'s optimization level varies across a workload's six
+images, so
 every JIT-side figure must come out identical in all of them, and `bench.ts`
 fails if it does not.
 

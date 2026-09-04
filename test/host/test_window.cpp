@@ -99,7 +99,7 @@ TEST(finishPopReloadsWhatPushEvicted)
     }
     uint32_t before = e.halfwordCount();
 
-    w.finishPop(e, acc); // pops the top slot (tos=5 -> 4); must reload k=0's spilled r7
+    acc.apply(w.finishPop(e)); // pops the top slot (tos=5 -> 4); must reload k=0's spilled r7
     CHECK(e.halfwordCount() == before + 1);
     CHECK(buf[before] == ArmV6M::pop(ArmV6M::LoRegs{0}.add(ArmV6M::LoReg(7)))); // POP {r7}
     CHECK(w.tos == 4);
@@ -150,7 +150,7 @@ TEST(discardWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
     Assembler &e = e_ta.a;
     const uint16_t *buf = e_ta.code();
     Window w(4 + 128); // 128 words spilled -> 512 bytes, one word past the limit
-    CHECK(!w.discard(e));
+    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_WINDOW_RECLAIM, w.discard(e));
 }
 
 TEST(restoreWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
@@ -159,7 +159,7 @@ TEST(restoreWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
     Assembler &e = e_ta.a;
     const uint16_t *buf = e_ta.code();
     Window w(4 + 128);
-    CHECK(!w.restore(e, 0));
+    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_WINDOW_RECLAIM, w.restore(e, 0));
 }
 
 TEST(callShuffleWithStackArgsExceedingWindowSize)

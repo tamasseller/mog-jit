@@ -1,102 +1,35 @@
 #!/usr/bin/env bash
-# Builds one benchmark image per optimization level.
-#
-# Exactly one thing varies across the six: the level kernels_ref.cpp is
-# compiled at. The runtime, the translator and the runner itself stay at the
-# -Os they ship at in every image, so the JIT-side numbers must come out
-# identical across all six — which the driver checks, and which is a free
-# consistency test on the whole measurement.
-#
-# -fstack-usage on the reference kernels only; the driver reads the .su
-# files for the C-side stack figure. The JIT side has no compile-time
-# equivalent — its stack is a property of the program it is running, not of
-# any function GCC ever saw — so that number comes from the validator and
-# the runtime watermark instead.
-#
-# A plain script rather than an ultimate-makefile target, matching fuzz/'s
-# images: one link of a fixed source list, no test framework, no coverage.
+# Generates each workload's data and builds one benchmark image per
+# optimization level from src/bench/Makefile.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-QEMU_EXEC=../fuzz/qemu_exec
-OUT_DIR="${BENCH_OUT_DIR:-${TMPDIR:-/tmp}/ppl-bench}"
-LEVELS=(-O0 -O1 -O2 -O3 -Os -Og)
+LEVELS=(O0 O1 O2 O3 Os Og)
 WORKLOADS=("$@")
 if [ ${#WORKLOADS[@]} -eq 0 ]; then
     WORKLOADS=(pulse-trigger iq-preamble median5)
 fi
 
+OUT_DIR="${BENCH_OUT_DIR:-${TMPDIR:-/tmp}/ppl-bench}"
 mkdir -p "$OUT_DIR" generated
 
-# Kept in step with test/qemu/Makefile's. The -ffixed-r8..r11 reservations
-# and -DNDEBUG are the two that matter: runtime.S and every
-# `register ... asm("r9")` site depend on the allocator never touching
-# those, and a firing assert() would pull in newlib's fprintf path.
-COMMON=(
-    -mcpu=cortex-m0 -mthumb -DNDEBUG
-    -std=gnu++17 -fno-exceptions -fno-rtti
-    -ffixed-r8 -ffixed-r9 -ffixed-r10 -ffixed-r11
-    -fno-use-cxa-atexit
-    -ffunction-sections
-    -I ../src/compiler -I ../src/runtime -I . -I "$QEMU_EXEC"
-)
-
-FIXED_SOURCES=(
-    "$QEMU_EXEC/vectors.S"
-    ../src/runtime/runtime.S
-    ../src/runtime/runtime.cpp
-    ../src/runtime/bytecode_default.cpp
-    ../src/runtime/executor.cpp
-    ../src/runtime/dispatch_abi.cpp
-    ../src/compiler/window.cpp
-    ../src/compiler/ext.cpp
-    ../src/compiler/ext_default.cpp
-    ../src/compiler/accstate.cpp
-    ../src/compiler/arithmetic.cpp
-    ../src/compiler/assembler.cpp
-    ../src/compiler/shape.cpp
-    ../src/compiler/abi_strategy.cpp
-    ../src/compiler/decode_instr.cpp
-    ../src/compiler/proc_scan.cpp
-    ../src/compiler/translate_proc.cpp
-    ../src/compiler/translate_data_flow.cpp
-    ../src/compiler/translate_control_flow.cpp
-    "$QEMU_EXEC/semihost.cpp"
-    "$QEMU_EXEC/cxx_stubs.cpp"
-    ext_sampstream.cpp
-    bench_stack.cpp
-    generated/samples.cpp
-    generated/bench_data.cpp
-    bench_runner.cpp
-)
-
 # One image per (workload, level). Each workload gets its own input samples
-# rather than sharing one array: what fraction of each branch is taken is
-# the dominant term in every number here, so a signal compromised to suit
-# three workloads at once would make all three less meaningful.
+# rather than sharing one array: what fraction of each branch is taken is the
+# dominant term in every number here, so a signal compromised to suit three
+# workloads at once would make all three less meaningful.
 for workload in "${WORKLOADS[@]}"; do
-    npx ts-node --transpile-only gen-bench.ts generated "$workload"
+    npx ts-node --transpile-only ts/gen-bench.ts generated "$workload"
 
     for level in "${LEVELS[@]}"; do
-        tag="${level#-}"
-        obj="$OUT_DIR/kernels_ref.$workload.$tag.o"
-        elf="$OUT_DIR/bench.$workload.$tag.elf"
+        make -s -C src/bench WORKLOAD="$workload" LEVEL="$level" OUT_DIR="$OUT_DIR" > /dev/null
 
-        # The reference kernels are the only thing whose level moves, and
-        # they are compiled separately so the .su file is attributable to
-        # them alone. The .su lands beside the object.
-        arm-none-eabi-g++ "${COMMON[@]}" "$level" -fstack-usage \
-            -c kernels_ref.cpp -o "$obj"
+        # bench.ts reads the reference kernels' frame size from GCC's own .su,
+        # which lands beside the object rather than beside the image.
+        cp "$(find "src/bench/.o/$workload/$level" -name 'kernels_ref.cpp.su')" \
+            "$OUT_DIR/kernels_ref.$workload.$level.su"
 
-        # vectors.S first on the link line — nothing else pins the vector
-        # table to address 0.
-        arm-none-eabi-g++ "${COMMON[@]}" -Os \
-            -static -nostartfiles -specs=nosys.specs -T linker.ld \
-            "${FIXED_SOURCES[@]}" "$obj" \
-            -o "$elf"
-
-        printf '  %-14s %-3s %s bytes text\n' "$workload" "$tag" \
-            "$(arm-none-eabi-size "$elf" | tail -1 | awk '{print $1}')"
+        printf '  %-14s %-3s %s bytes text\n' "$workload" "$level" \
+            "$(arm-none-eabi-size "$OUT_DIR/bench.$workload.$level.elf" | tail -1 | awk '{print $1}')"
     done
 done
 

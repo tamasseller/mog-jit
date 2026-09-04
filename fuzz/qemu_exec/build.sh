@@ -16,12 +16,16 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+JIT_MK=(../../src/compiler/compiler-all.mk ../../src/compiler/emit/ext-default.mk ../../src/runtime/runtime-all.mk ../../src/runtime/executor.mk ../../src/runtime/dispatch.mk ../../src/runtime/bytecode-default.mk)
+JIT_SOURCES=($(../../tools/srclist.sh "${JIT_MK[@]}"))
+JIT_INCLUDES=($(../../tools/srclist.sh --includes "${JIT_MK[@]}"))
+
 CXXFLAGS=(
     -mcpu=cortex-m0 -mthumb -Os -DNDEBUG
     -std=gnu++17 -fno-exceptions -fno-rtti
     -ffixed-r8 -ffixed-r9 -ffixed-r10 -ffixed-r11
     -fno-use-cxa-atexit
-    -I ../../src/compiler -I ../../src/runtime -I ../../test -I .
+    "${JIT_INCLUDES[@]}" -I ../../test -I .
 )
 
 # vectors.S first on the link line — nothing else pins the vector table to
@@ -29,26 +33,9 @@ CXXFLAGS=(
 arm-none-eabi-g++ "${CXXFLAGS[@]}" \
     -static -nostartfiles -specs=nosys.specs -T linker.ld \
     vectors.S \
-    ../../src/runtime/runtime.S \
-    ../../src/runtime/runtime.cpp \
-    ../../src/runtime/bytecode_default.cpp \
-    ../../src/runtime/executor.cpp \
-    ../../src/runtime/dispatch_abi.cpp \
-    ../../src/compiler/window.cpp \
-    ../../src/compiler/ext.cpp \
-    ../../src/compiler/ext_default.cpp \
+    "${JIT_SOURCES[@]}" \
     ../../test/ext_rawmem.cpp \
     ../../test/ext_rawmem_helper.S \
-    ../../src/compiler/accstate.cpp \
-    ../../src/compiler/arithmetic.cpp \
-    ../../src/compiler/assembler.cpp \
-    ../../src/compiler/shape.cpp \
-    ../../src/compiler/abi_strategy.cpp \
-    ../../src/compiler/decode_instr.cpp \
-    ../../src/compiler/proc_scan.cpp \
-    ../../src/compiler/translate_proc.cpp \
-    ../../src/compiler/translate_data_flow.cpp \
-    ../../src/compiler/translate_control_flow.cpp \
     semihost.cpp \
     cxx_stubs.cpp \
     exec_runner.cpp \

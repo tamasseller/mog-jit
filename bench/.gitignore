@@ -1,2 +1,5 @@
 generated/
-plugin/*.so
+.o/
+src/plugin/bench_plugin.so
+src/plugin-selftest/selftest.elf
+src/emitted/dump_emitted

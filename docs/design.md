@@ -986,7 +986,7 @@ next instruction, never several ahead.
 
 **The state** is three types, one per thing being described.
 
-`Shape` (`src/compiler/shape.h`) is **where a value is**, and it is the
+`Shape` (`src/compiler/emit/shape.h`) is **where a value is**, and it is the
 operand type `emitBinaryOp`/`emitComparison` take — so folding `acc` in is
 passing its own shape through. Both of its kinds are legal wherever a
 `Shape` is accepted, which is what keeps it usable as an operand:

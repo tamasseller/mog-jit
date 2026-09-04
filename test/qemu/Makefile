@@ -2,26 +2,13 @@ OUTPUT = run.elf
 
 SOURCES += vectors.S
 
-SOURCES += ../../src/runtime/runtime.S
-SOURCES += ../../src/runtime/runtime.cpp
-SOURCES += ../../src/runtime/executor.cpp
-SOURCES += ../../src/runtime/dispatch_abi.cpp
-SOURCES += ../../src/runtime/bytecode_default.cpp
-
-# The compiler itself
-SOURCES += ../../src/compiler/window.cpp
-SOURCES += ../../src/compiler/ext.cpp
-SOURCES += ../../src/compiler/ext_default.cpp
-SOURCES += ../../src/compiler/accstate.cpp
-SOURCES += ../../src/compiler/arithmetic.cpp
-SOURCES += ../../src/compiler/assembler.cpp
-SOURCES += ../../src/compiler/shape.cpp
-SOURCES += ../../src/compiler/abi_strategy.cpp
-SOURCES += ../../src/compiler/decode_instr.cpp
-SOURCES += ../../src/compiler/proc_scan.cpp
-SOURCES += ../../src/compiler/translate_proc.cpp
-SOURCES += ../../src/compiler/translate_control_flow.cpp
-SOURCES += ../../src/compiler/translate_data_flow.cpp
+# The translator and the real runtime, entry layer and all.
+include ../../src/compiler/compiler-all.mk
+include ../../src/compiler/emit/ext-default.mk
+include ../../src/runtime/runtime-all.mk
+include ../../src/runtime/executor.mk
+include ../../src/runtime/dispatch.mk
+include ../../src/runtime/bytecode-default.mk
 
 SOURCES += ../encode_instr.cpp
 SOURCES += ../ext_rawmem.cpp
@@ -50,8 +37,6 @@ SOURCES += ../../vendor/1test/TestRunner.cpp
 
 INCLUDE_DIRS += .
 INCLUDE_DIRS += ..
-INCLUDE_DIRS += ../../src/runtime
-INCLUDE_DIRS += ../../src/compiler
 INCLUDE_DIRS += ../../vendor/1test
 
 CC  = arm-none-eabi-gcc
