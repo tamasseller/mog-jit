@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-/* Wire opcodes and buffer, mirrored in fuzz/rawmem_ext.ts. */
+/* Wire opcodes and buffer, mirrored in fuzz/ts/lib/rawmem_ext.ts. */
 
 constexpr uint32_t RAWMEM_BYTES = 1024;
 

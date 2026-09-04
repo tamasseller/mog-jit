@@ -231,16 +231,16 @@ path compiled code takes.
 
 - **Downstream build scripts.** Every fuzz driver builds from its own
   hand-maintained source list, not `make test`: `fuzz/build.sh`,
-  `build_afl.sh`, `dump_code.sh`, `probe_arena.sh`, `qemu_exec/build.sh`,
+  `build_afl.sh`, `dump_code.sh`, `probe_arena.sh`, `qemu_exec/Makefile`,
   `bench/build.sh`. A new `bytecode_default.cpp` must be added to each, and
   each rebuilt and positively sanity-checked. This is where the time goes.
 - **Extension ABI break.** `ExtSite::opcode()` now returns the byte and
   `operands()` is `operand()`, one byte at a time off the cursor. Three
-  implementations in-tree (`test/ext_rawmem.cpp`, `test/host/ext_stub.cpp`,
+  implementations in-tree (`support/ext-rawmem/ext_rawmem.cpp`, `test/host/ext_stub.cpp`,
   `bench/ext_sampstream.cpp`) plus `ext_default.cpp`. Any out-of-tree
   extension breaks.
 - **Test surface.** 18 files construct programs or call `Executor::run`
-  directly; `test/corpus_programs.h`, `test/qemu/run_program.h` and
+  directly; `support/bytecode/corpus_programs.h`, `test/qemu/run_program.h` and
   `measure_proc.h` are the shared ones to change first.
 - **Stack budget.** `TRANSLATOR_ENTRY_CPP_BYTES` and
   `TRANSLATE_LEVEL_STACK_MARGIN` are measured from GCC's callgraph by

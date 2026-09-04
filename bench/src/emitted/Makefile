@@ -13,7 +13,8 @@ include $(BENCH)/../src/compiler/compiler-all.mk
 include $(BENCH)/../src/runtime/runtime-all.mk
 include $(BENCH)/../src/runtime/bytecode-default.mk
 
-SOURCES += $(BENCH)/../fuzz/dump_code.cpp
+include $(BENCH)/../support/bytecode/bytecode-tools.mk
+include $(BENCH)/../support/dump-code/dump-code.mk
 SOURCES += samples_stub.cpp
 
 CXXFLAGS += -std=c++17 -O1 -g -m32

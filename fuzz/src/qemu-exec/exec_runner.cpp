@@ -1,4 +1,4 @@
-/* jit-armv6m/fuzz/qemu_exec — the execution oracle harness.cpp's own
+/* jit-armv6m/fuzz — the execution oracle harness.cpp's own
  * TODO(execute) has been waiting for.
  *
  * Everything the host-side fuzzer can check is "did the translator crash or

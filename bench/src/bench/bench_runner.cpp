@@ -36,7 +36,7 @@ BENCH_REGION_MARKERS(ref_n0)
 BENCH_REGION_MARKERS(ref_n1)
 BENCH_REGION_MARKERS(ref_n2)
 
-/* 5KB, matching fuzz/qemu_exec's own sizing: enough that a benchmark-sized
+/* 5KB, matching fuzz/src/qemu-exec's own sizing: enough that a benchmark-sized
  * procedure compiles without eviction. Eviction would be a legitimate thing
  * to measure, but not in the same number as steady-state throughput. */
 static constexpr uint32_t CODE_ARENA_BYTES = 5120;
@@ -102,7 +102,7 @@ static uint32_t stateHash()
  * not the ones the target sees, so a host-side figure could differ by real
  * instructions.
  *
- * A fresh Runtime over a scratch arena, exactly as fuzz/dump_code.cpp does,
+ * A fresh Runtime over a scratch arena, exactly as support/dump-code/dump_code.cpp does,
  * so this measures the program alone and not whatever the benchmark runs
  * already left in the real arena. No bail handling: a program that cannot
  * compile has already failed the phases above.

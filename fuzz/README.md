@@ -5,8 +5,8 @@ other's.
 
 | | what runs | what it catches |
 |---|---|---|
-| `harness.cpp` + `oracle_server.ts` | the real translator on the host, under ASan/UBSan with asserts live | **crashes**: an assert, UB, an out-of-range encoding — on input a validator already approved |
-| `qemu_exec/` | the *emitted Thumb*, on `qemu-system-arm`, against the real unmodified `runtime/` | **miscompilation**: no crash, no bail, just the wrong number |
+| `src/driver/` + `ts/oracle_server.ts` | the real translator on the host, under ASan/UBSan with asserts live | **crashes**: an assert, UB, an out-of-range encoding — on input a validator already approved |
+| `src/qemu-exec/` + `ts/qemu-exec.ts` | the *emitted Thumb*, on `qemu-system-arm`, against the real unmodified `runtime/` | **miscompilation**: no crash, no bail, just the wrong number |
 
 The host half cannot see a miscompilation, because nothing in it ever
 executes anything. The QEMU half cannot see an assert, because a bare-metal
@@ -16,11 +16,11 @@ image is built `-DNDEBUG`. Run both.
 
 ```sh
 # once, in another terminal (keeps @ppl/machine warm behind a socket)
-npx ts-node --transpile-only jit-armv6m/fuzz/oracle_server.ts
+npx ts-node --transpile-only jit-armv6m/fuzz/ts/oracle_server.ts
 
-./build.sh
-./fuzz_driver seeds                      # one worker; run several for real throughput
-PPL_FUZZ_CORPUS_OUT=/tmp/corpus ./fuzz_driver seeds   # also export for qemu_exec/
+make -C src/driver
+src/driver/fuzz_driver seeds                      # one worker; run several for real throughput
+PPL_FUZZ_CORPUS_OUT=/tmp/corpus src/driver/fuzz_driver seeds  # also export for ts/qemu-exec.ts
 ```
 
 Every candidate is gated through `validateProgram` first (over a Unix
@@ -56,8 +56,8 @@ that is too generous silently exercises none of it. `repro.sh` builds and
 replays one saved input (`last_input.bin` after a crash) through the same
 harness.
 
-`build_afl.sh` is the coverage-guided build: `afl-clang-fast++`,
-`harness.cpp`'s `__AFL_COMPILER` persistent-mode `main()`, ASan on by
+`make -C src/driver AFL=1` is the coverage-guided build: `afl-clang-fast++`,
+`src/driver/harness.cpp`'s `__AFL_COMPILER` persistent-mode `main()`, ASan on by
 default. Debian's amd64 `afl++` ships no `afl-compiler-rt-32.o`, so
 `afl-cc` refuses `-m32`; the i386 package of the same version has that
 object, and a private `AFL_PATH` holding it beside the amd64 passes is all
@@ -68,25 +68,25 @@ dpkg-deb -x afl++_4.04c-4_i386.deb i386pkg   # deb.debian.org/debian/pool/main/a
 cp -a /usr/lib/afl aflpath
 cp i386pkg/usr/lib/afl/afl-compiler-rt-32.o aflpath/
 export AFL_PATH=$PWD/aflpath
-./build_afl.sh
-afl-fuzz -i seeds -o out -m none -t 5000 -- ./fuzz_driver_afl
+make -C src/driver AFL=1
+afl-fuzz -i seeds -o out -m none -t 5000 -- src/driver/fuzz_driver_afl
 ```
 
-`build.sh`'s driver remains the zero-dependency fallback: its only feedback
+The plain `make -C src/driver` driver remains the zero-dependency fallback: its only feedback
 signal is validator approval, enough to keep the corpus accumulating
 structure.
 
 ## QEMU half — miscompilation
 
 ```sh
-cd qemu_exec && ./build.sh && cd ..
-npx ts-node --transpile-only jit-armv6m/fuzz/qemu_exec/qemu_exec.ts <dir-or-file>...
-npx ts-node --transpile-only jit-armv6m/fuzz/qemu_exec/minimize_exec.ts <file>
+make -C src/qemu-exec
+npx ts-node --transpile-only jit-armv6m/fuzz/ts/qemu-exec.ts <dir-or-file>...
+npx ts-node --transpile-only jit-armv6m/fuzz/ts/minimize-exec.ts <file>
 ```
 
-`qemu_exec.ts` computes each program's reference result with
+`ts/qemu-exec.ts` computes each program's reference result with
 `@ppl/machine`'s VM, runs the real emitted code on the emulated target, and
-diffs. `minimize_exec.ts` shrinks a mismatching program by deleting whole
+diffs. `ts/minimize-exec.ts` shrinks a mismatching program by deleting whole
 instructions and re-encoding, so every candidate stays validator-approved —
 one QEMU boot per pass, not per candidate.
 
@@ -102,7 +102,7 @@ compared (`docs/target-profile.md`).
 ## The extension
 
 Both halves carry one registered extension, the raw-memory test extension:
-`rawmem_ext.ts` is the reference half, `../test/ext_rawmem.cpp` (plus
+`ts/lib/rawmem_ext.ts` is the reference half, `../support/ext-rawmem/ext_rawmem.cpp` (plus
 `ext_rawmem_helper.S`, and `rawmem_helper_host.cpp` standing in for it on a
 host that cannot assemble Thumb) the target half. Without it every EXT
 opcode is rejected at load and the whole seam — `ExtSite`'s window and acc
@@ -115,22 +115,22 @@ calls `reset()` before `run`.
 
 ## Seeds
 
-`make_seeds.ts` owns `seeds/` — it is the only thing that writes there.
+`ts/make_seeds.ts` owns `seeds/` — it is the only thing that writes there.
 Every seed goes through `validateProgram` before being written, because a
 seed that doesn't validate is silently discarded on every single execution:
 the old hand-encoded `loop` seed had been doing exactly that.
 
-`dump_seeds.sh` stages `test/corpus_programs.h`'s bodies (shared with
-`test/qemu/test_nested_blocks.cpp`) into `seeds_raw/` for `make_seeds.ts` to wrap:
+`dump_seeds.sh` stages `support/bytecode/corpus_programs.h`'s bodies (shared with
+`test/qemu/test_nested_blocks.cpp`) into `seeds_raw/` for `ts/make_seeds.ts` to wrap:
 
 ```sh
 ./dump_seeds.sh
-TS_NODE_PROJECT=tsconfig.json npx ts-node --transpile-only make_seeds.ts
+TS_NODE_PROJECT=tsconfig.json npx ts-node --transpile-only ts/make_seeds.ts
 ```
 
 Every seed is run with a real argument vector, not zeros —
-`fuzz/entry_args.ts` owns the one generator all three consumers share
-(`oracle_server.ts`, `qemu_exec.ts`, `minimize_exec.ts`), because a
+`ts/lib/entry_args.ts` owns the one generator all three consumers share
+(`oracle_server.ts`, `qemu-exec.ts`, `minimize-exec.ts`), because a
 disagreement between any two of them would manufacture mismatches
 indistinguishable from miscompilations. Values are distinct per index so a
 permuted window changes the answer, and deliberately small: a wide value in
@@ -138,7 +138,7 @@ a slot some program uses as a loop counter turns a short countdown into
 billions of steps, which the reference VM's watchdog then reports as "does
 not terminate" and the sweep silently discards.
 
-Beyond those, `make_seeds.ts` authors the multi-procedure/`CALL` shapes no
+Beyond those, `ts/make_seeds.ts` authors the multi-procedure/`CALL` shapes no
 single-procedure format can express, and large shapes aimed at specific
 *compiled-size* guards (a case body past the conditional-branch span, a
 loop body past the back-edge's reach, a run of literal-pool constants, a

@@ -18,7 +18,7 @@ using namespace jitc;
 // ahead of the outer LOOP, and only ever STOREd inside either loop body — tos
 // stays fixed at 5 (k0 arg + k1..k4) across both loops' own back-edges, which
 // also spills k0 out of the window for free (WINDOW_SIZE is 4). Body lives in
-// corpus_programs.h, shared with fuzz/dump_seeds.cpp.
+// corpus_programs.h, shared with fuzz/src/dump-seeds/dump_seeds.cpp.
 TEST(NestedLoopsWithThree)
 {
     ProcSource procs[] = {PROC(1, corpusNestedLoopProc0)};

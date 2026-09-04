@@ -22,7 +22,7 @@ SOURCES += host_runtime_support.cpp
 SOURCES += ext_stub.cpp
 SOURCES += bc_stub.cpp
 SOURCES += bc_buffered.cpp
-SOURCES += ../encode_instr.cpp
+include ../../support/bytecode/bytecode-tools.mk
 
 # The translator, all three layers. ext-default.mk is left out: ext_stub.cpp
 # above is this suite's extension set.
@@ -39,7 +39,6 @@ include ../../src/runtime/executor.mk
 SOURCES += ../../vendor/1test/TestRunner.cpp
 SOURCES += ../../vendor/1test/PrintfOutput.cpp
 
-INCLUDE_DIRS += ..
 INCLUDE_DIRS += ../../vendor/1test
 
 ASMFLAGS += -m32

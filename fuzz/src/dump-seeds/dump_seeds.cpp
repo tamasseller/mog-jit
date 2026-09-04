@@ -1,4 +1,4 @@
-// Re-encodes ../test/corpus_programs.h's single-procedure bodies -- the
+// Re-encodes ../support/bytecode/corpus_programs.h's single-procedure bodies -- the
 // same Instr[] shapes test/qemu/test_nested_blocks.cpp exercises on real hardware --
 // as one arg_count:LEB128 immediately followed by that procedure's own body
 // bytes, and writes them to seeds_raw/ as *staging* input for make_seeds.ts.

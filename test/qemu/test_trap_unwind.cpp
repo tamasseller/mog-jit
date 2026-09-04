@@ -10,7 +10,7 @@
 using namespace jitc;
 
 // ---- A bytecode TRAP really unwinds (isa-core.md §4.5/§9). This is the
-// four-instruction program fuzz/qemu_exec minimized the original
+// four-instruction program fuzz/src/qemu-exec minimized the original
 // 195-instruction finding down to: the trap sits in a *nested* procedure, so
 // a TRAP compiled as an ordinary return handed 0x800002f2 to proc0 as a
 // return value and proc0 went on to return 92. Now it reaches enterDispatch's

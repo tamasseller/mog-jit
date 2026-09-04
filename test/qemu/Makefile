@@ -1,6 +1,9 @@
 OUTPUT = run.elf
 
-SOURCES += vectors.S
+# Bare-metal support first — vectors.S has to be the first object on the link
+# line. This suite brings its own console (semihosting_output.cpp, a 1test
+# TestOutput) rather than support/qemu-image/semihost.mk.
+include ../../support/qemu-image/qemu-image.mk
 
 # The translator and the real runtime, entry layer and all.
 include ../../src/compiler/compiler-all.mk
@@ -10,9 +13,9 @@ include ../../src/runtime/executor.mk
 include ../../src/runtime/dispatch.mk
 include ../../src/runtime/bytecode-default.mk
 
-SOURCES += ../encode_instr.cpp
-SOURCES += ../ext_rawmem.cpp
-SOURCES += ../ext_rawmem_helper.S
+include ../../support/bytecode/bytecode-tools.mk
+include ../../support/ext-rawmem/ext-rawmem-target.mk
+
 SOURCES += test_calls.cpp
 SOURCES += test_data_flow.cpp
 SOURCES += test_unary_ops.cpp
@@ -30,27 +33,15 @@ SOURCES += test_cancel.cpp
 SOURCES += test_extend_ops.cpp
 SOURCES += stack_paint.cpp
 SOURCES += semihosting_output.cpp
-SOURCES += cxx_stubs.cpp
 SOURCES += main.cpp
 
 SOURCES += ../../vendor/1test/TestRunner.cpp
 
 INCLUDE_DIRS += .
-INCLUDE_DIRS += ..
 INCLUDE_DIRS += ../../vendor/1test
 
-CC  = arm-none-eabi-gcc
-CXX = arm-none-eabi-g++
-AS  = arm-none-eabi-g++
-LD  = arm-none-eabi-g++
-OBJCOPY = arm-none-eabi-objcopy
-OBJSIZE = arm-none-eabi-size
-
-ASMFLAGS += -mcpu=cortex-m0 -mthumb
-
-CXXFLAGS += -mcpu=cortex-m0 -mthumb -Os -DNDEBUG
+CXXFLAGS += -Os
 CXXFLAGS += -fno-tree-loop-distribute-patterns
-CXXFLAGS += -std=gnu++17 -fno-exceptions -fno-rtti
 
 # 1test embeds __FILE__ ":" __LINE__ once per TEST and once per CHECK; at
 # absolute paths those strings alone cost several KB of the 64KB image.
@@ -71,13 +62,6 @@ PROC_SCAN_CPP_FLAGS += -Werror=stack-usage=512
 ABI_STRATEGY_CPP_FLAGS += -Werror=stack-usage=512
 ASSEMBLER_CPP_FLAGS += -Werror=stack-usage=512
 
-CXXFLAGS += -ffixed-r8 -ffixed-r9 -ffixed-r10 -ffixed-r11
-
-CXXFLAGS += -fno-use-cxa-atexit
-
-LDFLAGS += -mcpu=cortex-m0 -mthumb
-LDFLAGS += -static -nostartfiles
-LDFLAGS += -specs=nosys.specs
 LDFLAGS += -T linker.ld
 
 include ../../vendor/ultimate-makefile/Makefile.ultimate

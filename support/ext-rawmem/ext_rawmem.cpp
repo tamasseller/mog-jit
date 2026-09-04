@@ -1,5 +1,5 @@
 /* The raw-memory test extension, target half — the mirror of
- * fuzz/rawmem_ext.ts, which carries the specification.
+ * fuzz/ts/lib/rawmem_ext.ts, which carries the specification.
  *
  * The buffer is static and its address is therefore a link-time constant,
  * so nothing here needs per-excursion extension state (design.md §18.1):

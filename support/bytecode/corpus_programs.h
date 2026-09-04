@@ -1,6 +1,6 @@
 // Diverse-shape Instr[] programs shared between qemu/test_nested_blocks.cpp,
 // qemu/test_br_table.cpp, qemu/test_data_flow.cpp (the real QEMU exercise) and
-// fuzz/dump_seeds.cpp (a seed-corpus dump for
+// fuzz/src/dump-seeds/dump_seeds.cpp (a seed-corpus dump for
 // whenever a fuzz harness gets built around decodeLeb128/translateProc/
 // Executor::split). Authored once here so both consumers see the exact
 // same bytes rather than two independently-typed copies drifting apart.

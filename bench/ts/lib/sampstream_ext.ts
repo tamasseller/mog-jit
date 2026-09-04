@@ -16,7 +16,7 @@
 // `sample_at(i - n)` with no second op.
 //
 // Offsets are masked rather than bounds-checked, exactly as in
-// fuzz/rawmem_ext.ts: the mask *is* the buffer size, so there is no trap
+// fuzz/ts/lib/rawmem_ext.ts: the mask *is* the buffer size, so there is no trap
 // path for the two halves to disagree about.
 
 import type {Extension, ExtOpEffect, ExtInstr, Rule, RtlNode} from "../../../../packages/machine/src/index"

@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # Translate one program and disassemble what the translator emitted.
+#
+#   ./dump_code.sh seeds/arith
 set -euo pipefail
+
+# Resolve arguments before the cd, so a path relative to the caller's own
+# directory still means what it said.
+args=(); for a in "$@"; do args+=("$(realpath -m "$a")"); done
 cd "$(dirname "$0")"
 
-JIT_MK=(../src/compiler/compiler-all.mk ../src/compiler/emit/ext-default.mk ../src/runtime/runtime-all.mk ../src/runtime/bytecode-default.mk)
-JIT_SOURCES=($(../tools/srclist.sh "${JIT_MK[@]}"))
-JIT_INCLUDES=($(../tools/srclist.sh --includes "${JIT_MK[@]}"))
-g++ -std=c++17 -O1 -g -m32 "${JIT_INCLUDES[@]}" dump_code.cpp \
-    "${JIT_SOURCES[@]}" \
-    -o dump_code
-./dump_code "$1" /tmp/ppl-code
-for b in /tmp/ppl-code.proc*.bin; do
+OUT="${TMPDIR:-/tmp}/ppl-code"
+
+make -s -C src/dump-code
+src/dump-code/dump_code "${args[0]}" "$OUT"
+
+for b in "$OUT".proc*.bin; do
     echo "=== $b ==="
     arm-none-eabi-objdump -D -b binary -m armv6-m -M force-thumb "$b" | tail -n +7
 done

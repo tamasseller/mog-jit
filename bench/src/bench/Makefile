@@ -19,7 +19,8 @@ OUT_DIR ?= .
 OUTPUT := $(OUT_DIR)/bench.$(WORKLOAD).$(LEVEL).elf
 OBJDIR := .o/$(WORKLOAD)/$(LEVEL)
 
-include $(BENCH)/../fuzz/qemu_exec/qemu-image.mk
+include $(BENCH)/../support/qemu-image/qemu-image.mk
+include $(BENCH)/../support/qemu-image/semihost.mk
 include $(BENCH)/src/common/bench-common.mk
 include $(BENCH)/../src/compiler/compiler-all.mk
 include $(BENCH)/../src/runtime/runtime-all.mk

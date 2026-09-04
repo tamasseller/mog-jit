@@ -18,7 +18,7 @@ npx ts-node --transpile-only ts/gen-check.ts generated
 make -s -C src/check OUT_DIR="$OUT_DIR"
 
 # Semihosting output arrives on stderr under target=native, so both streams
-# are kept (fuzz/qemu_exec/qemu_exec.ts:227-233 documents the same).
+# are kept (fuzz/ts/qemu-exec.ts:227-233 documents the same).
 qemu-system-arm -M microbit -nographic -monitor none -serial none \
     -semihosting-config enable=on,target=native \
     -kernel "$ELF" > "$OUT" 2>&1 || true

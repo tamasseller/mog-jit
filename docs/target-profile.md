@@ -15,7 +15,7 @@ field widths (`MAX_ARG_COUNT = 2047`, `MAX_BODY_BYTES ~1M`,
 ones — a real handwritten or lowered procedure never comes anywhere close
 to either. The gap between "the generic validator allows it" and "any
 plausible real program would ever produce it" is exactly the space
-`jit-armv6m/fuzz/oracle_server.ts`'s validator gate was finding nothing but
+`jit-armv6m/fuzz/ts/oracle_server.ts`'s validator gate was finding nothing but
 noise in: `argCount = 972` is a perfectly valid, `validateProgram`-approved
 program that no real caller would ever construct, and chasing what happens
 to it finds ABI-encoding-width bugs, not `jit-armv6m` bugs.
@@ -91,7 +91,7 @@ actually matters: it is what a fuzzer produces by the thousand.
 `validateProgram`'s own whole-program `totalDepth`) for a measured reason —
 unbounded, **84% of a real fuzz corpus landed above the ceiling**, so 84% of
 the fuzzer's budget went to programs that could only ever bail, and whose
-emitted code neither half of `fuzz/` could look at. `fuzz/qemu_exec` is what
+emitted code neither half of `fuzz/` could look at. `fuzz/src/qemu-exec` is what
 made that ratio visible; the crash-only harness had no way to tell a bail
 from a pass.
 
@@ -255,7 +255,7 @@ reached through the r10 vector instead because emitted code has no way to
 ordinary `returnSequence`. Right for the entry procedure, wrong for any
 nested one: the callee returned normally, the sentinel landed in the
 caller's `acc` as an ordinary return value, and the caller kept executing.
-`fuzz/qemu_exec/minimize_exec.ts` reduced a 195-instruction input to
+`fuzz/ts/minimize-exec.ts` reduced a 195-instruction input to
 
 ```
 proc 0 (argCount 0):  CALL 1 ; CONST 92 ; RETURN

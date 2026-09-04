@@ -1400,7 +1400,7 @@ program against an image built without that extension registered, so it is
 reported rather than asserted. With an extension registered it means that
 extension declined the byte; §18 has the rest of the seam. It is also the only place that byte is
 stopped. `decodeInstr` merely asserts, and both the QEMU suite and
-`fuzz/qemu_exec` build `-DNDEBUG`, so before `GUARDED_scanBody` gained its own
+`fuzz/src/qemu-exec` build `-DNDEBUG`, so before `GUARDED_scanBody` gained its own
 check a body byte of `0x80` decoded as `CONST 20` on real hardware and
 silently reinterpreted the rest of the instruction stream. The check sits
 in the pre-pass because that walk already decodes every instruction of
@@ -1747,7 +1747,7 @@ that second pass is what reaches `findEvictionVictim`/`evict`'s compaction
 memmove, `Runtime::commit` and `finalize`'s dispatch registration. It finds
 crashes, and nothing else: it never executes what it emitted.
 
-`fuzz/qemu_exec/` closes exactly that gap, and needs no new emulator —
+`fuzz/src/qemu-exec/` closes exactly that gap, and needs no new emulator —
 §16's own `qemu-system-arm` setup already runs this translator plus the
 real, unmodified `runtime/`. A batch of programs is loaded straight into
 guest flash (`-device loader`; semihosting file I/O was tried first and

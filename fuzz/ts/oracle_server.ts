@@ -26,19 +26,19 @@
 // Runtime::init()'s multi-procedure directory walk,
 // parseProgramHeader itself — permanently unreachable by the fuzzer.
 //
-// Run standalone: `npx ts-node --transpile-only jit-armv6m/fuzz/oracle_server.ts [socketPath]`
+// Run standalone: `npx ts-node --transpile-only jit-armv6m/fuzz/ts/oracle_server.ts [socketPath]`
 
 import * as net from "net"
 import * as fs from "fs"
-import { decodeJitEnvelope, encodeLeb128, encodeProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "../../packages/machine/src/index"
-import type { RtlProgram } from "../../packages/machine/src/index"
+import { decodeJitEnvelope, encodeLeb128, encodeProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "../../../packages/machine/src/index"
+import type { RtlProgram } from "../../../packages/machine/src/index"
 // One generator for the entry procedure's arguments, shared with the
 // execution oracle: if the two differed, this server's reference result
 // would not be the one qemu_exec.ts compares against.
-import { entryArgsFor } from "./entry_args"
+import { entryArgsFor } from "./lib/entry_args"
 // The one extension both fuzz halves carry — target side in
-// test/ext_rawmem.cpp, linked into fuzz_driver and exec_runner.elf alike.
-import { rawMemExtension } from "./rawmem_ext"
+// support/ext-rawmem/ext_rawmem.cpp, linked into fuzz_driver and exec_runner.elf alike.
+import { rawMemExtension } from "./lib/rawmem_ext"
 
 const SOCK_PATH = process.argv[2] || "/tmp/ppl-jit-oracle.sock"
 
@@ -88,7 +88,7 @@ const REALISTIC_MAX_PROC_COUNT = 16
 // Worth gating rather than leaving to the bail: unbounded, the mutator put
 // 84% of its corpus above this line, so 84% of the fuzzer's budget went to
 // programs whose emitted code neither half of fuzz/ could ever look at.
-// Measured with fuzz/qemu_exec, which is what made the ratio visible.
+// Measured with fuzz/src/qemu-exec, which is what made the ratio visible.
 const REALISTIC_MAX_TOTAL_DEPTH = 128
 
 /** Whether a validator-approved program still looks like something a real

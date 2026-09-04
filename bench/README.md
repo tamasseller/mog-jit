@@ -26,7 +26,7 @@ npx ts-node --transpile-only bench/ts/bench.ts
 Each `src/*` directory is one native output with an ultimate-makefile
 `Makefile`; the scripts above only generate, invoke `make`, run QEMU and
 compare. Shared bare-metal support (vector table, semihosting, the ARM flags)
-comes from `fuzz/qemu_exec/qemu-image.mk`.
+comes from `support/qemu-image/qemu-image.mk`.
 
 ## Results
 
@@ -239,7 +239,7 @@ register allocator the cursor as an ordinary local, and look-back is then
 `sample_at(i - n)` with no second op.
 
 Indices are masked, never bounds-checked, exactly as in
-`fuzz/rawmem_ext.ts`: the mask *is* the buffer size, so there is no trap
+`fuzz/ts/lib/rawmem_ext.ts`: the mask *is* the buffer size, so there is no trap
 path for the two halves to disagree about.
 
 ## Correctness gates

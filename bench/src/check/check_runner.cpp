@@ -24,7 +24,7 @@
 #include "ext_sampstream.h"
 #include "generated/check_data.h"
 
-/* 5KB, matching fuzz/qemu_exec's own sizing: enough that a benchmark-sized
+/* 5KB, matching fuzz/src/qemu-exec's own sizing: enough that a benchmark-sized
  * procedure compiles without eviction, leaving the rest of the 16KB for the
  * output ring and the translator's recursion. */
 static constexpr uint32_t CODE_ARENA_BYTES = 5120;

@@ -2,11 +2,11 @@
 # exactly known length, and one around nothing. selftest.sh reads the marker
 # addresses out of this ELF and differences the two counts.
 BENCH := ../..
-QEMU_EXEC := $(BENCH)/../fuzz/qemu_exec
 
 OUTPUT := selftest.elf
 
-include $(QEMU_EXEC)/qemu-image.mk
+include $(BENCH)/../support/qemu-image/qemu-image.mk
+include $(BENCH)/../support/qemu-image/semihost.mk
 
 SOURCES += selftest.cpp
 
@@ -14,6 +14,6 @@ INCLUDE_DIRS += $(BENCH)/src/common
 
 CXXFLAGS += -Os
 
-LDFLAGS += -T $(QEMU_EXEC)/linker.ld
+LDFLAGS += -T $(BENCH)/src/common/linker.ld
 
 include $(BENCH)/../vendor/ultimate-makefile/Makefile.ultimate

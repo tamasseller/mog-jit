@@ -1,4 +1,4 @@
-// jit-armv6m/fuzz/qemu_exec — drives exec_runner.elf and does the
+// jit-armv6m/fuzz — drives exec_runner.elf and does the
 // comparison the host-side fuzzer structurally cannot: run the *emitted
 // Thumb* and check its answer against @ppl/machine's reference VM.
 //
@@ -9,7 +9,7 @@
 // because nothing there ever executes anything. This is the half that can.
 //
 // Usage (from the repo root, TS_NODE_PROJECT=jit-armv6m/fuzz/tsconfig.json):
-//     npx ts-node --transpile-only jit-armv6m/fuzz/qemu_exec/qemu_exec.ts <dir-or-file>...
+//     npx ts-node --transpile-only jit-armv6m/fuzz/ts/qemu-exec.ts <dir-or-file>...
 //
 // One QEMU boot per batch, not per program, which is what makes the
 // emulator affordable here: the runner streams every program in the batch
@@ -20,14 +20,14 @@ import * as path from "path"
 import { spawnSync } from "child_process"
 import { decodeJitEnvelope, encodeJitProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "../../../packages/machine/src/index"
 import type { RtlProgram } from "../../../packages/machine/src/index"
-import { entryArgsFor } from "../entry_args"
+import { entryArgsFor } from "./lib/entry_args"
 // The one extension both halves carry, so an EXT instruction is a
-// comparable outcome rather than a bail (rawmem_ext.ts, test/ext_rawmem.cpp).
-import { rawMemExtension } from "../rawmem_ext"
+// comparable outcome rather than a bail (rawmem_ext.ts, support/ext-rawmem/ext_rawmem.cpp).
+import { rawMemExtension } from "./lib/rawmem_ext"
 
 const EXT = rawMemExtension()
 
-const HERE = __dirname
+const HERE = path.join(__dirname, "..", "src", "qemu-exec")
 const ELF = path.join(HERE, "exec_runner.elf")
 const BATCH_PATH = "/tmp/ppl-fuzz-batch.bin"
 
@@ -256,7 +256,7 @@ if(targets.length === 0)
 }
 if(!fs.existsSync(ELF))
 {
-    console.error(`no ${ELF} — run qemu_exec/build.sh first`)
+    console.error(`no ${ELF} — run "make -C src/qemu-exec" first`)
     process.exit(1)
 }
 

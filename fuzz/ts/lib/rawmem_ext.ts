@@ -17,8 +17,8 @@
 // is simply the buffer size, and an end at or below its start copies
 // nothing rather than something surprising.
 
-import type { Extension, ExtOpEffect } from "../../packages/machine/src/index"
-import type { ExtInstr } from "../../packages/machine/src/index"
+import type { Extension, ExtOpEffect } from "../../../../packages/machine/src/index"
+import type { ExtInstr } from "../../../../packages/machine/src/index"
 
 export const RAWMEM_BYTES = 1024
 export const ADDR_MASK = 0x3ff // the whole buffer — see this file's header

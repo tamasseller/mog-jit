@@ -1,4 +1,4 @@
-// jit-armv6m/fuzz/qemu_exec — shrink a miscompiling program to the
+// jit-armv6m/fuzz — shrink a miscompiling program to the
 // smallest one that still miscompiles.
 //
 // Two things make this worth having rather than reusing a byte-level
@@ -26,21 +26,21 @@
 // per candidate.
 //
 // Usage (from the repo root, TS_NODE_PROJECT=jit-armv6m/fuzz/tsconfig.json):
-//     npx ts-node --transpile-only jit-armv6m/fuzz/qemu_exec/minimize_exec.ts [--hang] <file> [out]
+//     npx ts-node --transpile-only jit-armv6m/fuzz/ts/minimize-exec.ts [--hang] <file> [out]
 
 import * as fs from "fs"
 import * as path from "path"
 import { spawnSync } from "child_process"
 import { decodeJitEnvelope, encodeJitProgram, validateProgram, run, StepLimitExceeded } from "../../../packages/machine/src/index"
 import type { RtlProgram } from "../../../packages/machine/src/index"
-import { entryArgsFor } from "../entry_args"
-import { rawMemExtension } from "../rawmem_ext"
+import { entryArgsFor } from "./lib/entry_args"
+import { rawMemExtension } from "./lib/rawmem_ext"
 
 const EXT = rawMemExtension()
 
 const HANG_MODE = process.argv.includes("--hang")
 
-const HERE = __dirname
+const HERE = path.join(__dirname, "..", "src", "qemu-exec")
 const ELF = path.join(HERE, "exec_runner.elf")
 const BATCH_PATH = "/tmp/ppl-fuzz-minimize.bin"
 const BATCH_MAGIC = 0x50504c42

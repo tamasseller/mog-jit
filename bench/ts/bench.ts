@@ -145,7 +145,7 @@ function runImage(elf: string): Run
     /* spawnSync, not execFileSync: under `target=native` the semihosting
      * writes land on stderr, which execFileSync discards on a clean exit —
      * and a clean exit is the normal case here. Both streams are kept, the
-     * same way fuzz/qemu_exec/qemu_exec.ts does. */
+     * same way fuzz/ts/qemu-exec.ts does. */
     const proc = spawnSync("qemu-system-arm", [
         "-M", "microbit", "-nographic", "-monitor", "none", "-serial", "none",
         "-semihosting-config", "enable=on,target=native",

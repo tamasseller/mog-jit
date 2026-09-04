@@ -124,7 +124,7 @@ Three consequences fell out, each simplifying something:
   same argument one level down later split that tag's own `value` into the
   `RESOURCE_*` codes (design.md §12): "out of memory", "this program is
   malformed" and "no arena size would help" are three more.
-- **`fuzz/qemu_exec` lost two skip categories** — the `trapDepth > 0`
+- **`fuzz/src/qemu-exec` lost two skip categories** — the `trapDepth > 0`
   set-aside and the "result ambiguous under the high-bit trap encoding"
   one. On the seed corpus that moved 30 comparable programs to 32 of 34,
   and the last sweep before this change had set aside 65 of 2,951 corpus
@@ -233,7 +233,7 @@ spent on a ternary that is parsed but not yet lowered.
   removed, all three back to `poison()`. `AccState::live()` removed.
 - Real programs that relied on the lax reading, all needing one producer
   after the merge: the union codec test helper, `docs/codec-extension.md`
-  §8.2's union-encoder example, and `test/corpus_programs.h`'s fixtures 30
+  §8.2's union-encoder example, and `support/bytecode/corpus_programs.h`'s fixtures 30
   and 31, which now deliver each case's value through a TOS slot — the
   idiom §8.7 now documents. Fixture 30's `unitCodecBody` counterpart in
   `list-union.test.ts` also needed `CONST` before its bare `RETURN` (§4.6,
@@ -599,7 +599,7 @@ first version of this reached none of it: eviction only fires in a narrow
 band around a program's compiled size, so the arena is sized as a multiple of
 an estimate rather than a constant.
 
-**Execution oracle (`fuzz/qemu_exec/`).** The half that found five of the
+**Execution oracle (`fuzz/src/qemu-exec/`).** The half that found five of the
 nine. Batches of programs are loaded into guest flash, run through the real
 `Executor::split` on `qemu-system-arm` against the unmodified `runtime/`,
 and diffed against the reference VM. One boot per batch. `minimize_exec.ts`
@@ -609,7 +609,7 @@ widths — one boot per pass, including in `--hang` mode, where a timed-out
 batch identifies the first hanging variant by exactly how far it got.
 
 **Seeds.** 32, all validated at generation time: the small single-procedure
-shapes (shared with `test/qemu/test_*.cpp` via `test/corpus_programs.h`),
+shapes (shared with `test/qemu/test_*.cpp` via `support/bytecode/corpus_programs.h`),
 multi-procedure/`CALL` shapes no single-procedure format can express, large
 shapes aimed at specific compiled-size guards, and one regression seed per
 fixed finding. `qemu_exec.ts seeds` is a standing check on all of them.
@@ -691,7 +691,7 @@ Recorded because each cost real time and none is discoverable from the docs.
 ## Files touched
 
 New: `fuzz/README.md`, `fuzz/make_seeds.ts`, `fuzz/dump_code.{cpp,sh}`,
-`fuzz/probe_arena.cpp`, `fuzz/qemu_exec/` (runner image, driver, minimizer),
+`fuzz/probe_arena.cpp`, `fuzz/src/qemu-exec/` (runner image, driver, minimizer),
 25 seeds, this document. A further 9 pre-existing seeds were rewritten into
 the whole-program envelope format (34 in `seeds/` in total).
 
@@ -703,7 +703,7 @@ Modified — runtime: `runtime.S` (`trapHelper`), `dispatch_abi.{h,cpp}`,
 `validate.ts`, `extension.ts`. `@ppl/codecs`:
 `engine/codec-extension.ts`, `test/list-union.test.ts`. Tests:
 `test_binops.cpp`, `test_blocks.cpp`, `test_translate_proc.cpp`,
-`test/corpus_programs.h`, `test/qemu/{test_*.cpp,main.cpp,linker.ld}`,
+`support/bytecode/corpus_programs.h`, `test/qemu/{test_*.cpp,main.cpp,linker.ld}`,
 `machine/test/{validate,extension}.test.ts`.
 Docs: `design.md` §10 (the `BR_TABLE` bullet), §10.1's acc-fold
 paragraph and the new §17, `target-profile.md`, `isa-core.md`
@@ -810,7 +810,7 @@ translator's.
 
 # Third campaign — the extension seam
 
-`fuzz/rawmem_ext.ts` had existed since the extension mechanism's cleanup as
+`fuzz/ts/lib/rawmem_ext.ts` had existed since the extension mechanism's cleanup as
 a finished reference half, wired into nothing. Neither fuzz half registered
 an extension, so `EXT` was rejected at load in both and every `ExtSite`
 service, the hand-written MEMMOVE helper and `extThunkHelper` were reachable
@@ -911,7 +911,7 @@ MEMMOVE at the top of a dispatch case where `acc` is already dead.
 
 ## Coverage added
 
-- The raw-memory extension registered in both halves: `../test/ext_rawmem.cpp`
+- The raw-memory extension registered in both halves: `../support/ext-rawmem/ext_rawmem.cpp`
   plus `ext_rawmem_helper.S` on the target, `rawmem_helper_host.cpp` standing
   in for that helper on the host, which cannot assemble Thumb but never
   executes what it emits. `exec_runner.cpp` zeroes `g_rawMem` per program,

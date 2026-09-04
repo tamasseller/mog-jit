@@ -14,18 +14,18 @@
 // never legally CALL anything), and the large shapes aimed at specific
 // compiled-size guards.
 //
-// Run: npx ts-node --transpile-only jit-armv6m/fuzz/make_seeds.ts
+// Run: npx ts-node --transpile-only jit-armv6m/fuzz/ts/make_seeds.ts
 // (from the repo root, with TS_NODE_PROJECT=jit-armv6m/fuzz/tsconfig.json)
 
 import * as fs from "fs"
 import * as path from "path"
-import { decodeLeb128, decodeBody, encodeJitEnvelope, extInstr, validateProgram } from "../../packages/machine/src/index"
-import type { RtlInstr, RtlProc, RtlProgram } from "../../packages/machine/src/index"
-import { rawMemExtension } from "./rawmem_ext"
+import { decodeLeb128, decodeBody, encodeJitEnvelope, extInstr, validateProgram } from "../../../packages/machine/src/index"
+import type { RtlInstr, RtlProc, RtlProgram } from "../../../packages/machine/src/index"
+import { rawMemExtension } from "./lib/rawmem_ext"
 
-const SEED_DIR = path.join(__dirname, "seeds")
+const SEED_DIR = path.join(__dirname, "..", "seeds")
 
-/** dump_seeds.cpp's staging output: ../test/corpus_programs.h's bodies,
+/** dump_seeds.cpp's staging output: ../support/bytecode/corpus_programs.h's bodies,
  *  each as one arg_count LEB128 followed by that procedure's own body
  *  bytes. Wrapped into whole-program envelopes below rather than
  *  re-authored here, so the shapes test/qemu/test_*.cpp exercise on real
@@ -33,7 +33,7 @@ const SEED_DIR = path.join(__dirname, "seeds")
  *  about which files in seeds/ happen to be in the older format — a
  *  new-format seed's header bytes decode as a plausible arg_count and body
  *  too, so that guess could not be made reliably. */
-const STAGING_DIR = path.join(__dirname, "seeds_raw")
+const STAGING_DIR = path.join(__dirname, "..", "seeds_raw")
 
 const EXT = rawMemExtension()
 
@@ -547,7 +547,7 @@ const signedAndExtend: RtlProgram = {
 
 // ── the extension seam ──────────────────────────────────────────────────
 //
-// The raw-memory test extension (rawmem_ext.ts / test/ext_rawmem.cpp) is
+// The raw-memory test extension (rawmem_ext.ts / support/ext-rawmem/ext_rawmem.cpp) is
 // the only extension either half carries, and until these existed no EXT
 // instruction had ever been fuzzed: ExtSite's window and acc services, the
 // hand-written MEMMOVE helper and extThunkHelper's AAPCS reach were all
