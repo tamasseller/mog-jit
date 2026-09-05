@@ -17,7 +17,7 @@
 // keeps the two sides symmetric, since a C reference given the same
 // constants folds them the same way.
 
-import {proc, ir, type Procedure} from "../../../../../packages/machine/src/index"
+import {proc, ir, type Procedure} from "mog-core"
 import {SAMP_IN_SAMPLES, IN_MASK} from "../sampstream_ext"
 import type {Sink, Workload} from "./workload"
 

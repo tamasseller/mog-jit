@@ -4,7 +4,7 @@
 // Usage: npx ts-node --transpile-only bench/ts/gen-envelope.ts <out-file> [workload]
 
 import {writeFileSync} from "node:fs"
-import {lowerProgram, validateProgram, encodeJitProgram} from "../../../packages/machine/src/index"
+import {lowerProgram, validateProgram, encodeJitProgram} from "mog-core"
 import {sampStreamExtension} from "./lib/sampstream_ext"
 import {workloadNamed} from "./lib/workloads/index"
 

@@ -8,7 +8,7 @@
 // the others; the bodies themselves are kept honest by check-workload.ts
 // and by the image comparing all three at run time.
 
-import type {Procedure} from "../../../../../packages/machine/src/index"
+import type {Procedure} from "mog-core"
 
 /** Where a reference run's side effects go — the same two sinks the
  *  extension gives a DSL program. */

@@ -1,7 +1,7 @@
 /* The sample-stream extension's acceptance gate: run one program's emitted
  * Thumb on the real runtime under QEMU and report everything it touched, so
  * the host can compare it against the same program run through
- * @ppl/machine's reference VM.
+ * mog-core's reference VM.
  *
  * The host dump (bench/dump-emitted.sh) says what the emitters encoded;
  * this says whether executing it means the same thing. Both are needed —

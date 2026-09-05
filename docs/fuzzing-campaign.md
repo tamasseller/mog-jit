@@ -40,7 +40,7 @@ justification the first pass gave.
 | 6 | Long-form guarded branch falls through into the literal pool | miscompilation | translator | fixed |
 | 7 | `BR_TABLE 2` folds the implicit default into `case[1]` | miscompilation | translator | fixed |
 | 8 | `LOOP` condition block's TOS surplus never dropped | miscompilation | translator | fixed |
-| 9 | Callee entry `acc`: seeded to 0, and live when nothing sets it | miscompilation | `@ppl/machine` | fixed |
+| 9 | Callee entry `acc`: seeded to 0, and live when nothing sets it | miscompilation | `mog-core` | fixed |
 
 ---
 
@@ -501,7 +501,7 @@ so a fused comparison's `CMP` still governs the branch.
 
 ## 9. Callee entry `acc` — two reference-side bugs
 
-The only findings where the translator was right and `@ppl/machine` was
+The only findings where the translator was right and `mog-core` was
 wrong.
 
 ### 9a. `runProc` seeded a callee's `acc` to 0
@@ -699,7 +699,7 @@ Modified — runtime: `runtime.S` (`trapHelper`), `dispatch_abi.{h,cpp}`,
 `resource_codes.h`, `runtime.h`, `executor.cpp`. Translator:
 `binops.cpp`, `blocks.cpp`, `translate_proc.cpp`, `abi_strategy.{h,cpp}`,
 `registers.h`, `accstate.h`. Harness: `harness.cpp`, `oracle_server.ts`,
-`dump_seeds.{cpp,sh}`, `make_seeds.ts`. `@ppl/machine`: `vm.ts`,
+`dump_seeds.{cpp,sh}`, `make_seeds.ts`. `mog-core`: `vm.ts`,
 `validate.ts`, `extension.ts`. `@ppl/codecs`:
 `engine/codec-extension.ts`, `test/list-union.test.ts`. Tests:
 `test_binops.cpp`, `test_blocks.cpp`, `test_translate_proc.cpp`,
@@ -881,7 +881,7 @@ first codec extension emitter written against this seam inherits the bug.
 
 **Fix.** A third accumulator direction in §11.2, with "declares neither"
 keeping its meaning of *preserves*. Which way to default was measured rather
-than argued: making it *destroys* breaks seven tests across `@ppl/machine`
+than argued: making it *destroys* breaks seven tests across `mog-core`
 and `@ppl/codecs`, because real lowered codec bodies do read `acc` across
 `WRITE`/`STORE_VAL`, while declaring the destroying effect on MEMMOVE and on
 all six `CODEC_EFFECTS` handle ops breaks nothing.

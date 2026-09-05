@@ -15,7 +15,7 @@ image is built `-DNDEBUG`. Run both.
 ## Host half — crashes
 
 ```sh
-# once, in another terminal (keeps @ppl/machine warm behind a socket)
+# once, in another terminal (keeps mog-core warm behind a socket)
 npx ts-node --transpile-only jit-armv6m/fuzz/ts/oracle_server.ts
 
 make -C src/driver
@@ -85,7 +85,7 @@ npx ts-node --transpile-only jit-armv6m/fuzz/ts/minimize-exec.ts <file>
 ```
 
 `ts/qemu-exec.ts` computes each program's reference result with
-`@ppl/machine`'s VM, runs the real emitted code on the emulated target, and
+`mog-core`'s VM, runs the real emitted code on the emulated target, and
 diffs. `ts/minimize-exec.ts` shrinks a mismatching program by deleting whole
 instructions and re-encoding, so every candidate stays validator-approved —
 one QEMU boot per pass, not per candidate.

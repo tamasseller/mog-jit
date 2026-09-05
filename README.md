@@ -1,7 +1,7 @@
 # jit-armv6m
 
 A JIT compiler from the Generic Core ISA
-(`packages/machine/docs/isa-core.md`) to ARMv6-M Thumb, for bare-metal
+(`mog-core/docs/isa-core.md`) to ARMv6-M Thumb, for bare-metal
 Cortex-M0/M0+ firmware that receives bytecode at runtime and needs to
 execute it natively, compiling and evicting procedures on demand under a
 hard memory ceiling.
@@ -26,7 +26,7 @@ hard memory ceiling.
 | `support/` | what the three harnesses share, one component per directory, each with its own `.mk`: `qemu-image/` (vector table, C++ stubs, the minimal semihosting console and the ARM toolchain and flags every bare-metal image is built with), `bytecode/` (the hand-encoder, the shared program corpus, the whole-program envelope format), `ext-rawmem/` (a real §11 extension used as the subject wherever the seam itself is under test, target and host builds), `dump-code/` (translate an envelope on the host and write out the emitted Thumb, with whichever extension the consumer links) |
 | `test/host` | unit tests: `armv6.h`'s raw encoders, and the translator end to end, against real libc (`--coverage`) |
 | `test/qemu` | the same translator plus the real, unmodified `runtime/`, run on `qemu-system-arm` — a harness-sanity check in `main.cpp` plus one `test_*.cpp` per topic — whole encoded programs (real wire bytes), arena eviction, and the up-front stack budget. `vectors.S`/`linker.ld` (bare-metal startup) live here — test-only, never shipped |
-| `fuzz/` | differential fuzzing, two halves: `src/driver/` runs the real translator on the host under ASan/UBSan on validator-approved whole programs (finds crashes); `src/qemu-exec/` runs the *emitted Thumb* on `qemu-system-arm` against `@ppl/machine`'s reference VM (finds miscompilation, which the host half is structurally blind to). One directory per native output under `src/`, each with its own `Makefile`; `ts/` is one program per file with `ts/lib/` for what they share. See `fuzz/README.md`, and docs/design.md §17 for what each half has actually caught |
+| `fuzz/` | differential fuzzing, two halves: `src/driver/` runs the real translator on the host under ASan/UBSan on validator-approved whole programs (finds crashes); `src/qemu-exec/` runs the *emitted Thumb* on `qemu-system-arm` against `mog-core`'s reference VM (finds miscompilation, which the host half is structurally blind to). One directory per native output under `src/`, each with its own `Makefile`; `ts/` is one program per file with `ts/lib/` for what they share. See `fuzz/README.md`, and docs/design.md §17 for what each half has actually caught |
 | `bench/` | measuring emitted Thumb against C on realistic DSP workloads: the `sampstream` extension (both halves, `check.sh` gating them against the reference VM on real emulated hardware) and a QEMU TCG plugin counting executed instructions per region. See `bench/README.md` for what is measured and what is not yet built |
 | `vendor/` | submodules: `ultimate-makefile`, `1test` |
 

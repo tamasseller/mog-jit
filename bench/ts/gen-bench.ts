@@ -11,7 +11,7 @@
 
 import {writeFileSync} from "node:fs"
 import {lowerProgram, validateProgram, run, encodeJitProgram, decodeLeb128}
-    from "../../../packages/machine/src/index"
+    from "mog-core"
 import {sampStreamExtension, packEvent, SAMP_EVENTS, SAMP_OUT_SAMPLES,
     OUT_MASK, EVENT_MASK} from "./lib/sampstream_ext"
 import {BENCH_N0, BENCH_N1, BENCH_N2} from "./lib/bench-config"

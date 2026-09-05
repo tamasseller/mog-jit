@@ -10,7 +10,7 @@
 
 import {writeFileSync} from "node:fs"
 import {proc, ir, lowerProgram, validateProgram, run, encodeJitProgram}
-    from "../../../packages/machine/src/index"
+    from "mog-core"
 import {sampStreamExtension, SAMP_IN_SAMPLES, SAMP_OUT_SAMPLES, SAMP_EVENTS}
     from "./lib/sampstream_ext"
 

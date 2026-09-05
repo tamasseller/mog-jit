@@ -4,7 +4,7 @@
 # Generates one program plus its input samples from the reference half, links
 # them into a bare-metal image with the real translator and the real unmodified
 # runtime, runs the emitted Thumb under QEMU, and compares every value it
-# touched against what @ppl/machine's VM computed for the same program.
+# touched against what mog-core's VM computed for the same program.
 set -euo pipefail
 cd "$(dirname "$0")"
 

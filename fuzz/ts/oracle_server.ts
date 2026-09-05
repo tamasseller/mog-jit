@@ -1,7 +1,7 @@
 // jit-armv6m/fuzz — the "validator gate + reference-VM crosscheck" service
 // a fuzz harness talks to over a Unix domain socket, so it never pays
-// Node/V8 startup cost per test case (only once, here). Wraps @ppl/machine
-// directly (packages/machine/src/{bytecode,validate,vm}.ts) rather than
+// Node/V8 startup cost per test case (only once, here). Wraps mog-core
+// directly (mog-core/src/{bytecode,validate,vm}.ts) rather than
 // reimplementing any of the decode/validate/interpret logic — this process
 // exists purely to keep that logic warm behind a fast IPC boundary.
 //
@@ -30,8 +30,8 @@
 
 import * as net from "net"
 import * as fs from "fs"
-import { decodeJitEnvelope, encodeLeb128, encodeProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "../../../packages/machine/src/index"
-import type { RtlProgram } from "../../../packages/machine/src/index"
+import { decodeJitEnvelope, encodeLeb128, encodeProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "mog-core"
+import type { RtlProgram } from "mog-core"
 // One generator for the entry procedure's arguments, shared with the
 // execution oracle: if the two differed, this server's reference result
 // would not be the one qemu_exec.ts compares against.
@@ -55,7 +55,7 @@ const EXT = rawMemExtension()
 //                       non-canonical encoding), 2 outside the
 //                       realistic-profile gate, 3 validate threw, 4 the
 //                       reference VM itself threw on a validator-approved
-//                       program (a genuine @ppl/machine bug, not a fuzz-
+//                       program (a genuine mog-core bug, not a fuzz-
 //                       input problem), 6 the reference VM hit its own
 //                       step-limit watchdog — a legal non-terminating
 //                       program (§9), not a finding, 7 the program did a
@@ -212,7 +212,7 @@ function handleRequest(payload: Buffer): Buffer
         // unsigned LEB128), and writeInt32LE *throws* on anything above
         // 2**31-1 — which this file's own catch below then relabelled as
         // stage 4, "the reference VM threw", making every large trap code
-        // look like an @ppl/machine bug. The coercion keeps the same four
+        // look like an mog-core bug. The coercion keeps the same four
         // bytes; the harness reads the field back as int32 and can widen
         // it if it ever needs the value rather than just its identity.
         // The -1 null sentinel does alias trap code 0xFFFFFFFF, which is

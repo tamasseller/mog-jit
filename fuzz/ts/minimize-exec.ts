@@ -31,8 +31,8 @@
 import * as fs from "fs"
 import * as path from "path"
 import { spawnSync } from "child_process"
-import { decodeJitEnvelope, encodeJitEnvelope, encodeJitProgram, validateProgram, run, StepLimitExceeded } from "../../../packages/machine/src/index"
-import type { RtlProgram } from "../../../packages/machine/src/index"
+import { decodeJitEnvelope, encodeJitEnvelope, encodeJitProgram, validateProgram, run, StepLimitExceeded } from "mog-core"
+import type { RtlProgram } from "mog-core"
 import { entryArgsFor } from "./lib/entry_args"
 import { rawMemExtension } from "./lib/rawmem_ext"
 

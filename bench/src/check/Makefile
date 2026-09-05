@@ -1,6 +1,6 @@
 # The sample-stream extension's acceptance-gate image: the real translator and
 # the real, unmodified runtime, running a generated program whose every
-# touched value check.sh compares against @ppl/machine's VM.
+# touched value check.sh compares against mog-core's VM.
 BENCH := ../..
 OUT_DIR ?= .
 

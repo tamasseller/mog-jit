@@ -1,6 +1,6 @@
 # Target profile — realistic-program limits beyond generic validation
 
-`packages/machine/src/validate.ts` enforces isa-core.md §8's five *generic*
+`mog-core/src/validate.ts` enforces isa-core.md §8's five *generic*
 guarantees (TOS balance, call-graph acyclicity, the stack-depth bound,
 dead-code rejection, header/block well-formedness) — properties that hold
 for *any* target the generic machine could ever back. It has no concept of
@@ -23,7 +23,7 @@ to it finds ABI-encoding-width bugs, not `jit-armv6m` bugs.
 This document collects those target-specific "realistic profile" limits —
 constants worth reasoning about deliberately, checking somewhere, and
 extending as more are found — separately from generic ISA validation.
-`packages/machine`'s own `Extension` hook (isa-core.md §5.1, `extension.ts`)
+`mog-core`'s own `Extension` hook (isa-core.md §5.1, `extension.ts`)
 is the natural long-term home for a "target profile" extension a validator
 call could take alongside the generic checks; for now these live here and
 in `oracle_server.ts`'s own extra gate, both by hand.
@@ -112,11 +112,11 @@ then locals in declaration order, then temporaries. So the entries that
 spill are the oldest ones — argument 0 first, then local 0 — and arguments,
 locals and live temporaries compete for the same four registers `r4-r7`.
 Realistic hand-written programs cross that at the fourth or fifth frame
-entry (`packages/machine/docs/applications.md`), which no constant here bounds and nothing warns
+entry (`mog-core/docs/applications.md`), which no constant here bounds and nothing warns
 about.
 
 **Measured** (`fuzz/dump_code.sh`, `u32 v0 = 1; ... return v0 + v1 + ...;`
-lowered by `packages/machine`):
+lowered by `mog-core`):
 
 | locals | bytecode | emitted | marginal |
 |---|---|---|---|
@@ -127,7 +127,7 @@ lowered by `packages/machine`):
 | 7 | 22 instrs | 25 halfwords | +4 |
 
 The bytecode grows by a flat three instructions per local throughout — the
-cliff is in the native code alone, so nothing on the `packages/machine` side
+cliff is in the native code alone, so nothing on the `mog-core` side
 can see it. What the fifth one buys: a `push` at its declaration, an
 `add sp, #4` at frame exit, an `ldr [sp, #imm]` per read of a spilled entry
 and a `str` per write, none of which fold into the arithmetic that consumes

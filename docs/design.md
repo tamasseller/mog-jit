@@ -1,7 +1,7 @@
 # MCU JIT: Generic Core → ARMv6-M
 
 > **Status:** design plus implementation state. Assumes
-> `packages/machine/docs/isa-core.md` throughout. `jit-armv6m/compiler` (C++)
+> `mog-core/docs/isa-core.md` throughout. `jit-armv6m/compiler` (C++)
 > is the sole implementation, targeting the real dispatch/eviction runtime
 > (`jit-armv6m/runtime`) on real ARMv6-M hardware via `qemu-system-arm`. A TS
 > prototype (`jit-armv6m/prototype`) existed earlier as a faster-iteration
@@ -37,7 +37,7 @@ is specific to one program, and hands the arena back as it found it, so the
 same `Executor` runs as many programs as the caller has.
 
 `args`/`argCount` is the entry procedure's whole argument vector, in
-frame-slot order — the same shape `packages/machine`'s own
+frame-slot order — the same shape `mog-core`'s own
 `run(program, extension, args)` takes, so the two sides of a differential
 comparison are handed identical inputs. `argCount` must equal the entry
 procedure's declared `arg_count` exactly; a mismatch is
@@ -66,7 +66,7 @@ jit program := max_call_depth:LEB128 total_depth:LEB128
 ```
 
 The envelope is jit-armv6m's own
-(`packages/machine/src/jit-armv6m.ts`'s `encodeJitEnvelope`), prepended to an
+(`mog-core/src/jit-armv6m.ts`'s `encodeJitEnvelope`), prepended to an
 ordinary isa-core.md §5.5 program (`proc_count:LEB128`, then each procedure's
 own `arg_count:LEB128` immediately followed by its own body). `proc_count` and
 both whole-program stats come out of that envelope, not a caller-supplied
@@ -290,7 +290,7 @@ args. Depth alone doesn't determine how much the window absorbs at any
 moment; a tighter figure needs an analysis tracking actual spilled bytes
 through the real call-boundary shuffling.
 
-**The translator's own exception.** Nothing in `@ppl/machine` bounds
+**The translator's own exception.** Nothing in `mog-core` bounds
 `BR_TABLE`/loop nesting depth, and different procedures nest arbitrarily
 differently, so the translator's block-nesting bookkeeping has no
 program-wide worst case. Rather than reserve for it, it is ordinary dynamic
@@ -1308,7 +1308,7 @@ retrieval, no reclaim — and ends up shorter than a `RETURN`.
 
 Slots 4-6 started as reserved space, and a stable table of host-provided
 functions the bytecode invokes by index remains the on-device form of the
-same extension point `@ppl/machine`'s reference interpreter already has a
+same extension point `mog-core`'s reference interpreter already has a
 hook for (`run<E>(prog, extension?)`) — the next such addition takes slot
 9.
 
@@ -1794,7 +1794,7 @@ crashes, and nothing else: it never executes what it emitted.
 real, unmodified `runtime/`. A batch of programs is loaded straight into
 guest flash (`-device loader`; semihosting file I/O was tried first and
 `SYS_OPEN` returns -1 on this machine), each is run through the real
-`Executor::split`, and the results are diffed against `@ppl/machine`'s
+`Executor::split`, and the results are diffed against `mog-core`'s
 reference VM. One boot per batch, so the emulator's startup cost amortizes
 away.
 

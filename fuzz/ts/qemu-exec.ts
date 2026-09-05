@@ -1,6 +1,6 @@
 // jit-armv6m/fuzz — drives exec_runner.elf and does the
 // comparison the host-side fuzzer structurally cannot: run the *emitted
-// Thumb* and check its answer against @ppl/machine's reference VM.
+// Thumb* and check its answer against mog-core's reference VM.
 //
 // A miscompilation — a wrong acc fold, a clobbered window register, an
 // off-by-one spill offset, a merge point that reads a register the other
@@ -18,8 +18,8 @@
 import * as fs from "fs"
 import * as path from "path"
 import { spawnSync } from "child_process"
-import { decodeJitEnvelope, encodeJitProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "../../../packages/machine/src/index"
-import type { RtlProgram } from "../../../packages/machine/src/index"
+import { decodeJitEnvelope, encodeJitProgram, validateProgram, run, StepLimitExceeded, UnspecifiedShiftAmount } from "mog-core"
+import type { RtlProgram } from "mog-core"
 import { entryArgsFor } from "./lib/entry_args"
 // The one extension both halves carry, so an EXT instruction is a
 // comparable outcome rather than a bail (rawmem_ext.ts, support/ext-rawmem/ext_rawmem.cpp).

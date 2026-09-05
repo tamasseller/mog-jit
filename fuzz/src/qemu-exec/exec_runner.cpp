@@ -16,7 +16,7 @@
  * one result line each — one QEMU boot per batch rather than per program,
  * which is what makes the emulator affordable here.
  *
- * qemu_exec.ts drives it and does the comparison against @ppl/machine's
+ * qemu_exec.ts drives it and does the comparison against mog-core's
  * reference VM.
  *
  * How the batch gets in: `-device loader,file=<batch>,addr=BATCH_ADDR`

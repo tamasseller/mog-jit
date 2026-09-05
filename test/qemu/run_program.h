@@ -1,4 +1,4 @@
-// Runs one whole encoded program (the packages/machine/src/bytecode.ts
+// Runs one whole encoded program (the mog-core/src/bytecode.ts
 // envelope plus an ordinary isa-core.md §5.5 body) on the real target — what
 // every test_*.cpp file covering translated-program behaviour is written in
 // terms of.

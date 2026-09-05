@@ -19,8 +19,8 @@
 
 import * as fs from "fs"
 import * as path from "path"
-import { decodeLeb128, decodeBody, encodeJitEnvelope, extInstr, validateProgram } from "../../../packages/machine/src/index"
-import type { RtlInstr, RtlProc, RtlProgram } from "../../../packages/machine/src/index"
+import { decodeLeb128, decodeBody, encodeJitEnvelope, extInstr, validateProgram } from "mog-core"
+import type { RtlInstr, RtlProc, RtlProgram } from "mog-core"
 import { rawMemExtension } from "./lib/rawmem_ext"
 
 const SEED_DIR = path.join(__dirname, "..", "seeds")
@@ -1002,7 +1002,7 @@ const registerShiftDynamicAmount: RtlProgram = {
 /** A one-argument callee whose body reads acc before writing it: §4.6 says
  *  the last argument arrives there. Seeding a callee's acc to 0 instead
  *  disagrees with the emitted code — the one finding so far where the JIT
- *  was right and @ppl/machine was wrong. */
+ *  was right and mog-core was wrong. */
 const calleeReadsIncomingAcc: RtlProgram = {
     procedures: [
         { argCount: 0, body: ret([{ op: "CONST", imm: 3 }, { op: "CALL", calleeIndex: 1 }]) },

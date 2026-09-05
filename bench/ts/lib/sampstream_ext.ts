@@ -19,9 +19,9 @@
 // fuzz/ts/lib/rawmem_ext.ts: the mask *is* the buffer size, so there is no trap
 // path for the two halves to disagree about.
 
-import type {Extension, ExtOpEffect, ExtInstr, Rule, RtlNode} from "../../../../packages/machine/src/index"
+import type {Extension, ExtOpEffect, ExtInstr, Rule, RtlNode} from "mog-core"
 import {rule, pBuiltinCall, pConst, pRtl, unaryNode, PUSH,
-    encodeLeb128, decodeLeb128} from "../../../../packages/machine/src/index"
+    encodeLeb128, decodeLeb128} from "mog-core"
 
 /* Sizes are powers of two: the mask is the size, and masking is two shifts
  * on a core with no AND-immediate. Mirrored in ext_sampstream.h. */

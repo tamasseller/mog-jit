@@ -16,7 +16,7 @@
 // signed types, and without the shift the square overflows — sixteen groups
 // of a 2000-count tone reach |I| ~ 64000, whose square is past 2^32.
 
-import {proc, ir, type Procedure} from "../../../../../packages/machine/src/index"
+import {proc, ir, type Procedure} from "mog-core"
 import {SAMP_IN_SAMPLES, IN_MASK} from "../sampstream_ext"
 import type {Sink, Workload} from "./workload"
 

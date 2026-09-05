@@ -251,7 +251,7 @@ path for the two halves to disagree about.
 from the reference half, links them with the real translator and the real
 unmodified runtime, runs the emitted Thumb under QEMU, and compares the
 return value, a hash of all 1024 output samples, the trigger count and every
-event-ring slot against `@ppl/machine`'s VM.
+event-ring slot against `mog-core`'s VM.
 
 `bench.ts` gates every measurement the same way, on every one of the 18
 images, before printing anything. A number from two sides that disagree

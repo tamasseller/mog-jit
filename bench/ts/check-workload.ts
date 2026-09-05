@@ -9,7 +9,7 @@
 // Usage: npx ts-node --transpile-only bench/ts/check-workload.ts [name...]
 
 import assert from "node:assert/strict"
-import {lowerProgram, validateProgram, run} from "../../../packages/machine/src/index"
+import {lowerProgram, validateProgram, run} from "mog-core"
 import {sampStreamExtension, packEvent, SAMP_EVENTS, SAMP_OUT_SAMPLES, OUT_MASK, EVENT_MASK}
     from "./lib/sampstream_ext"
 import {BENCH_N1, BENCH_N2} from "./lib/bench-config"

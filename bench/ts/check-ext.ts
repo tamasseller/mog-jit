@@ -8,7 +8,7 @@
 //   npx ts-node --transpile-only bench/ts/check-ext.ts
 
 import assert from "node:assert/strict"
-import {proc, ir, lowerProgram, validateProgram, run} from "../../../packages/machine/src/index"
+import {proc, ir, lowerProgram, validateProgram, run} from "mog-core"
 import {sampStreamExtension, packEvent, SAMP_EVENTS, SAMP_OUT_SAMPLES as SAMP_OUT,
     IN_MASK, OUT_MASK, EVENT_MASK}
     from "./lib/sampstream_ext"

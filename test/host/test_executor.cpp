@@ -249,7 +249,7 @@ static const uint8_t kExtLiteral[] = {0x00, 0x00, 0x01, 0x00, 0x80, 102};
  * of these must come back with nothing entered. The expected hash is spelled
  * out rather than computed: it is the one value the TypeScript producer has to
  * agree with, and a divergence otherwise shows up only as every program being
- * refused. packages/machine/test/jit-armv6m.test.ts asserts the same number. */
+ * refused. mog-core/test/jit-armv6m.test.ts asserts the same number. */
 TEST(TheFrameRefusesWhatTheProducerDidNotFrame)
 {
     uint8_t bytes[32];
