@@ -4,21 +4,21 @@
 guarantees (TOS balance, call-graph acyclicity, the stack-depth bound,
 dead-code rejection, header/block well-formedness) — properties that hold
 for *any* target the generic machine could ever back. It has no concept of
-`jit-armv6m` specifically, and rightly so: nothing about "this compiles to
+`mog-jit` specifically, and rightly so: nothing about "this compiles to
 Thumb, with a 4-register window and a fixed real-ABI helper vector" belongs
 in a protocol-agnostic validator.
 
-But a real `jit-armv6m` deployment has its own, much narrower notion of
+But a real `mog-jit` deployment has its own, much narrower notion of
 "realistic" than the generic validator's ceilings do. `ProcSlot`'s own wire
 field widths (`MAX_ARG_COUNT = 2047`, `MAX_BODY_BYTES ~1M`,
 `dispatch_table.h`) are wire-format capacity limits, not target-realistic
 ones — a real handwritten or lowered procedure never comes anywhere close
 to either. The gap between "the generic validator allows it" and "any
 plausible real program would ever produce it" is exactly the space
-`jit-armv6m/fuzz/ts/oracle_server.ts`'s validator gate was finding nothing but
+`fuzz/ts/oracle_server.ts`'s validator gate was finding nothing but
 noise in: `argCount = 972` is a perfectly valid, `validateProgram`-approved
 program that no real caller would ever construct, and chasing what happens
-to it finds ABI-encoding-width bugs, not `jit-armv6m` bugs.
+to it finds ABI-encoding-width bugs, not `mog-jit` bugs.
 
 This document collects those target-specific "realistic profile" limits —
 constants worth reasoning about deliberately, checking somewhere, and
@@ -30,7 +30,7 @@ in `oracle_server.ts`'s own extra gate, both by hand.
 
 ## TOS depth (argCount included) vs. the window's stack-reclaim encoding
 
-**The crash this documents:** `jit-armv6m/fuzz`'s harness found that
+**The crash this documents:** `fuzz`'s harness found that
 `argCount = 972` (single procedure, body `[RETURN]`, otherwise entirely
 ordinary) crashes `translateProc()` with an assertion failure in
 `ArmV6M::Uoff<2, 7>`'s range check, reached from `Window::discardWindow`

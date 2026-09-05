@@ -1,4 +1,4 @@
-// jit-armv6m/compiler — where a value is right now: in a register, or still an
+// src/compiler — where a value is right now: in a register, or still an
 // unmaterialized literal. Both are legal wherever a Shape is accepted.
 #ifndef JIT_ARMV6M_COMPILER_SHAPE_H_
 #define JIT_ARMV6M_COMPILER_SHAPE_H_

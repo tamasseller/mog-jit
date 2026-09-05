@@ -1,0 +1,6 @@
+[submodule "vendor/ultimate-makefile"]
+	path = vendor/ultimate-makefile
+	url = https://github.com/tamasseller/ultimate-makefile
+[submodule "vendor/1test"]
+	path = vendor/1test
+	url = https://github.com/tamasseller/1test

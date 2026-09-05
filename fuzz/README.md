@@ -1,4 +1,4 @@
-# jit-armv6m/fuzz
+# fuzz
 
 Two halves, because they find different bugs and neither can find the
 other's.
@@ -16,7 +16,7 @@ image is built `-DNDEBUG`. Run both.
 
 ```sh
 # once, in another terminal (keeps mog-core warm behind a socket)
-npx ts-node --transpile-only jit-armv6m/fuzz/ts/oracle_server.ts
+npx ts-node --transpile-only fuzz/ts/oracle_server.ts
 
 make -C src/driver
 src/driver/fuzz_driver seeds                      # one worker; run several for real throughput
@@ -80,8 +80,8 @@ structure.
 
 ```sh
 make -C src/qemu-exec
-npx ts-node --transpile-only jit-armv6m/fuzz/ts/qemu-exec.ts <dir-or-file>...
-npx ts-node --transpile-only jit-armv6m/fuzz/ts/minimize-exec.ts <file>
+npx ts-node --transpile-only fuzz/ts/qemu-exec.ts <dir-or-file>...
+npx ts-node --transpile-only fuzz/ts/minimize-exec.ts <file>
 ```
 
 `ts/qemu-exec.ts` computes each program's reference result with

@@ -1,6 +1,6 @@
 # Differential fuzzing campaign — findings
 
-Record of one campaign against `jit-armv6m/fuzz`, for review. The permanent
+Record of one campaign against `fuzz`, for review. The permanent
 versions of the conclusions live in `design.md` §17 and `target-profile.md`;
 this file is the working detail behind them — what was run, what broke, and
 which side of each disagreement was wrong.
@@ -32,7 +32,7 @@ justification the first pass gave.
 
 | # | Finding | Class | Wrong side | Status |
 |---|---|---|---|---|
-| 1 | `TRAP` does not unwind; a nested trap becomes a return value | miscompilation | jit-armv6m ABI | fixed (helper slot 8) |
+| 1 | `TRAP` does not unwind; a nested trap becomes a return value | miscompilation | mog-jit ABI | fixed (helper slot 8) |
 | 2 | `BR_TABLE` → `RETURN` asserts on a poisoned `acc` | crash | **validator** (fixed on the translator side first — see §2) | fixed |
 | 3 | `LOOP` condition's `BLOCK_END` not checked for `acc` liveness | crash | validator | fixed |
 | 4 | `CALL` flushes `acc` even for a zero-argument callee | crash | translator | fixed |
@@ -184,7 +184,7 @@ The decisive evidence was in `isa-rationale.md:51-67`, added by the same
 `afa2a6d`, which names this exact pattern as the thing the rule exists to
 make invalid:
 
-> It exists to close a JIT-backend bug (jit-armv6m's comparison-fusion
+> It exists to close a JIT-backend bug (mog-jit's comparison-fusion
 > optimization defers a comparison's boolean to a CPU condition code and
 > **never materializes it on the edge that skips the branch body**) by
 > construction: rather than teach every backend to correctly compile a
@@ -708,7 +708,7 @@ Modified — runtime: `runtime.S` (`trapHelper`), `dispatch_abi.{h,cpp}`,
 Docs: `design.md` §10 (the `BR_TABLE` bullet), §10.1's acc-fold
 paragraph and the new §17, `target-profile.md`, `isa-core.md`
 §4.1/§4.6/§7.1/§8.7, `isa-rationale.md`, `docs/codec-extension.md` §8.2,
-`jit-armv6m/README.md`.
+`README.md`.
 
 Finding 5's resolution reaches further than the rest, being a spec change:
 `isa-core.md` §4.1, `rtl.ts` (`SHIFT_OPS`), `validate.ts`, `vm.ts`,
@@ -876,7 +876,7 @@ that *destroys* `acc` is in the same position, one campaign later.
 `ENTER_NEXT`, `OPEN_LIST`, `CLONE_RD`, `CLONE_WR` and `SEEK` declare neither
 flag and their `exec()` leaves `state.acc` alone — the reference preserves
 it across all six. Every one of them is stream/handle work that a
-jit-armv6m emitter would reach through `cHelperCall`, which clobbers r0. The
+mog-jit emitter would reach through `cHelperCall`, which clobbers r0. The
 first codec extension emitter written against this seam inherits the bug.
 
 **Fix.** A third accumulator direction in §11.2, with "declares neither"

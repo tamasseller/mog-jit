@@ -1,4 +1,4 @@
-// jit-armv6m/fuzz — drives exec_runner.elf and does the
+// fuzz — drives exec_runner.elf and does the
 // comparison the host-side fuzzer structurally cannot: run the *emitted
 // Thumb* and check its answer against mog-core's reference VM.
 //
@@ -8,8 +8,8 @@
 // It produces the wrong number. Nothing in harness.cpp can see that,
 // because nothing there ever executes anything. This is the half that can.
 //
-// Usage (from the repo root, TS_NODE_PROJECT=jit-armv6m/fuzz/tsconfig.json):
-//     npx ts-node --transpile-only jit-armv6m/fuzz/ts/qemu-exec.ts <dir-or-file>...
+// Usage (from the repo root, TS_NODE_PROJECT=fuzz/tsconfig.json):
+//     npx ts-node --transpile-only fuzz/ts/qemu-exec.ts <dir-or-file>...
 //
 // One QEMU boot per batch, not per program, which is what makes the
 // emulator affordable here: the runner streams every program in the batch

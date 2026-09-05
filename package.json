@@ -1,0 +1,21 @@
+{
+  "private": true,
+  "name": "mog-jit",
+  "version": "1.0.0",
+  "description": "An on-device JIT from the MOG core ISA to ARMv6-M Thumb, compiling and evicting procedures on demand inside a fixed code arena with no heap.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tamasseller/mog-jit.git"
+  },
+  "scripts": {
+    "test": "make test"
+  },
+  "dependencies": {
+    "mog-core": "git+https://github.com/tamasseller/mog-core.git"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}

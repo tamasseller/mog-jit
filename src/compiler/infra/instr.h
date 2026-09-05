@@ -1,4 +1,4 @@
-// jit-armv6m/compiler — the bytecode representation this translator
+// src/compiler — the bytecode representation this translator
 // consumes. Deliberately independent of mog-core's rtl.ts: same
 // conceptual shapes, new types, no runtime dependency either way. A flat,
 // aggregate-initializable struct (not a tagged union) so a fixture literal

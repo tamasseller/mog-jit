@@ -1,4 +1,4 @@
-// jit-armv6m/compiler/test — the extension seam's scan-phase half
+// src/compiler/test — the extension seam's scan-phase half
 // (compiler/src/ext.h): the core steps over an extension instruction without
 // knowing its encoding, and rejects every description asking for something it
 // doesn't implement. Codegen lives in test_translate_proc.cpp.

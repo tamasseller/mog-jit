@@ -1,4 +1,4 @@
-/* Local copy of jit-armv6m/src/linker.ld with larger rom *and* ram regions:
+/* Local copy of src/linker.ld with larger rom *and* ram regions:
  * a real translator plus the real dispatch/eviction runtime, linked together
  * with every TEST in this directory, does not fit the shared script's 4KB rom
  * (sized for the old memcpy-only mock). 256KB is the microbit model's own
@@ -9,7 +9,7 @@
  * excursion budget, so test_stack_budget.cpp's numbers move with it.
  * src/vectors.S takes its initial sp from _stack_top, which is defined here
  * rather than re-derived from LENGTH(ram) there — so the two have to move
- * together. Keep in sync with jit-armv6m/src/linker.ld's own
+ * together. Keep in sync with src/linker.ld's own
  * .init_array/.data/.bss/_stack_top handling if that one ever changes. */
 
 MEMORY

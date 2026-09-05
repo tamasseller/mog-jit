@@ -397,7 +397,7 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
 TEST(BrTableJumpTableHelperViaFullPipeline)
 {
     // N >= 2 reaches openBrTableJump's own MOV/LDR/BLX-through-helper-
-    // vector call sequence into brTableJumpHelper (jit-armv6m/runtime/
+    // vector call sequence into brTableJumpHelper (src/runtime/
     // runtime.S) — not reachable through the two-block path this file's
     // other tests exercise.
     const Instr body[] = {

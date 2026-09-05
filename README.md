@@ -1,10 +1,16 @@
-# jit-armv6m
+# mog-jit
 
-A JIT compiler from the Generic Core ISA
-(`mog-core/docs/isa-core.md`) to ARMv6-M Thumb, for bare-metal
+A JIT compiler from the MOG core ISA to ARMv6-M Thumb, for bare-metal
 Cortex-M0/M0+ firmware that receives bytecode at runtime and needs to
 execute it natively, compiling and evicting procedures on demand under a
 hard memory ceiling.
+
+The ISA is normative and lives in
+[mog-core](https://github.com/tamasseller/mog-core); every `isa-core.md §N`
+citation below is to `mog-core/docs/isa-core.md`, which `npm install` puts
+at `node_modules/mog-core/docs/`. `mog-core` is also the reference VM the
+fuzzer and the benchmark check emitted code against, so it is a real
+dependency and not only a document.
 
 ## Docs
 

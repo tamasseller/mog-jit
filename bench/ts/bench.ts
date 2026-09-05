@@ -304,7 +304,7 @@ function main(): void
 
     const all = names.map(name => measure(outDir, name))
 
-    console.log(`# jit-armv6m against C on Cortex-M0\n`)
+    console.log(`# mog-jit against C on Cortex-M0\n`)
     console.log(`${BENCH_N1} vs ${BENCH_N2} samples, differenced. Every configuration of `
         + `every workload agrees with the reference VM on its return value and on every `
         + `byte it wrote.`)

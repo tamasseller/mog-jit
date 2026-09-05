@@ -1,4 +1,4 @@
-// jit-armv6m/compiler — what the condition flags hold right now. A statement
+// src/compiler — what the condition flags hold right now. A statement
 // about the processor rather than about any one value: an emitter establishes
 // it, a consumer may read it instead of emitting a CMP of its own.
 #ifndef JIT_ARMV6M_COMPILER_FLAGSTATE_H_

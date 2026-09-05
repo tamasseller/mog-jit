@@ -1,4 +1,4 @@
-OUTPUT = jit-armv6m-host-tests
+OUTPUT = mog-jit-host-tests
 
 # Test code
 SOURCES += test_armv6_encoding.cpp

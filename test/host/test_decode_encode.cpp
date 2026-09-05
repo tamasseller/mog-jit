@@ -1,4 +1,4 @@
-// jit-armv6m/compiler/test — decode_instr.h/encode_instr.h round-trip.
+// src/compiler/test — decode_instr.h/encode_instr.h round-trip.
 // One instruction of every shape decode_instr.h claims to handle, encoded
 // via encode_instr.h and decoded back — cross-checks the two against each
 // other using hand-derived cases, since there's no reference

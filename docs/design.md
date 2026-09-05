@@ -1,10 +1,10 @@
 # MCU JIT: Generic Core → ARMv6-M
 
 > **Status:** design plus implementation state. Assumes
-> `mog-core/docs/isa-core.md` throughout. `jit-armv6m/compiler` (C++)
+> `mog-core/docs/isa-core.md` throughout. `src/compiler` (C++)
 > is the sole implementation, targeting the real dispatch/eviction runtime
-> (`jit-armv6m/runtime`) on real ARMv6-M hardware via `qemu-system-arm`. A TS
-> prototype (`jit-armv6m/prototype`) existed earlier as a faster-iteration
+> (`mog-jit/runtime`) on real ARMv6-M hardware via `qemu-system-arm`. A TS
+> prototype (`prototype`) existed earlier as a faster-iteration
 > blueprint for working out the algorithm before committing it to C++; it was
 > retired once the native port reached full feature parity. §16 lists
 > currently-open gaps and follow-ups only.
@@ -15,7 +15,7 @@
 
 One C++ entry point, callable from bare-metal firmware, that JIT-compiles
 and executes Generic Core programs injected at runtime
-(`jit-armv6m/src/runtime/executor.h`):
+(`src/runtime/executor.h`):
 
 ```c++
 struct ProgramResult { uint32_t value; uint32_t trapped; };
@@ -65,7 +65,7 @@ jit program := max_call_depth:LEB128 total_depth:LEB128
                frame:u16le
 ```
 
-The envelope is jit-armv6m's own
+The envelope is mog-jit's own
 (`mog-core/src/jit-armv6m.ts`'s `encodeJitEnvelope`), prepended to an
 ordinary isa-core.md §5.5 program (`proc_count:LEB128`, then each procedure's
 own `arg_count:LEB128` immediately followed by its own body). `proc_count` and
@@ -117,7 +117,7 @@ possible, followed by one branch-range fixup pass. Generated code is
 position-independent (no embedded absolute addresses), so eviction and
 compaction never need a relocation pass.
 
-`Executor` (`jit-armv6m/src/runtime/executor.h`) owns the `CodeArena` and
+`Executor` (`src/runtime/executor.h`) owns the `CodeArena` and
 nothing else, so one of them serves any number of programs; `Executor::run`
 takes one encoded blob plus its arguments, places that program's `Runtime`
 in its own frame and hands both that and the arena back empty on return.
@@ -250,8 +250,8 @@ which is the geometry that makes sharing work:
 `codeLimit = SP(at entry) − requiredStackBytes`. Under
 `Executor::onStack` that ceiling *is* the arena's end, so nothing is
 left stranded between the two. Every term of
-`requiredStackBytes` (`jit-armv6m/src/runtime/executor.cpp`, summing the
-fixed-cost constants `jit-armv6m/src/runtime/stack_budget.h` declares) is
+`requiredStackBytes` (`src/runtime/executor.cpp`, summing the
+fixed-cost constants `src/runtime/stack_budget.h` declares) is
 derived from the program's own wire envelope (§1) or a measured constant:
 
 | Term | Source |
@@ -311,7 +311,7 @@ absolute arena address. Every offset is relative to the current procedure's
 own start, the same position-independence §11 requires of emitted code, so
 compaction sliding the code region never invalidates a still-open record.
 
-`TRANSLATOR_ENTRY_WORST_CASE_BYTES` (`jit-armv6m/runtime/dispatch_abi.h`)
+`TRANSLATOR_ENTRY_WORST_CASE_BYTES` (`src/runtime/dispatch_abi.h`)
 is re-measured via `-fstack-usage` whenever the real translator's own call
 chain changes shape, itemized per function on the real path, never
 guessed. Build-time enforcement (a per-file `-Wstack-usage=`/
@@ -634,7 +634,7 @@ LDR  r3, [r3, #4]           ; returnHelperFromLr (index 1)
 BX   r3
 ```
 
-Four shared entry points feed one tail (`jit-armv6m/runtime/runtime.S`), chosen
+Four shared entry points feed one tail (`src/runtime/runtime.S`), chosen
 per procedure by what that procedure's own prologue did:
 
 | Helper (vector index) | When | What it does |
@@ -693,7 +693,7 @@ path.
 one's gap, then updates only the dispatch table's `code_ptr` entries:
 O(procedure count), not O(code size). A procedure's code length comes from
 neighbors rather than a stored field (`occupiedSizeOf`,
-`jit-armv6m/src/runtime/runtime.h`): compaction keeps every resident
+`src/runtime/runtime.h`): compaction keeps every resident
 procedure packed back to back with no gaps, so a scan for whichever other
 resident entry has the next-closest `code_ptr` above this one's (or the
 arena's high-water mark if none) gives the boundary, and boundary minus
@@ -735,7 +735,7 @@ scan is a plain comparison.
 The static half (`body_ptr`/`static_info`) is what makes this table
 double as the whole-program procedure directory: `Executor::run`'s one-time
 wire-format walk
-(`Runtime::loadProgram`, `jit-armv6m/src/runtime/runtime.cpp`) fills it in for
+(`Runtime::loadProgram`, `src/runtime/runtime.cpp`) fills it in for
 every procedure before `enter_dispatch` ever runs, and `translateProc` reads
 a procedure's own `arg_count`/body location/`needs_lr_save` straight out
 of its own slot instead of any fixture- or caller-supplied side channel.
@@ -946,7 +946,7 @@ Per-opcode-class notes:
   (`translate_control_flow.cpp`'s `BR_TABLE` arm) needs a literal-pool jump
   table plus a computed `BX`, but not one dispatch routine per site: one
   flash-resident copy for the whole program (§11's reserved slot 6,
-  `brTableJumpHelper`, `jit-armv6m/runtime/runtime.S`),
+  `brTableJumpHelper`, `src/runtime/runtime.S`),
   reached by `BLX` through the helper vector, with the call site's own table
   addressed relative to `lr` exactly as it would be after a local `BL`.
 

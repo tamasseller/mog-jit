@@ -1,4 +1,4 @@
-// jit-armv6m/compiler — what an emitted sequence did to the machine.
+// src/compiler — what an emitted sequence did to the machine.
 #ifndef JIT_ARMV6M_COMPILER_EFFECT_H_
 #define JIT_ARMV6M_COMPILER_EFFECT_H_
 

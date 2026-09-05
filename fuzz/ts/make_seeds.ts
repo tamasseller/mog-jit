@@ -1,4 +1,4 @@
-// jit-armv6m/fuzz — writes the whole seeds/ corpus in the whole-program
+// fuzz — writes the whole seeds/ corpus in the whole-program
 // envelope format harness.cpp/oracle_server.ts speak (bytecode.ts's
 // encodeJitEnvelope) — unframed: the fuzzer mutates these bytes, and
 // harness.cpp reaches Runtime::loadProgram without passing the frame check.
@@ -14,8 +14,8 @@
 // never legally CALL anything), and the large shapes aimed at specific
 // compiled-size guards.
 //
-// Run: npx ts-node --transpile-only jit-armv6m/fuzz/ts/make_seeds.ts
-// (from the repo root, with TS_NODE_PROJECT=jit-armv6m/fuzz/tsconfig.json)
+// Run: npx ts-node --transpile-only fuzz/ts/make_seeds.ts
+// (from the repo root, with TS_NODE_PROJECT=fuzz/tsconfig.json)
 
 import * as fs from "fs"
 import * as path from "path"

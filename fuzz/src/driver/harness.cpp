@@ -1,4 +1,4 @@
-// jit-armv6m/fuzz — the compiler-side half of the fuzzing setup: gate every
+// fuzz — the compiler-side half of the fuzzing setup: gate every
 // candidate through the validator (oracle_server.ts, over a Unix domain
 // socket) and, for anything it approves, run it through the real
 // translateProc() pipeline under ASan/UBSan. A crash here is real

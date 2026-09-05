@@ -1,4 +1,4 @@
-// jit-armv6m/fuzz — shrink a miscompiling program to the
+// fuzz — shrink a miscompiling program to the
 // smallest one that still miscompiles.
 //
 // Two things make this worth having rather than reusing a byte-level
@@ -25,8 +25,8 @@
 // information a per-variant probe would give, for one boot instead of one
 // per candidate.
 //
-// Usage (from the repo root, TS_NODE_PROJECT=jit-armv6m/fuzz/tsconfig.json):
-//     npx ts-node --transpile-only jit-armv6m/fuzz/ts/minimize-exec.ts [--hang] <file> [out]
+// Usage (from the repo root, TS_NODE_PROJECT=fuzz/tsconfig.json):
+//     npx ts-node --transpile-only fuzz/ts/minimize-exec.ts [--hang] <file> [out]
 
 import * as fs from "fs"
 import * as path from "path"

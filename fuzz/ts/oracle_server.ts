@@ -1,4 +1,4 @@
-// jit-armv6m/fuzz — the "validator gate + reference-VM crosscheck" service
+// fuzz — the "validator gate + reference-VM crosscheck" service
 // a fuzz harness talks to over a Unix domain socket, so it never pays
 // Node/V8 startup cost per test case (only once, here). Wraps mog-core
 // directly (mog-core/src/{bytecode,validate,vm}.ts) rather than
@@ -7,7 +7,7 @@
 //
 // Wire format, one request/response per fuzz input:
 //   request:  u32LE length, then that many raw bytes — one whole
-//             jit-armv6m program envelope, byte for byte what
+//             mog-jit program envelope, byte for byte what
 //             jit-armv6m.ts's `encodeJitEnvelope` emits and what
 //             runtime/enter_program.cpp's own `parseProgramHeader` +
 //             `Runtime::init()` consume:
@@ -26,7 +26,7 @@
 // Runtime::init()'s multi-procedure directory walk,
 // parseProgramHeader itself — permanently unreachable by the fuzzer.
 //
-// Run standalone: `npx ts-node --transpile-only jit-armv6m/fuzz/ts/oracle_server.ts [socketPath]`
+// Run standalone: `npx ts-node --transpile-only fuzz/ts/oracle_server.ts [socketPath]`
 
 import * as net from "net"
 import * as fs from "fs"
@@ -94,7 +94,7 @@ const REALISTIC_MAX_TOTAL_DEPTH = 128
 /** Whether a validator-approved program still looks like something a real
  *  program would produce, as opposed to a technically-legal corner the
  *  generic validator has no target-specific reason to reject (isa-core.md
- *  says nothing about jit-armv6m's own window size or ABI encoding
+ *  says nothing about mog-jit's own window size or ABI encoding
  *  widths). Extend this — and docs/target-profile.md's table — as fuzzing
  *  turns up more "valid but no real program would do this" gaps. */
 function withinRealisticProfile(program: RtlProgram): boolean

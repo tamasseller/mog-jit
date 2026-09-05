@@ -1,4 +1,4 @@
-// jit-armv6m/compiler/test — proc_scan.h's boundary-finding walk, cross-
+// src/compiler/test — proc_scan.h's boundary-finding walk, cross-
 // checked against the same shapes mog-core/src/bytecode.ts's
 // decodeProcBody handles (including the §8.5 bare-terminator case-close
 // wrinkle that decoder was missing before this port started).

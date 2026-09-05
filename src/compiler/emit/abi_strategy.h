@@ -1,6 +1,6 @@
-// jit-armv6m/compiler — the real ABI's call/return sequences (docs/
+// src/compiler — the real ABI's call/return sequences (docs/
 // design.md §6/§7/§9). This native compiler only ever targets the real
-// dispatch/eviction runtime (jit-armv6m/runtime).
+// dispatch/eviction runtime (mog-jit/runtime).
 #ifndef JIT_ARMV6M_COMPILER_ABI_STRATEGY_H_
 #define JIT_ARMV6M_COMPILER_ABI_STRATEGY_H_
 
