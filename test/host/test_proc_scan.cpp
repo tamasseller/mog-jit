@@ -90,11 +90,12 @@ TEST(ScanProcBodyDetectsClzAndRevbitsAsNeedingLRSave)
 TEST(ScanProcBodyLoopBodyClosedByBareTerminatorFindsTheOuterTail)
 {
     // isa-core.md §7.2's own allowance — the loop body's own bare RETURN
-    // closes just the loop, not the procedure; the outer scope's own tail
-    // (its cond-false exit path) still follows.
+    // closes the first of the two sub-blocks, not the procedure; the
+    // condition block and the outer tail after it still follow.
     const Instr body[] = {
-        CONST(1), bare(Op::LOOP), bare(Op::BLOCK_END),
+        bare(Op::LOOP_PRE),
         CONST(42), bare(Op::RETURN),
+        CONST(1), bare(Op::BLOCK_END),
         CONST(0), bare(Op::RETURN),
     };
     uint8_t bytes[32];
@@ -111,8 +112,9 @@ TEST(ScanProcBodyOrdinaryLoopBackEdgeClosedByBlockEndFindsTheOuterTail)
     // back-edge), not a terminator — distinct from the bare-terminator
     // case above.
     const Instr body[] = {
-        CONST(1), bare(Op::LOOP), bare(Op::BLOCK_END),
+        bare(Op::LOOP_PRE),
         CONST(42), bare(Op::BLOCK_END),
+        CONST(1), bare(Op::BLOCK_END),
         CONST(0), bare(Op::RETURN),
     };
     uint8_t bytes[32];
@@ -125,16 +127,16 @@ TEST(ScanProcBodyOrdinaryLoopBackEdgeClosedByBlockEndFindsTheOuterTail)
 
 TEST(ScanProcBodyLoopFrameCountsBothSubBlocks)
 {
-    // A LOOP's frame is just "two closers to go", so a nested BR_TABLE
+    // A loop's frame is just "two closers to go", so a nested BR_TABLE
     // inside its body must not be mistaken for the loop's own second
     // closer: the outer tail after the loop still has to be found.
     const Instr body[] = {
-        CONST(1), bare(Op::LOOP),
-            CONST(1), bare(Op::BLOCK_END),
+        bare(Op::LOOP_PRE),
             CONST(0), brTable(1),
                 bare(Op::BLOCK_END),
                 CONST(2), bare(Op::BLOCK_END),
         bare(Op::BLOCK_END),
+            CONST(1), bare(Op::BLOCK_END),
         CONST(0), bare(Op::RETURN),
     };
     uint8_t bytes[32];
@@ -175,7 +177,7 @@ TEST(ScanProcBodyNonLastCaseClosedByBareTerminatorStillCountsAgainstN)
 
 TEST(ScanProcBodyStackFloorReachedReportsNotOk)
 {
-    const Instr body[] = {bare(Op::LOOP), CONST(1), bare(Op::BLOCK_END), bare(Op::RETURN)};
+    const Instr body[] = {bare(Op::LOOP_PRE), CONST(1), bare(Op::BLOCK_END), bare(Op::RETURN)};
     uint8_t bytes[16];
     uint32_t len = encodeBody(body, 4, bytes, sizeof(bytes));
 
@@ -222,12 +224,12 @@ TEST(ScanProcBodyAcceptsAnAssignedEscapeSubCode)
 TEST(ScanProcBodyRejectsAnUnassignedEscapeSubCode)
 {
     // An unassigned sub-code has no defined operand shape, so it has no
-    // length either — the walk cannot skip it and must stop. That includes
-    // FALLTHROUGH (MISC_CF #0), which §5.3 assigns but nothing implements.
+    // length either — the walk cannot skip it and must stop.
     const uint8_t cases[][3] = {
-        {125, 0, 102}, // MISC_CF, entirely reserved
+        {125, 0, 102}, // MISC_BINARY, entirely reserved
+        {125, 3, 102},
         {126, 2, 102}, // MISC_UNARY, past its assigned sub-codes
-        {127, 0, 102}, // MISC_BINARY, entirely reserved
+        {127, 7, 102}, // MISC_OTHER, past DROP #4
     };
     for(uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
     {
@@ -237,13 +239,51 @@ TEST(ScanProcBodyRejectsAnUnassignedEscapeSubCode)
     }
 }
 
+TEST(ScanProcBodyStepsOverEveryMiscOtherSubCode)
+{
+    // DROP is ordinary straight-line code to the walk; its extended form
+    // carries a second LEB128 the walk has to step over too (§5.4).
+    const Instr body[] = {
+        CONST(1), PUSH(), CONST(2), PUSH(), CONST(3), PUSH(),
+        dropInstr(2), dropInstr(9),
+        CONST(0), bare(Op::RETURN),
+    };
+    uint8_t bytes[32];
+    uint32_t len = encodeBody(body, sizeof(body) / sizeof(body[0]), bytes, sizeof(bytes));
+
+    BodyScanResult r = scanBytes(bytes, len);
+    CHECK(r.ok);
+    CHECK(r.bodyBytes == len);
+}
+
+TEST(ScanProcBodyCountsDefaultAsACaseCloser)
+{
+    // DEFAULT closes a case and continues into that dispatch's own last
+    // one, so the frame stays open exactly as FALLTHROUGH leaves it — and
+    // the tail after the whole construct still has to be found.
+    const Instr body[] = {
+        CONST(0), brTable(2),
+            bare(Op::DEFAULT),
+            CONST(1), bare(Op::BLOCK_END),
+            CONST(2), bare(Op::BLOCK_END),
+        CONST(0), bare(Op::RETURN),
+    };
+    uint8_t bytes[32];
+    uint32_t len = encodeBody(body, sizeof(body) / sizeof(body[0]), bytes, sizeof(bytes));
+
+    BodyScanResult r = scanBytes(bytes, len);
+    CHECK(r.ok);
+    CHECK(r.bodyBytes == len);
+}
+
 TEST(ScanProcBodyStepsOverADispatchAndItsFallthrough)
 {
-    // 98 opens two blocks; 99 closes the first by running on into the
-    // second, so the frame stays open with one block left (isa-core.md §4.5).
+    // 99 opens two blocks; MISC_OTHER #0 closes the first by running on
+    // into the second, so the frame stays open with one block left
+    // (isa-core.md §4.5).
     const uint8_t bytes[] = {
-        109 /* CONST #0 */, 98 /* BR_TABLE #1 */,
-            99 /* FALLTHROUGH */,
+        109 /* CONST #0 */, 99 /* BR_TABLE #1 */,
+            127, 0 /* FALLTHROUGH */,
             109 /* CONST #0 */, 96 /* BLOCK_END */,
         102 /* RETURN */,
     };
@@ -278,11 +318,11 @@ TEST(ScanProcBodyRejectsAnExtensionOpcodeAfterAValidPrefix)
 
 TEST(ScanProcBodyRunningOffTheEndIsNotAStackFloorHit)
 {
-    // A LOOP with nothing closing it: the walk runs off maxBytes with a
+    // A loop with nothing closing it: the walk runs off maxBytes with a
     // level still open. Same !ok as the floor case above, and the other
     // half of the distinction failCode exists to draw — a body that
     // was never well-formed, which no amount of stack would fix.
-    const Instr body[] = {bare(Op::LOOP), CONST(1)};
+    const Instr body[] = {bare(Op::LOOP_PRE), CONST(1)};
     uint8_t bytes[16];
     uint32_t len = encodeBody(body, 2, bytes, sizeof(bytes));
 

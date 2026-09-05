@@ -136,6 +136,16 @@ bool Ctx::GUARDED_processUntilTerminator(BranchWidth width, bool isThisLoopCondB
                 this->accState.apply(this->window.pushValue(a, this->accState));
                 break;
 
+            case Op::DROP:
+                /* A scope ending where no block boundary does (isa-core.md
+                 * §4.4) — the same window unwind a BLOCK_END performs, just
+                 * to a depth the instruction names. Acc is not touched, so
+                 * anything pending in a reclaimed register is flushed out
+                 * of it first. */
+                this->accState.flushLive(a, ACC_REG);
+                this->accState.apply(this->window.restore(a, this->window.tos - (uint32_t)instr.imm));
+                break;
+
             case Op::NEG:
             case Op::NOT:
             case Op::SXTB:
@@ -307,8 +317,9 @@ bool Ctx::GUARDED_processUntilTerminator(BranchWidth width, bool isThisLoopCondB
                 break;
             }
 
-            case Op::LOOP:
-                if(!this->translateLoop(width))
+            case Op::LOOP_PRE:
+            case Op::LOOP_POST:
+                if(!this->translateLoop(width, instr.op == Op::LOOP_POST))
                 {
                     return false;
                 }

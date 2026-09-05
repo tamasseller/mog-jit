@@ -205,7 +205,7 @@ TEST(TheTopOfCoreOpcodeSpaceIsNeverOfferedToAnExtension)
     CHECK(constScan.ok);
     CHECK(constScan.failCode == 0);
 
-    const uint8_t escape[] = {127, 0, 102 /* RETURN */};
+    const uint8_t escape[] = {125, 0, 102 /* RETURN */};
     BodyScanResult escapeScan = scanBytes(escape, sizeof(escape));
     CHECK(!escapeScan.ok);
     CHECK(escapeScan.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE); // core's own reason, never the extension's

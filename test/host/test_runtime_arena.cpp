@@ -227,7 +227,7 @@ TEST(WalkFailsWithoutTouchingDispatchStateWhenAProcedureCantBeScanned)
 
 TEST(WalkReportsAnUnterminatedBodySeparatelyFromRunningOutOfStack)
 {
-    const Instr body[] = {bare(Op::LOOP), CONST(1)};
+    const Instr body[] = {bare(Op::LOOP_PRE), CONST(1)};
     ProcSource procs[] = {ProcSource{0, body, 2}};
     uint8_t programBytes[16];
     uint32_t len = encodeProgram(procs, 1, programBytes, sizeof(programBytes));

@@ -18,7 +18,7 @@ static bool triggersLRSave(const Instr &instr)
 
 /* One open block-nesting level. Both openers are just a count of closers
  * still to come: `N + 1` for a `BR_TABLE`'s cases plus its default case
- * (isa-core.md §4.5), two for a `LOOP`'s condition and body sub-blocks. The
+ * (isa-core.md §4.5), two for a loop's body and condition sub-blocks. The
  * two close identically; they differ only in what §8.5 lets close them,
  * which is why `dispatch` exists and why nothing but the assertions reads
  * it. */
@@ -81,7 +81,7 @@ static void GUARDED_scanBody(BcReader &r, bool &needsLRSave, ScanFrame *frame, u
             needsLRSave = true;
         }
 
-        if(instr.op == Op::BR_TABLE || instr.op == Op::LOOP)
+        if(instr.op == Op::BR_TABLE || isLoopOpener(instr.op))
         {
             ScanFrame inner = instr.op == Op::BR_TABLE
                 ? ScanFrame{(uint32_t)instr.imm + 1, true}
@@ -91,10 +91,12 @@ static void GUARDED_scanBody(BcReader &r, bool &needsLRSave, ScanFrame *frame, u
             continue;
         }
 
-        if(instr.op == Op::FALLTHROUGH)
+        if(instr.op == Op::FALLTHROUGH || instr.op == Op::DEFAULT)
         {
-            // Closes this case and continues into the next one, so the frame
-            // stays open with one fewer case to go (isa-core.md §4.5).
+            // Closes this case and continues into another one, so the frame
+            // stays open (isa-core.md §4.5). `DEFAULT` jumps straight to the
+            // last case, but every case between still has its own bytes to
+            // walk, so the count moves by one either way.
             assert(frame != nullptr && frame->dispatch && frame->remaining > 1); // GCOV_EXCL_LINE — malformed input
             frame->remaining--;
             continue;
@@ -115,9 +117,10 @@ static void GUARDED_scanBody(BcReader &r, bool &needsLRSave, ScanFrame *frame, u
                 foundEnd = true;
                 return;
             }
-            // §8.5: a terminator closes a dispatch case, or a LOOP's *body*
-            // sub-block — never a LOOP's condition, which needs a BLOCK_END.
-            assert(frame->dispatch || frame->remaining == 1); // GCOV_EXCL_LINE — malformed input
+            // §8.5: a terminator closes a dispatch case, or a loop's *body*
+            // sub-block — the first of the two, so `remaining` is still 2
+            // there. A loop's condition (the second) needs a BLOCK_END.
+            assert(frame->dispatch || frame->remaining == 2); // GCOV_EXCL_LINE — malformed input
             if(--frame->remaining == 0) return;
             continue;
         }

@@ -161,10 +161,10 @@ static const Instr condBranchLeProc0[] = {
         CONST(200), bare(Op::BLOCK_END),
     PUSH(),                                        // slot1 = branch result
     LOAD(0), PUSH(),                                // slot2 = counter := arg
-    bare(Op::LOOP),
-        LOAD(2), opImm(Op::GT_S, 0),                // while(counter > 0) -- exit condition is GT_S's own inverse
-    bare(Op::BLOCK_END),
+    bare(Op::LOOP_PRE),
         LOAD(2), opImm(Op::SUB, 1), STORE(2),
+    bare(Op::BLOCK_END),
+        LOAD(2), opImm(Op::GT_S, 0),                // while(counter > 0) -- GT_S's own condition drives the back-edge
     bare(Op::BLOCK_END),
     LOAD(1), opReg(Op::ADD, 2),                     // branch result + counter(now 0)
     bare(Op::RETURN),

@@ -15,48 +15,50 @@
 namespace jitc
 {
 
-// Nested LOOP-in-LOOP, sum of triangular numbers — test_nested_blocks.cpp's
+// Nested loops, sum of triangular numbers — test_nested_blocks.cpp's
 // NestedLoops* TESTs. See their own comment there for the full derivation.
+// Body block first, condition second (isa-core.md §7.2), throughout.
 inline constexpr Instr corpusNestedLoopProc0[] = {
     LOAD(0), PUSH(),
     CONST(0), PUSH(),
     CONST(0), PUSH(),
     CONST(0), PUSH(),
-    bare(Op::LOOP),
-        LOAD(1),
-    bare(Op::BLOCK_END),
+    bare(Op::LOOP_PRE),
         LOAD(1), STORE(3),
         CONST(0), STORE(4),
-        bare(Op::LOOP),
-            LOAD(3),
-        bare(Op::BLOCK_END),
+        bare(Op::LOOP_PRE),
             LOAD(4), opReg(Op::ADD, 3), STORE(4),
             LOAD(3), opImm(Op::SUB, 1), STORE(3),
+        bare(Op::BLOCK_END),
+            LOAD(3),
         bare(Op::BLOCK_END),
         LOAD(2), opReg(Op::ADD, 4), STORE(2),
         LOAD(1), opImm(Op::SUB, 1), STORE(1),
     bare(Op::BLOCK_END),
+        LOAD(1),
+    bare(Op::BLOCK_END),
     LOAD(2), bare(Op::RETURN),
 };
 
-// BR_TABLE nested inside a LOOP body — test_nested_blocks.cpp's BrTableInLoopBody*.
+// BR_TABLE nested inside a loop body — test_nested_blocks.cpp's BrTableInLoopBody*.
 inline constexpr Instr corpusBrTableInLoopProc0[] = {
     LOAD(0), PUSH(),
     CONST(0), PUSH(),
-    bare(Op::LOOP),
-        LOAD(1),
-    bare(Op::BLOCK_END),
+    bare(Op::LOOP_PRE),
         LOAD(1), opImm(Op::AND, 1), brTable(1),
             LOAD(1), opImm(Op::MUL, 10), opReg(Op::ADD, 2), STORE(2), bare(Op::BLOCK_END),
             LOAD(1), opReg(Op::ADD, 2), STORE(2), bare(Op::BLOCK_END),
         LOAD(1), opImm(Op::SUB, 1), STORE(1),
     bare(Op::BLOCK_END),
+        LOAD(1),
+    bare(Op::BLOCK_END),
     LOAD(2), bare(Op::RETURN),
 };
 
-// LOOP nested inside a BR_TABLE case — test_nested_blocks.cpp's LoopInBrTableCase*.
+// A loop nested inside a BR_TABLE case — test_nested_blocks.cpp's
+// LoopInBrTableCase*.
 //
-// k0 is the packed argument, k1 the result slot: one case ends in a LOOP,
+// k0 is the packed argument, k1 the result slot: one case ends in a loop,
 // after which isa-core.md §8.7 leaves acc dead, so this dispatch delivers
 // its value through a TOS slot the cases STORE to rather than through acc.
 inline constexpr Instr corpusLoopInBrTableProc0[] = {
@@ -64,11 +66,11 @@ inline constexpr Instr corpusLoopInBrTableProc0[] = {
     LOAD(0), opImm(Op::SHR, 8), brTable(1),
         CONST(0), PUSH(),
         LOAD(0), opImm(Op::AND, 0xFF), PUSH(),
-        bare(Op::LOOP),
-            LOAD(3),
-        bare(Op::BLOCK_END),
+        bare(Op::LOOP_PRE),
             LOAD(2), opReg(Op::ADD, 3), STORE(2),
             LOAD(3), opImm(Op::SUB, 1), STORE(3),
+        bare(Op::BLOCK_END),
+            LOAD(3),
         bare(Op::BLOCK_END),
         LOAD(2),
         STORE(1),

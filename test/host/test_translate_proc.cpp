@@ -278,16 +278,18 @@ TEST(CallToAProcedureIndexTheProgramDoesntHaveIsReported)
     EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_CALLEE_RANGE, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
-TEST(LoopBackEdgeBailsWhenTheBodyExceedsTheEncodableBranchRange)
+TEST(LoopBackEdgeBailsWhenTheConditionExceedsTheEncodableBranchRange)
 {
-    // A back-edge past Ioff<1,11>'s +-2048-byte reach must fail, not wrap
-    // into a silently retargeted branch.
-    Instr body[405];
+    // The back edge runs from the end of the condition block to the start
+    // of the body (isa-core.md §7.2), so it is the *condition* that can
+    // outgrow Ioff<1,11>'s reach. Past it the translation must fail, not
+    // wrap into a silently retargeted branch.
+    Instr body[410];
     uint32_t n = 0;
-    body[n++] = bare(Op::LOOP);
+    body[n++] = bare(Op::LOOP_PRE);
     body[n++] = CONST(1);
     body[n++] = bare(Op::BLOCK_END);
-    body[n++] = CONST(0); // §8.7: a LOOP body starts with acc dead, and CLZ reads it
+    body[n++] = CONST(0); // §8.7: the condition block is entered with acc dead here
     for(uint32_t i = 0; i < 400; i++)
     {
         body[n++] = bare(Op::CLZ);
@@ -299,6 +301,31 @@ TEST(LoopBackEdgeBailsWhenTheBodyExceedsTheEncodableBranchRange)
                                             // the branch-range check, not emit()'s own capacity check
     rt.set(0, 1, /*savesLR=*/false, body, n, /*cap=*/2048);
     EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_LOOP_BACK_EDGE, translateProc(0, rt.runtime(), LRU_TICK));
+}
+
+TEST(LoopEntryBranchBailsWhenTheBodyExceedsTheEncodableBranchRange)
+{
+    // The other half of the budget §7.2's block order splits: LOOP_PRE's
+    // entry branch spans the body, so an over-long body fails there — as
+    // an ordinary branch-range bail, since it is an ordinary forward
+    // branch. Condition-first needed one branch to span body and condition
+    // together; this needs each to fit on its own.
+    Instr body[410];
+    uint32_t n = 0;
+    body[n++] = bare(Op::LOOP_PRE);
+    body[n++] = CONST(0);
+    for(uint32_t i = 0; i < 400; i++)
+    {
+        body[n++] = bare(Op::CLZ);
+    }
+    body[n++] = bare(Op::BLOCK_END);
+    body[n++] = CONST(1);
+    body[n++] = bare(Op::BLOCK_END);
+    body[n++] = bare(Op::RETURN);
+
+    FakeRuntime<1> rt(/*arenaBytes=*/8192);
+    rt.set(0, 1, /*savesLR=*/false, body, n, /*cap=*/2048);
+    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_BRANCH_RANGE, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
 TEST(SpillLoadBailsWhenTheOffsetExceedsTheEncodableRange)
@@ -327,15 +354,16 @@ TEST(SpillLoadBailsWhenTheOffsetExceedsTheEncodableRange)
 
 TEST(LoopClosesNormallyViaBlockEndBackEdge)
 {
-    // A real back-edge close (not terminator-closed) — exercises
-    // closeBlockEnd's own LoopCond->LoopBody transition and the
-    // unconditional back-edge branch it emits.
+    // A real back-edge close (not terminator-closed), in isa-core.md
+    // §7.2's rotated shape: an entry branch over the body, then the body,
+    // then the condition and one conditional branch back. One taken
+    // branch an iteration, where the condition-first layout took two.
     const Instr body[] = {
         CONST(3), PUSH(),
-        bare(Op::LOOP),
-            LOAD(0),
-        bare(Op::BLOCK_END),
+        bare(Op::LOOP_PRE),
             LOAD(0), opImm(Op::SUB, 1), STORE(0),
+        bare(Op::BLOCK_END),
+            LOAD(0),
         bare(Op::BLOCK_END),
         // isa-core.md §8.7: the loop-exit edge starts acc poisoned, so
         // RETURN needs its own fresh producer rather than reading whatever
@@ -351,12 +379,12 @@ TEST(LoopClosesNormallyViaBlockEndBackEdge)
     const uint16_t expected[] = {
         PROLOGUE_STUB,
         ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(3)), // MOVS r7,#3 (CONST 3, folds straight into PUSH's dest r7)
-        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (openLoop's own flushLive — loopStart begins right here)
-        ArmV6M::cmp(ArmV6M::LoReg(7), ArmV6M::Imm<8>(0)),  // CMP r7,#0 (testAccNonzero reads the cond block's LOAD(0) directly from r7, no flush needed)
-        ArmV6M::beq(ArmV6M::Ioff<1, 8>(4)),                // BEQ +4 — exit branch (inverse of NE), skips the loop when acc==0
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (the opener's own flushLive: acc into ACC_REG for both edges into the condition)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(2)),                 // B +2 — LOOP_PRE's entry branch, over the body to the condition
         ArmV6M::subs(ArmV6M::LoReg(7), ArmV6M::LoReg(7), ArmV6M::Imm<3>(1)), // SUBS r7,r7,#1 (body's LOAD(0)+SUB(1)+STORE(0), all folded in place)
-        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (LoopBody close's own flushLive, right before the back-edge)
-        ArmV6M::b(ArmV6M::Ioff<1, 11>(-12)),               // B -12 — unconditional back-edge, to loopStart (openLoop's own flushLive above)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (the body's own closer flushes acc, then falls into the condition)
+        ArmV6M::cmp(ArmV6M::LoReg(7), ArmV6M::Imm<8>(0)),  // CMP r7,#0 (testNonzero reads the cond block's LOAD(0) directly from r7, no flush needed)
+        ArmV6M::bne(ArmV6M::Ioff<1, 8>(-10)),              // BNE -10 — the back-edge, taken while the test holds; the exit is the fallthrough
         ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)), // MOV r0,r7 (RETURN's flush of the post-loop LOAD(0) — the exit edge's own fresh producer)
         RETURN_VIA_LR,
     };
@@ -933,8 +961,9 @@ TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
     // change it — so testAccNonzero's own read-in-place fix finds acc
     // already Clean at ACC_REG and adds nothing further.
     const Instr body[] = {
-        bare(Op::LOOP), bare(Op::BLOCK_END),
+        bare(Op::LOOP_PRE),
         CONST(42), bare(Op::RETURN),
+        bare(Op::BLOCK_END),
         CONST(999), bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
@@ -943,18 +972,20 @@ TEST(LoopBodyClosesViaTerminatorInsteadOfBlockEnd)
     // actual last argument to flush.
     rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 16);
+    CHECK(halfwordCount == 18);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
         ArmV6M::mov(ArmV6M::AnyReg(7), ArmV6M::AnyReg(0)),        // MOV r7, r0  (callee prologue: incoming last arg flushed into physReg(0)=r7, unreferenced by this body)
-        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),        // MOV r0, r7  (openLoop's own flushLive(ACC_REG) — the loop's join-point flush, not testAccNonzero's)
-        ArmV6M::cmp(ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<8>(0)),   // CMP r0, #0  (LOOP condition: no fused comparison, testAccNonzero's fallback)
-        ArmV6M::beq(ArmV6M::Ioff<1, 8>(6)),                       // BEQ exitFixup  (loop-exit branch, taken when acc==0)
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),        // MOV r0, r7  (the opener's own flushLive(ACC_REG) — what the empty condition block below reads)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(6)),                        // B +6 — the entry branch, over a body that only ever returns
         ArmV6M::movs(ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<8>(42)), // MOVS r0, #42  (RETURN's flush of CONST(42)'s pending value)
         RETURN_VIA_LR,
-        ArmV6M::ldrPc(ArmV6M::LoReg(ACC_REG), ArmV6M::Uoff<2, 8>(4)), // LDR r0,[pc,#4]  (CONST(999) doesn't fit imm8 or the shift trick, so it pools)
+        ArmV6M::cmp(ArmV6M::LoReg(ACC_REG), ArmV6M::Imm<8>(0)),   // CMP r0, #0  (the condition: no fused comparison, testNonzero's fallback)
+        ArmV6M::bne(ArmV6M::Ioff<1, 8>(-14)),                     // BNE — the back-edge into a body that never returns here; the exit falls through
+        ArmV6M::ldrPc(ArmV6M::LoReg(ACC_REG), ArmV6M::Uoff<2, 8>(8)), // LDR r0,[pc,#8]  (CONST(999) doesn't fit imm8 or the shift trick, so it pools)
         RETURN_VIA_LR,
+        ArmV6M::nop(),                                            // pool alignment
         0x03e7, 0x0000,                                           // pool word: 999
     };
     for(uint32_t i = 0; i < halfwordCount; i++)
@@ -1048,10 +1079,10 @@ TEST(LoopConditionClosesViaAnExplicitFusedComparison)
     // fusesIntoLoopExit rather than the fallback.
     const Instr body[] = {
         CONST(3), PUSH(),
-        bare(Op::LOOP),
-            LOAD(0), opImm(Op::GT_S, 0),
-        bare(Op::BLOCK_END),
+        bare(Op::LOOP_PRE),
             LOAD(0), opImm(Op::SUB, 1), STORE(0),
+        bare(Op::BLOCK_END),
+            LOAD(0), opImm(Op::GT_S, 0),
         bare(Op::BLOCK_END),
         // isa-core.md §8.7: the loop-exit edge starts acc poisoned, so
         // RETURN needs its own fresh producer rather than reading whatever
@@ -1067,12 +1098,12 @@ TEST(LoopConditionClosesViaAnExplicitFusedComparison)
     const uint16_t expected[] = {
         PROLOGUE_STUB,
         ArmV6M::movs(ArmV6M::LoReg(7), ArmV6M::Imm<8>(3)),              // MOVS r7, #3  (CONST 3, into physReg(0) for the PUSH)
-        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),              // MOV r0, r7  (openLoop's own flushLive: canonicalize acc before the condition sub-block)
-        ArmV6M::cmp(ArmV6M::LoReg(7), ArmV6M::Imm<8>(0)),               // CMP r7, #0  (LOAD(0)+opImm(GT_S,0) fused: pending value read straight from r7)
-        ArmV6M::ble(ArmV6M::Ioff<1, 8>(4)),                             // BLE — inverse(GT)=LE, the loop-exit branch, patched past the back-edge
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),              // MOV r0, r7  (the opener's own flushLive: canonicalize acc for both edges into the condition)
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(2)),                              // B +2 — the entry branch, over the body
         ArmV6M::subs(ArmV6M::LoReg(7), ArmV6M::LoReg(7), ArmV6M::Imm<3>(1)), // SUBS r7,r7,#1  (LOAD(0)+opImm(SUB,1) folds straight into STORE(0)'s target r7)
-        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),              // MOV r0, r7  (closeBlockEnd's own flushLive before the back-edge)
-        ArmV6M::b(ArmV6M::Ioff<1, 11>(-12)),                            // unconditional back-edge to loopStart
+        ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),              // MOV r0, r7  (the body's own closer flushes acc before falling into the condition)
+        ArmV6M::cmp(ArmV6M::LoReg(7), ArmV6M::Imm<8>(0)),               // CMP r7, #0  (LOAD(0)+opImm(GT_S,0) fused: pending value read straight from r7)
+        ArmV6M::bgt(ArmV6M::Ioff<1, 8>(-10)),                           // BGT — the comparison's own condition drives the back-edge directly, uninverted
         ArmV6M::mov(ArmV6M::AnyReg(0), ArmV6M::AnyReg(7)),              // MOV r0, r7  (RETURN's flush of the post-loop LOAD(0) — the exit edge's own fresh producer)
         RETURN_VIA_LR,
     };
@@ -2129,28 +2160,31 @@ TEST(AWriteBackInPlaceComboLeavesTheFlagsDescribingItsTarget)
 TEST(ALoopHeadDropsAnIncomingFlagsClaimBecauseTheBackEdgeLandsThereToo)
 {
     // The ADD lands in ACC_REG, so the loop's entry flushLive is a self-move
-    // and emits nothing — but `start` is a merge, and the back edge arrives
-    // carrying the body's flags. An empty condition sub-block would otherwise
-    // let testAccNonzero fuse against the claim the ADD left.
+    // and emits nothing — but the condition block is a merge, and the back
+    // edge arrives carrying the condition's own flags. An empty condition
+    // sub-block would otherwise let testNonzero fuse against the claim the
+    // ADD left before the loop.
     Instr body[] = {
         LOAD(0), opReg(Op::ADD, 1),
-        bare(Op::LOOP), bare(Op::BLOCK_END),
+        bare(Op::LOOP_PRE),
         CONST(42), bare(Op::RETURN),
+        bare(Op::BLOCK_END),
         CONST(9), bare(Op::RETURN),
     };
     FakeRuntime<1> rt;
     rt.set(0, 2, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 14);
+    CHECK(halfwordCount == 15);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
         ArmV6M::mov(ArmV6M::AnyReg(6), ArmV6M::AnyReg(0)),
         ArmV6M::adds(ArmV6M::LoReg(0), ArmV6M::LoReg(7), ArmV6M::LoReg(6)), // ADDS r0, r7, r6
-        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)),                   // CMP r0, #0 — the claim does not cross the loop head
-        ArmV6M::beq(ArmV6M::Ioff<1, 8>(6)),
+        ArmV6M::b(ArmV6M::Ioff<1, 11>(6)),                                  // the entry branch, over the body
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(42)),
         RETURN_VIA_LR,
+        ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)),                   // CMP r0, #0 — the claim does not cross into the condition block
+        ArmV6M::bne(ArmV6M::Ioff<1, 8>(-14)),
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(9)),
         RETURN_VIA_LR,
     };
@@ -2159,3 +2193,5 @@ TEST(ALoopHeadDropsAnIncomingFlagsClaimBecauseTheBackEdgeLandsThereToo)
         CHECK(rt.code()[i] == expected[i]);
     }
 }
+
+

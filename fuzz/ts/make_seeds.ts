@@ -156,7 +156,7 @@ const callInBranch: RtlProgram = {
     ],
 }
 
-/** A call inside a LOOP body, so the callee's own spill/reload interacts
+/** A call inside a loop body, so the callee's own spill/reload interacts
  *  with a back-edge's window restore. */
 const callInLoop: RtlProgram = {
     procedures: [
@@ -164,12 +164,12 @@ const callInLoop: RtlProgram = {
             argCount: 1,
             body: [
                 { op: "CONST", imm: 0 }, { op: "PUSH" },
-                { op: "LOOP" },
-                    { op: "LOAD", target: 0 },
-                    { op: "BLOCK_END" },
+                { op: "LOOP_PRE" },
                     { op: "LOAD", target: 0 }, { op: "CALL", calleeIndex: 1 },
                     { op: "ADD", combo: "REG_ACC", target: 1 }, { op: "STORE", target: 1 },
                     { op: "LOAD", target: 0 }, { op: "SUB", combo: "IMM_ACC", imm: 1 }, { op: "STORE", target: 0 },
+                    { op: "BLOCK_END" },
+                    { op: "LOAD", target: 0 },
                     { op: "BLOCK_END" },
                 { op: "LOAD", target: 1 },
                 { op: "RETURN" },
@@ -249,11 +249,11 @@ const countdownLoop: RtlProgram = {
             argCount: 1,
             body: [
                 { op: "CONST", imm: 0 }, { op: "PUSH" },
-                { op: "LOOP" },
-                    { op: "LOAD", target: 0 },
-                    { op: "BLOCK_END" },
+                { op: "LOOP_PRE" },
                     { op: "LOAD", target: 1 }, { op: "ADD", combo: "REG_ACC", target: 0 }, { op: "STORE", target: 1 },
                     { op: "LOAD", target: 0 }, { op: "SUB", combo: "IMM_ACC", imm: 1 }, { op: "STORE", target: 0 },
+                    { op: "BLOCK_END" },
+                    { op: "LOAD", target: 0 },
                     { op: "BLOCK_END" },
                 { op: "LOAD", target: 1 },
                 { op: "RETURN" },
@@ -301,27 +301,55 @@ const longBranchSpan: RtlProgram = {
     ],
 }
 
-/** A LOOP whose body compiles past Ioff<1,11>'s own reach, so the back-edge
+/** A loop whose *condition* compiles past Ioff<1,11>'s own reach — that is
+ *  what the back-edge spans under isa-core.md §7.2's block order — so the
  *  branch cannot encode and translateLoop must bail rather than emit an
- *  out-of-range offset. */
+ *  out-of-range offset.
+ *
+ *  The padding writes to a scratch slot rather than to the one the
+ *  condition tests, so the loop still terminates: a condition that
+ *  overwrote its own test value would run forever and the harness would
+ *  skip this seed as non-terminating (§9) instead of reaching the bail. */
 const longLoopBackEdge: RtlProgram = {
     procedures: [
         {
             argCount: 1,
             body: [
-                { op: "LOOP" },
-                    { op: "LOAD", target: 0 },
+                { op: "CONST", imm: 0 }, { op: "PUSH" },   // k1: scratch, what the padding writes
+                { op: "CONST", imm: 1 }, { op: "PUSH" },   // k2: the counter the condition tests
+                { op: "LOOP_PRE" },
+                    { op: "LOAD", target: 2 }, { op: "SUB", combo: "IMM_ACC", imm: 1 }, { op: "STORE", target: 2 },
                     { op: "BLOCK_END" },
+                    ...repeat<RtlInstr>(400, i => [
+                        { op: "CONST", imm: 0x20000 + i },
+                        { op: "STORE", target: 1 },
+                    ]),
+                    { op: "LOAD", target: 2 },
+                    { op: "BLOCK_END" },
+                { op: "LOAD", target: 2 },
+                { op: "RETURN" },
+            ],
+        },
+    ],
+}
+
+/** The other half of the budget §7.2's order splits: a loop whose *body*
+ *  runs past that same reach, so it is the entry branch that cannot encode.
+ *  Neither shape could be told from the other before the split. */
+const longLoopEntryBranch: RtlProgram = {
+    procedures: [
+        {
+            argCount: 1,
+            body: [
+                { op: "LOOP_PRE" },
                     ...repeat<RtlInstr>(400, i => [
                         { op: "CONST", imm: 0x20000 + i },
                         { op: "STORE", target: 0 },
                     ]),
-                    // Clear the condition slot so the loop runs exactly one
-                    // iteration whatever the entry argument is; otherwise the
-                    // body leaves slot 0 non-zero and it never exits. The
-                    // 400-instruction body this seed exists for is untouched.
                     { op: "CONST", imm: 0 },
                     { op: "STORE", target: 0 },
+                    { op: "BLOCK_END" },
+                    { op: "LOAD", target: 0 },
                     { op: "BLOCK_END" },
                 { op: "LOAD", target: 0 },
                 { op: "RETURN" },
@@ -380,7 +408,7 @@ const deepSpill: RtlProgram = {
     ],
 }
 
-/** 80 nested LOOPs. The translator's real recursion is
+/** 80 nested loops. The translator's real recursion is
  *  processUntilTerminator -> processNonTerminators -> back into a construct
  *  handler, and checkStackFloor is the only thing bounding it — this is the
  *  shape that actually drives it deep. */
@@ -390,12 +418,17 @@ const deepNesting: RtlProgram = (() =>
     const body: RtlInstr[] = []
     for(let i = 0; i < depth; i++)
     {
-        body.push({ op: "LOOP" })
-        body.push({ op: "CONST", imm: 0 })   // condition block: exit immediately
-        body.push({ op: "BLOCK_END" })
+        body.push({ op: "LOOP_PRE" })
     }
     body.push({ op: "CONST", imm: 1 })
-    for(let i = 0; i < depth; i++) body.push({ op: "BLOCK_END" }) // close each body block
+    // Close each body block, then each condition block — every condition
+    // exits immediately, so none of these ever takes its back-edge.
+    for(let i = 0; i < depth; i++)
+    {
+        body.push({ op: "BLOCK_END" })
+        body.push({ op: "CONST", imm: 0 })
+        body.push({ op: "BLOCK_END" })
+    }
     body.push({ op: "CONST", imm: 2 })
     body.push({ op: "RETURN" })
     return { procedures: [{ argCount: 0, body }] }
@@ -727,9 +760,7 @@ const extInLoop: RtlProgram = {
             argCount: 1,
             body: [
                 { op: "CONST", imm: 0 }, { op: "PUSH" },
-                { op: "LOOP" },
-                    { op: "LOAD", target: 0 },
-                    { op: "BLOCK_END" },
+                { op: "LOOP_PRE" },
                     { op: "LOAD", target: 0 }, { op: "SHL", combo: "IMM_ACC", imm: 2 }, { op: "PUSH" },
                     { op: "LOAD", target: 1 }, { op: "ADD", combo: "REG_ACC", target: 0 },
                     extInstr("ST32", []),
@@ -737,6 +768,8 @@ const extInLoop: RtlProgram = {
                     extInstr("LD32", []),
                     { op: "STORE", target: 1 },
                     { op: "LOAD", target: 0 }, { op: "SUB", combo: "IMM_ACC", imm: 1 }, { op: "STORE", target: 0 },
+                    { op: "BLOCK_END" },
+                    { op: "LOAD", target: 0 },
                     { op: "BLOCK_END" },
                 { op: "CONST", imm: 0 }, { op: "PUSH" },
                 { op: "CONST", imm: 0x10 }, { op: "PUSH" },
@@ -924,7 +957,7 @@ const calleeReadsIncomingAcc: RtlProgram = {
     ],
 }
 
-/** A PUSH inside a LOOP's *condition* sub-block. isa-core.md §8.1 has that
+/** A PUSH inside a loop's *condition* sub-block. isa-core.md §8.1 has that
  *  block's BLOCK_END drop the surplus like any other, and the translator
  *  did it for every BR_TABLE case but not here — so sp and the window model
  *  disagreed from the loop onward and the return sequence reclaimed the
@@ -944,13 +977,13 @@ const pushInLoopCondition: RtlProgram = {
                 // condition sub-block, four slots deep so it spills — is
                 // unchanged.
                 { op: "CONST", imm: 3 }, { op: "STORE", target: 0 },
-                { op: "LOOP" },
+                { op: "LOOP_PRE" },
+                    { op: "BLOCK_END" },
                     { op: "LOAD", target: 0 },
                     { op: "SUB", combo: "IMM_ACC", imm: 1 },
                     { op: "STORE", target: 0 },
                     { op: "LOAD", target: 0 },
                     { op: "PUSH" },
-                    { op: "BLOCK_END" },
                     { op: "BLOCK_END" },
                 { op: "CONST", imm: 11908 },
                 { op: "RETURN" },
@@ -1079,6 +1112,97 @@ const switchSharedBody: RtlProgram = {
     ],
 }
 
+/** LOOP_POST: the body ahead of the test, so it always runs once. The
+ *  translator's only difference from LOOP_PRE is the missing entry branch,
+ *  which is exactly what this puts on the wire. */
+const postTestLoop: RtlProgram = {
+    procedures: [
+        {
+            argCount: 1,
+            body: [
+                { op: "CONST", imm: 0 }, { op: "PUSH" },
+                { op: "LOOP_POST" },
+                    { op: "LOAD", target: 1 }, { op: "ADD", combo: "IMM_ACC", imm: 1 }, { op: "STORE", target: 1 },
+                    { op: "LOAD", target: 0 }, { op: "SUB", combo: "IMM_ACC", imm: 1 }, { op: "STORE", target: 0 },
+                    { op: "BLOCK_END" },
+                    { op: "LOAD", target: 0 },
+                    { op: "BLOCK_END" },
+                { op: "LOAD", target: 1 },
+                { op: "RETURN" },
+            ],
+        },
+    ],
+}
+
+/** DROP in both its forms, across the physical-register window's edge —
+ *  four slots wide (registers.h), so unwinding past it has to reload
+ *  spills exactly as a BLOCK_END's own restore does. */
+const dropSlots: RtlProgram = {
+    procedures: [
+        {
+            argCount: 1,
+            body: [
+                ...repeat<RtlInstr>(7, i => [
+                    { op: "CONST", imm: 0x100 + i },
+                    { op: "PUSH" },
+                ]),
+                { op: "DROP", imm: 6 },   // the extended form (§5.4's bias)
+                { op: "CONST", imm: 9 }, { op: "PUSH" },
+                { op: "DROP", imm: 1 },   // ...and a small one
+                { op: "LOAD", target: 1 },
+                { op: "ADD", combo: "REG_ACC", target: 0 },
+                { op: "RETURN" },
+            ],
+        },
+    ],
+}
+
+/** DEFAULT out of a jump-table dispatch: gap fillers that are nothing but
+ *  a DEFAULT, and a non-empty case that runs its own body and then the
+ *  default clause too. The forward branch translateSwitch chains for these
+ *  is patched only when case[N] finally starts. */
+const defaultCases: RtlProgram = {
+    procedures: [
+        {
+            argCount: 1,
+            body: [
+                { op: "CONST", imm: 0 }, { op: "PUSH" },
+                { op: "LOAD", target: 0 },
+                { op: "BR_TABLE", imm: 4 },
+                    { op: "CONST", imm: 100 }, { op: "STORE", target: 1 }, { op: "BLOCK_END" },
+                    { op: "DEFAULT" },
+                    { op: "CONST", imm: 200 }, { op: "STORE", target: 1 }, { op: "DEFAULT" },
+                    { op: "DEFAULT" },
+                    { op: "LOAD", target: 1 }, { op: "ADD", combo: "IMM_ACC", imm: 7 }, { op: "STORE", target: 1 },
+                    { op: "BLOCK_END" },
+                { op: "LOAD", target: 1 },
+                { op: "RETURN" },
+            ],
+        },
+    ],
+}
+
+/** DEFAULT out of the two-block form, where the case it names is also the
+ *  physically next one — the shape a one-label `switch` with a `default:`
+ *  clause lowers to, and the one path translateIfThenElse takes for it. */
+const defaultTwoBlock: RtlProgram = {
+    procedures: [
+        {
+            argCount: 1,
+            body: [
+                { op: "CONST", imm: 0 }, { op: "PUSH" },
+                { op: "LOAD", target: 0 },
+                { op: "BR_TABLE", imm: 1 },
+                    { op: "CONST", imm: 10 }, { op: "STORE", target: 1 }, { op: "DEFAULT" },
+                    { op: "LOAD", target: 1 }, { op: "ADD", combo: "IMM_ACC", imm: 1 }, { op: "STORE", target: 1 },
+                    { op: "BLOCK_END" },
+                { op: "LOAD", target: 1 },
+                { op: "RETURN" },
+            ],
+        },
+    ],
+}
+
 const authored: [string, RtlProgram][] = [
     ["br_table_acc_merge", brTableAccMerge],
     ["br_table_fallthrough", brTableFallthrough],
@@ -1112,6 +1236,11 @@ const authored: [string, RtlProgram][] = [
     ["ext_kill_dead_acc", extKillDeadAcc],
     ["long_branch_span", longBranchSpan],
     ["long_loop_back_edge", longLoopBackEdge],
+    ["long_loop_entry_branch", longLoopEntryBranch],
+    ["post_test_loop", postTestLoop],
+    ["drop_slots", dropSlots],
+    ["default_cases", defaultCases],
+    ["default_two_block", defaultTwoBlock],
     ["literal_pool_pressure", literalPoolPressure],
     ["deep_spill", deepSpill],
     ["deep_nesting", deepNesting],

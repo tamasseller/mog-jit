@@ -194,12 +194,12 @@ TEST(DeepOperandStack)
 static const Instr accFoldThrashProc0[] = {
     LOAD(0), PUSH(),  // k1 = counter := n
     CONST(0), PUSH(), // k2 = total := 0
-    bare(Op::LOOP),
-        LOAD(1),
-    bare(Op::BLOCK_END), // while(counter != 0)
+    bare(Op::LOOP_PRE),
         LOAD(2), opImm(Op::ADD, 7), opImm(Op::AND, 0xF), STORE(2), // total := (total+7)&0xF
         LOAD(1), opImm(Op::SUB, 1), STORE(1),
-    bare(Op::BLOCK_END), // back-edge
+    bare(Op::BLOCK_END),
+        LOAD(1),
+    bare(Op::BLOCK_END), // back-edge while counter != 0
     LOAD(2), bare(Op::RETURN),
 };
 

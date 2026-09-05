@@ -291,7 +291,7 @@ moment; a tighter figure needs an analysis tracking actual spilled bytes
 through the real call-boundary shuffling.
 
 **The translator's own exception.** Nothing in `@ppl/machine` bounds
-`BR_TABLE`/`LOOP` nesting depth, and different procedures nest arbitrarily
+`BR_TABLE`/loop nesting depth, and different procedures nest arbitrarily
 differently, so the translator's block-nesting bookkeeping has no
 program-wide worst case. Rather than reserve for it, it is ordinary dynamic
 stack usage (C recursion, or an explicit `alloca`-grown array, coexisting
@@ -437,7 +437,7 @@ equivalent to one hypothetical batched `PUSH`, so a batched `POP` can read
 it back later (`compiler/src/window.h`'s header has the full argument).
 Direction aside, the property that matters is that `phys(k)` is a pure
 function of `k` and the current `tos`, never of push/pop history along
-whichever control-flow path arrived here. Two `BR_TABLE` cases, or a `LOOP`
+whichever control-flow path arrived here. Two `BR_TABLE` cases, or a loop
 back-edge, that reconverge at the same `tos` therefore agree on `phys(k)`
 for every live `k` with no cross-path reconciliation.
 
@@ -465,7 +465,7 @@ a validator-level guarantee, not a bytecode-level pop sequence. Because
 `phys(k)` cycles through `r4`-`r7` as `tos` grows, a path that pushed extra
 values has overwritten (and spilled) in-window slots belonging to the target
 depth. The translator synthesizes an explicit pop-multiple-equivalent
-restore at every truncation point (`BLOCK_END`, `LOOP` back-edge, `RETURN`)
+restore at every truncation point (`BLOCK_END`, a loop's back-edge, `RETURN`, `DROP`)
 to bring `r4`-`r7` back to what the target depth's `phys(k)` expects. Both
 depths are statically known, so this is local codegen, the same operation as
 the call-boundary shuffle (§6) on a different trigger.
@@ -1170,7 +1170,7 @@ producer *or* a write-back-in-place op. Four consequences:
   it, spending an instruction on a value §8.7 guarantees is dead.
 
 isa-core.md §8.7 makes reading it a validation error on *entry* to any
-successor of a CFG split (`BR_TABLE`/`LOOP`), which is what makes this
+successor of a CFG split (`BR_TABLE` or a loop), which is what makes this
 backend's fusion legal: nothing may read the 0/1 a fused comparison never
 materialized.
 
@@ -1178,7 +1178,10 @@ Leaving is the other direction, and there the backend has nothing to decide.
 §4.5's dispatch is total, so every edge into the merge is a case body, and
 every case's `localJumpCleanup` flushes `acc` into `ACC_REG` on the way out
 — so `translateIfThenElse`/`translateSwitch` `setClean(ACC_REG)` there
-unconditionally. Whether the value is *readable* is §8.7's question, not
+unconditionally. A loop's *condition* block is the same kind of merge and
+gets the same treatment: its predecessors are the body's fallthrough and,
+under `LOOP_PRE`, the opener's entry edge, and both flush into `ACC_REG`
+before reaching it. Whether the value is *readable* is §8.7's question, not
 theirs: a merge some case left dead is one no valid program reads, so the
 two answers differ only in what an invalid one gets. Deliberately not
 mirrored here, because mirroring it means a second implementation of the
@@ -1186,7 +1189,7 @@ meet that can disagree with the first — and because it would change no
 emitted byte either way (`flushLive` into `ACC_REG` is elided when the value
 is already there, `Shape::materialize`). The one merge the backend does know
 is dead is `translateIfThen`'s: its skip edge is an empty case, which can
-establish nothing, so that one poisons. A `LOOP`'s exit is unconditionally
+establish nothing, so that one poisons. A loop's exit is unconditionally
 dead too — that edge is a successor of the condition sub-block's own
 dispatch and holds no instructions.
 
@@ -1374,7 +1377,7 @@ unencodable at any size, this backend cannot compile it at all.
 | `RESOURCE_LIMIT_WINDOW_RECLAIM` | `0x52453100` | `window.cpp` `discardWindow`/`restoreWindow` | reclaim past `Uoff<2,7>` — TOS depth over 131 |
 | `RESOURCE_LIMIT_SPILL_OFFSET` | `0x52453200` | `translate_proc.cpp` `spillImm` | spill slot past `Uoff<2,8>` |
 | `RESOURCE_LIMIT_BRANCH_RANGE` | `0x52453300` | `assembler.cpp` `patchBranch` | fixup past `Ioff<1,8>`/`Ioff<1,11>` |
-| `RESOURCE_LIMIT_LOOP_BACK_EDGE` | `0x52453400` | `translate_proc.cpp` `translateLoop` | back-edge past `Ioff<1,11>` |
+| `RESOURCE_LIMIT_LOOP_BACK_EDGE` | `0x52453400` | `translate_proc.cpp` `translateLoop` | back-edge past `Ioff<1,11>` — it spans the condition block alone (isa-core.md §7.2), an over-long *body* overruns the entry branch instead and bails as `RESOURCE_LIMIT_BRANCH_RANGE` |
 | `RESOURCE_LIMIT_ARG_COUNT` | `0x52453500` | `Runtime::loadProgram` | `arg_count` over `ProcSlot`'s field width |
 | `RESOURCE_LIMIT_BODY_BYTES` | `0x52453600` | `Runtime::loadProgram` | body size over `ProcSlot`'s field width |
 
@@ -1476,7 +1479,7 @@ spill and fill against seven live locals, where GCC has eight low registers
 to work with. `bench/README.md` carries the rest.
 
 The Appendix's data point: a leaf loop-and-comparison procedure (14 bytecode
-opcodes / 24 bytes, excluding the structural `LOOP` marker) comes in at 21
+opcodes / 24 bytes, excluding the structural loop marker) comes in at 21
 native instructions (42 bytes) with no fusion, 16 (32 bytes) with
 branch-fusion only, 13 (26 bytes) once destination-folding joins, and 10 (20
 bytes) with the full §10.1 scheme, which is *below* the bytecode's own
@@ -1518,17 +1521,22 @@ magnitude and not a budget.
 ## Appendix - Worked Example: `leb128_len`
 
 Hand-translation of isa-core.md's own worked example, `arg_count = 1`.
-Frame-relative `tos` starts at 1 (isa-core.md §2.5) and, since this
-bytecode contains no `PUSH`/`POP`, never moves, so per §5's formula
+Frame-relative `tos` starts at 1 (isa-core.md §2.5), grows to 2 at the one
+`PUSH` that establishes `n`, and never moves again, so per §5's formula
 `phys(0) = r7` (`v`) and `phys(1) = r6` (`n`) are fixed for the whole body:
 no rotation, no spill, no fill. isa-core's abstract `r0 = v` is not the
 physical ARM `r0` the code below assigns to `acc` (§3's naming note).
 
-The raw bytecode is 14 opcodes / 24 bytes (`CONST`, `STORE`, `LOAD`,
-`GE_U`, `BLOCK_END`, `LOAD`, `SHR`, `STORE`, `CONST`, `ADD`, `STORE`,
-`BLOCK_END`, `LOAD`, `RETURN`, excluding the structural `LOOP` marker, which
-has no native emission). Four tiers, each subtracting one class of the naive
-translation's waste, land at 21, 16, 13 and 10 native instructions.
+The raw bytecode is 14 opcodes / 23 bytes (`CONST`, `PUSH`, `LOAD`, `SHR`,
+`STORE`, `CONST`, `ADD`, `STORE`, `BLOCK_END`, `LOAD`, `GE_U`, `BLOCK_END`,
+`LOAD`, `RETURN`, excluding the structural `LOOP_PRE` marker, whose only
+native emission is the entry branch below). Four tiers, each
+subtracting one class of the naive translation's waste, land at 21, 16, 13
+and 10 native instructions.
+
+The listings below are in isa-core.md §7.2's emission order — body block
+first, condition second, with `LOOP_PRE`'s entry branch jumping over the
+body — so each iteration costs one taken branch rather than two.
 
 **Tier 0, no fusion: 21 instructions (42 bytes).** Not worth a full listing,
 but it is the honest baseline. Materializing `GE_U #0x80`'s result as a real
@@ -1545,23 +1553,25 @@ axis):
                                     ; --- prologue (§6), not in the bytecode ---
         MOVS  r7, r0                ; v's home (r7) = incoming last arg (acc)
 
-                                    ; CONST #1 ; STORE 1
+                                    ; CONST #1 ; PUSH
         MOVS  r0, #1                ; acc = 1
-        MOVS  r6, r0                ; n (r6) = acc
+        MOVS  r6, r0                ; n (r6) = acc, the slot the push makes
 
-L_cond:                             ; LOOP condition block
-        MOVS  r0, r7                ; LOAD 0: acc = v
-        CMP   r0, #0x80             ; GE_U #0x80, fused with the
-        BLO   L_exit                ; BLOCK_END below: v<0x80 → exit
+        B     L_cond                ; LOOP_PRE: enter at the condition
 
-L_body:                             ; LOOP body block, falls through
+L_body:                             ; loop body block
         MOVS  r0, r7                ; LOAD 0: acc = v
         LSRS  r0, r0, #7            ; SHR #7
         MOVS  r7, r0                ; STORE 0: v = acc
         MOVS  r0, #1                ; CONST #1
         ADDS  r0, r0, r6            ; ADD 1: acc = 1 + n
         MOVS  r6, r0                ; STORE 1: n = acc
-        B     L_cond                ; BLOCK_END: back-edge
+                                    ; BLOCK_END: falls into the condition
+
+L_cond:                             ; loop condition block
+        MOVS  r0, r7                ; LOAD 0: acc = v
+        CMP   r0, #0x80             ; GE_U #0x80, fused with the
+        BHS   L_body                ; BLOCK_END below: v>=0x80 → back-edge
 
 L_exit:
         MOVS  r0, r6                ; LOAD 1: acc = n (return value)
@@ -1570,8 +1580,8 @@ L_exit:
         BX    r3
 ```
 
-16 instructions (32 bytes). 1.14× instruction-count expansion, 1.33× byte
-expansion over the 14 opcodes / 24 bytes of bytecode. The 5 instructions
+16 instructions (32 bytes). 1.14× instruction-count expansion, 1.39× byte
+expansion over the 14 opcodes / 23 bytes of bytecode. The 5 instructions
 saved on the comparison (7→2) recur on every loop iteration, which is why
 §10.1 treats this fusion as required rather than a nice-to-have.
 
@@ -1581,13 +1591,10 @@ result redirected into a following `STORE` instead of a copy):
 ```
         MOVS  r7, r0                ; prologue (§6)
 
-                                    ; CONST #1 ; STORE 1: fused
+                                    ; CONST #1 ; PUSH: fused
         MOVS  r6, #1                ; n (r6) = 1 directly, no acc round-trip
 
-L_cond:
-        MOVS  r0, r7                ; LOAD 0
-        CMP   r0, #0x80             ; GE_U #0x80, branch-fused as before
-        BLO   L_exit
+        B     L_cond                ; LOOP_PRE's entry branch
 
 L_body:
         MOVS  r0, r7                ; LOAD 0 stays unfused: its own consumer
@@ -1596,7 +1603,11 @@ L_body:
 
         MOVS  r0, #1                ; CONST #1 stays unfused, same reason
         ADDS  r6, r0, r6            ; ADD 1 ; STORE 1: fused
-        B     L_cond
+
+L_cond:
+        MOVS  r0, r7                ; LOAD 0
+        CMP   r0, #0x80             ; GE_U #0x80, branch-fused as before
+        BHS   L_body
 
 L_exit:
         MOVS  r0, r6                ; LOAD 1 stays unfused: RETURN's ABI
@@ -1607,8 +1618,8 @@ L_exit:
 ```
 
 13 instructions (26 bytes), already below the bytecode's own 14 opcodes;
-1.08× byte expansion. Only three producer-consumer pairs fuse here
-(`CONST`+`STORE`, `SHR`+`STORE`, `ADD`+`STORE`); every `LOAD` stays unfused
+1.13× byte expansion. Only three producer-consumer pairs fuse here
+(`CONST`+`PUSH`, `SHR`+`STORE`, `ADD`+`STORE`); every `LOAD` stays unfused
 because its next consumer reads it as an operand, not a `STORE`. That is
 what tier 3 picks up.
 
@@ -1619,15 +1630,10 @@ whatever reads it instead of being flushed into `r0`):
 ```
         MOVS  r7, r0                ; prologue (§6)
 
-                                    ; CONST #1 ; STORE 1: dest-fold
+                                    ; CONST #1 ; PUSH: dest-fold
         MOVS  r6, #1
 
-L_cond:                             ; LOAD 0 ; GE_U #0x80 ; BLOCK_END, all
-                                    ; three fused: LOAD → Reg(r7),
-                                    ; folded as CMP's left operand, then
-                                    ; branch-fused, v never touches r0
-        CMP   r7, #0x80
-        BLO   L_exit
+        B     L_cond                ; LOOP_PRE's entry branch
 
 L_body:                             ; LOAD 0 ; SHR #7 ; STORE 0, all three
                                     ; fused: r7 folded in as SHR's source
@@ -1641,7 +1647,13 @@ L_body:                             ; LOAD 0 ; SHR #7 ; STORE 0, all three
                                     ; original side doesn't matter), and the
                                     ; destination folds into n's register
         ADDS  r6, r6, #1
-        B     L_cond
+
+L_cond:                             ; LOAD 0 ; GE_U #0x80 ; BLOCK_END, all
+                                    ; three fused: LOAD → Reg(r7),
+                                    ; folded as CMP's left operand, then
+                                    ; branch-fused, v never touches r0
+        CMP   r7, #0x80
+        BHS   L_body
 
 L_exit:                             ; LOAD 1 → Reg(r6), but
                                     ; RETURN's ABI needs the value
@@ -1653,15 +1665,30 @@ L_exit:                             ; LOAD 1 → Reg(r6), but
 ```
 
 10 instructions (20 bytes): smaller by both measures than the bytecode it
-was translated from (14 opcodes / 24 bytes), while being directly
+was translated from (14 opcodes / 23 bytes), while being directly
 executable machine code with no interpretation loop. 0.71×
-instruction-count and 0.83× byte "expansion", genuine compression. Every
+instruction-count and 0.87× byte "expansion", genuine compression. Every
 fold here is one of §10.1's three axes: destination-fold (`CONST`→`n`,
 `SHR`→`v`, `ADD`→`n`), operand-fold (`LOAD`→`CMP`, `LOAD`→`SHR`,
 `CONST`→`ADD`), and the mandatory zero-destination branch-fusion
-(`GE_U`+`BLOCK_END`). Nothing needed a chain deeper than one bytecode
+(`GE_U`+`BLOCK_END`, driving the back-edge directly rather than an
+inverted exit). Nothing needed a chain deeper than one bytecode
 instruction on either side, confirming that the binary-op ceiling bounds
 this cleanly.
+
+The rotated shape costs one branch instruction statically — the entry
+branch — and pays back one branch per iteration: the back-edge is the only
+branch an iteration executes. A condition-first layout is the same size and
+executes a not-taken conditional *and* a taken unconditional every time
+around.
+
+The tiers above are the fold axes' own ceiling, not a transcript of
+`translateProc`. Against this body it emits two instructions more than tier
+3: a `MOV r0, r6` at the loop opener and another at the body's closer,
+canonicalizing acc into `ACC_REG` so both edges into the condition block
+agree on where it lives (§10.1's merge rule). Neither is reachable by the
+fold axes — a merge has to pick one home before it knows which predecessor
+ran.
 
 ---
 
@@ -1778,7 +1805,7 @@ wrong number, or no answer at all:
   `case[1]`, running the else-arm where §4.5 then ran neither arm. The
   opcode has since become total (§4.5's `case[N]`), which removes the
   outcome the bug was about.
-- A `PUSH` inside a `LOOP`'s *condition* sub-block never had its TOS
+- A `PUSH` inside a loop's *condition* sub-block never had its TOS
   surplus dropped at that block's own `BLOCK_END` (§8.1 drops it like any
   other, and every `BR_TABLE` case already did) — so `sp` and the window
   model diverged from the loop onward and the return sequence reclaimed the

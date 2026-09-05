@@ -39,7 +39,10 @@ static const Instr kCases[] = {
     opReg(Op::EQ, 2), opStack(Op::LT_S, Combo::POP_ACC), opImm(Op::EQ, 0), opImm(Op::GE_U, 100),
     bare(Op::NEG), bare(Op::NOT), bare(Op::SXTB), bare(Op::UXTH),
     bare(Op::CLZ), bare(Op::REVBITS), // §5.3's MISC_UNARY escape
-    bare(Op::BLOCK_END), bare(Op::LOOP), brTable(1), brTable(2), brTable(5),
+    bare(Op::BLOCK_END), bare(Op::LOOP_PRE), bare(Op::LOOP_POST),
+    brTable(1), brTable(2), brTable(5),
+    bare(Op::FALLTHROUGH), bare(Op::DEFAULT),           // §5.3's MISC_OTHER escape
+    dropInstr(1), dropInstr(4), dropInstr(5), dropInstr(200),
     call(3), bare(Op::RETURN), trapInstr(0), trapInstr(7),
     PUSH(), LOAD(4), STORE(9), CONST(3), CONST(12345), CONST(-1),
 };
@@ -212,14 +215,20 @@ static const Combo SPEC_CMP_MODE[4] = {Combo::REG_ACC, Combo::POP_ACC, Combo::IM
 static const Op SPEC_MISC[19] = {
     Op::NEG, Op::NOT, Op::SXTB, Op::SXTH,                 // 90-93
     Op::UXTB, Op::UXTH,                                   // 94-95
-    Op::BLOCK_END, Op::LOOP, Op::BR_TABLE,                // 96-98
-    Op::FALLTHROUGH,                                      // 99
+    Op::BLOCK_END, Op::LOOP_PRE, Op::LOOP_POST,           // 96-98
+    Op::BR_TABLE,                                         // 99
     Op::BR_TABLE, Op::CALL, Op::RETURN, Op::TRAP,         // 100-103
     Op::TRAP, Op::PUSH, Op::LOAD, Op::STORE,              // 104-107
     Op::CONST,                                            // 108
 };
 // §5.3's MISC_UNARY sub-codes, in sub-code order.
 static const Op SPEC_MISC_UNARY[2] = {Op::REVBITS, Op::CLZ};
+// §5.3's MISC_OTHER sub-codes, likewise: two case closers, then DROP's
+// extended form and its four small ones.
+static const Op SPEC_MISC_OTHER[7] = {
+    Op::FALLTHROUGH, Op::DEFAULT, Op::DROP,
+    Op::DROP, Op::DROP, Op::DROP, Op::DROP,
+};
 // Which assigned opcodes carry a trailing LEB128 (§5.4).
 static bool specHasTrailingOperand(uint32_t code)
 {
@@ -281,7 +290,7 @@ TEST(DecodeSuppliesTheImplicitAuxValuesTheSpecPromises)
     // The forms whose auxiliary value comes from the opcode itself rather
     // than a trailing operand (§5.2's IMM_SMALL, BR_TABLE#1, TRAP#0,
     // CONST#0..15) — the ones a table has to carry as constants.
-    const uint8_t brTable1[] = {98}, trap0[] = {103};
+    const uint8_t brTable1[] = {99}, trap0[] = {103};
     CHECK(decodeOne(brTable1, 1).instr.imm == 1);
     CHECK(decodeOne(trap0, 1).instr.imm == 0);
 
@@ -330,15 +339,35 @@ TEST(MiscUnaryEscapeDecodesItsAssignedSubCodes)
     }
 }
 
-TEST(OnlyMiscUnaryHasAssignedSubCodes)
+TEST(MiscOtherEscapeDecodesItsAssignedSubCodes)
 {
-    // MISC_CF and MISC_BINARY are both held empty (isa-core.md §5.3), and
-    // MISC_UNARY stops at two.
+    // Sub-codes 0 and 1 are the two case closers; 2 is DROP's extended
+    // form (biased by 5) and 3..6 are DROP #1..#4 (isa-core.md §5.3/§5.4).
+    for(uint32_t sub = 0; sub <= 6; sub++)
+    {
+        const uint8_t bytes[] = {(uint8_t)MISC_OTHER, (uint8_t)sub, 0x00, 0x00};
+        WireInstr d = decodeOne(bytes, sizeof(bytes));
+
+        CHECK(d.instr.op == SPEC_MISC_OTHER[sub]);
+        CHECK(d.instr.combo == Combo::NONE);
+        CHECK(d.consumed == (sub == 2 ? 3u : 2u));
+
+        if(sub == 2) CHECK(d.instr.imm == 5);          // the bias, on a zero operand
+        else if(sub > 2) CHECK(d.instr.imm == (int32_t)(sub - 2));
+    }
+}
+
+TEST(MiscBinaryIsTheOneEscapeStillHeldEmpty)
+{
+    // isa-core.md §5.3 reserves it for UDIV/IDIV/MOD and friends; nothing
+    // is assigned there yet. MISC_UNARY stops at two, MISC_OTHER at six.
     for(uint32_t code = MISC_BASE; code <= LAST_CORE_OPCODE; code++)
     {
-        for(uint32_t sub = 0; sub < 4; sub++)
+        for(uint32_t sub = 0; sub < 9; sub++)
         {
-            CHECK(miscSubCodeAssigned(code, sub) == (code == MISC_UNARY && sub < 2));
+            const bool assigned = (code == MISC_UNARY && sub < 2)
+                || (code == MISC_OTHER && sub <= 6);
+            CHECK(miscSubCodeAssigned(code, sub) == assigned);
         }
     }
 }

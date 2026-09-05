@@ -60,7 +60,7 @@ struct Ctx
     __attribute__((noinline)) void handleExt(uint8_t opcode);
 
     bool GUARDED_processUntilTerminator(BranchWidth width, bool isThisLoopCondBlock, Instr &out);
-    bool translateLoop(BranchWidth width);
+    bool translateLoop(BranchWidth width, bool postTest);
     bool translateIfThen(BranchWidth width);
     bool translateIfThenElse(BranchWidth width);
     bool translateSwitch(BranchWidth width, uint32_t n);

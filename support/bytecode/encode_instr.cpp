@@ -109,16 +109,35 @@ void encodeInstr(const Instr &instr, uint8_t *out, uint32_t &outLen, uint32_t ou
     case Op::BLOCK_END:
         putByte(96, out, outLen, outCapacity);
         return;
-    case Op::LOOP:
+    case Op::LOOP_PRE:
         putByte(97, out, outLen, outCapacity);
         return;
+    case Op::LOOP_POST:
+        putByte(98, out, outLen, outCapacity);
+        return;
     case Op::FALLTHROUGH:
-        putByte(99, out, outLen, outCapacity);
+        putByte(127, out, outLen, outCapacity); // MISC_OTHER (isa-core.md §5.3)
+        encodeLeb128(0, out, outLen, outCapacity);
+        return;
+    case Op::DEFAULT:
+        putByte(127, out, outLen, outCapacity);
+        encodeLeb128(1, out, outLen, outCapacity);
+        return;
+    case Op::DROP:
+        putByte(127, out, outLen, outCapacity);
+        /* §5.4: `#1..#4` have their own sub-codes, the rest is biased by 5. */
+        if(instr.imm >= 1 && instr.imm <= 4)
+        {
+            encodeLeb128(2 + (uint32_t)instr.imm, out, outLen, outCapacity);
+            return;
+        }
+        encodeLeb128(2, out, outLen, outCapacity);
+        encodeLeb128((uint32_t)instr.imm - 5, out, outLen, outCapacity);
         return;
     case Op::BR_TABLE:
         if(instr.imm == 1)
         {
-            putByte(98, out, outLen, outCapacity);
+            putByte(99, out, outLen, outCapacity);
             return;
         }
         /* §5.4: the extended operand is biased by 2. */

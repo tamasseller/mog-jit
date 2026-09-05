@@ -196,12 +196,12 @@ TEST(EvictionChurnUnderLoopedCallChain)
     const Instr proc0Body[] = {
         LOAD(0), PUSH(),  // k1 = counter := L
         CONST(0), PUSH(), // k2 = total := 0
-        bare(Op::LOOP),
-            LOAD(1),
-        bare(Op::BLOCK_END), // while(counter != 0)
+        bare(Op::LOOP_PRE),
             CONST(1), call(1), opReg(Op::ADD, 2), STORE(2), // total += proc1(1)
             LOAD(1), opImm(Op::SUB, 1), STORE(1),
-        bare(Op::BLOCK_END), // back-edge
+        bare(Op::BLOCK_END),
+            LOAD(1),
+        bare(Op::BLOCK_END), // back-edge while counter != 0
         LOAD(2), bare(Op::RETURN),
     };
     const Instr proc1Body[] = {LOAD(0), call(2), opImm(Op::ADD, 1), bare(Op::RETURN)};

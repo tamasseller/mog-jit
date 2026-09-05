@@ -140,7 +140,14 @@ not terminate" and the sweep silently discards.
 
 Beyond those, `ts/make_seeds.ts` authors the multi-procedure/`CALL` shapes no
 single-procedure format can express, and large shapes aimed at specific
-*compiled-size* guards (a case body past the conditional-branch span, a
-loop body past the back-edge's reach, a run of literal-pool constants, a
-spill past `Uoff<2,8>`, deep nesting, a 100-case jump table). Blind
-mutation from small seeds essentially never reaches any of those.
+*compiled-size* guards (a case body past the conditional-branch span, a loop
+*condition* past the back-edge's reach and a loop *body* past the entry
+branch's — isa-core.md §7.2 splits that budget between the two, so each
+needs its own seed — a run of literal-pool constants, a spill past
+`Uoff<2,8>`, deep nesting, a 100-case jump table). Blind mutation from small
+seeds essentially never reaches any of those.
+
+A seed whose loop never exits is silently dropped as non-terminating (§9)
+rather than reported, so a padded loop has to keep its test value out of
+whatever the padding writes to — `long_loop_back_edge` pads the condition
+and tests a separate counter for exactly that reason.

@@ -20,6 +20,7 @@ SOURCES += test_calls.cpp
 SOURCES += test_data_flow.cpp
 SOURCES += test_unary_ops.cpp
 SOURCES += test_loops.cpp
+SOURCES += test_scopes.cpp
 SOURCES += test_br_table.cpp
 SOURCES += test_nested_blocks.cpp
 SOURCES += test_literal_pool.cpp

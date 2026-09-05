@@ -20,10 +20,11 @@ constexpr uint32_t SMALL_CONST_BASE = 109;
 /** `BLOCK_END`'s own code (§5.2). */
 constexpr uint32_t BLOCK_END_OPCODE = 96;
 
-/** §5.2's last three codes: `MISC_CF`, `MISC_UNARY`, `MISC_BINARY`. Each takes
- *  a sub-code as its trailing LEB128 operand (§5.3). */
+/** §5.2's last three codes: `MISC_BINARY`, `MISC_UNARY`, `MISC_OTHER`. Each
+ *  takes a sub-code as its trailing LEB128 operand (§5.3). */
 constexpr uint32_t MISC_BASE = 125;
 constexpr uint32_t MISC_UNARY = 126;
+constexpr uint32_t MISC_OTHER = 127;
 
 /** Whether `code`'s sub-code names anything yet. An unassigned one has no
  *  defined operand shape, so a walk must reject it rather than skip it. */

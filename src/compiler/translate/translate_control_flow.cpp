@@ -7,6 +7,46 @@ using namespace jitc;
 
 using R = ArmV6M::LoReg;
 
+/** A conditional branch to an *already emitted* target. `Label` chains
+ *  forward references only, so a back-edge computes its own displacement —
+ *  and picks the same narrow/wide shapes `emitBranch` does, since a
+ *  conditional branch reaches ±254 bytes and an unconditional one ±2046. */
+static bool emitBackBranch(Assembler &a, uint32_t target, ArmV6M::Condition condition, BranchWidth width)
+{
+    if(width == BranchWidth::Narrow)
+    {
+        const int32_t delta = (int32_t)target - (int32_t)(a.pc() + 4);
+
+        if(!ArmV6M::Ioff<1, 8>::isInRange(delta))
+        {
+            return false; // retried whole, in Wide (translateProc)
+        }
+
+        a.emit(ArmV6M::condBranch(condition, ArmV6M::Ioff<1, 8>((int16_t)delta)));
+        return true;
+    }
+
+    assert(width == BranchWidth::Wide);
+
+    Label fallThrough;
+
+    const auto branchOk = a.branchTo(fallThrough, ArmV6M::inverse(condition));
+    assert(branchOk);
+    (void)branchOk;
+
+    const int32_t delta = (int32_t)target - (int32_t)(a.pc() + 4);
+
+    if(!ArmV6M::Ioff<1, 11>::isInRange(delta))
+    {
+        runtimeBail(&a.runtime, RESOURCE_LIMIT_LOOP_BACK_EDGE);
+        return false;
+    }
+
+    a.emit(ArmV6M::b(ArmV6M::Ioff<1, 11>((int16_t)delta)));
+
+    return a.bind(fallThrough);
+}
+
 static bool emitBranch(Assembler &a, Label &label, ArmV6M::Condition condition, BranchWidth width)
 {
     if(width == BranchWidth::Narrow)
@@ -34,6 +74,14 @@ static bool emitBranch(Assembler &a, Label &label, ArmV6M::Condition condition, 
     }
 }
 
+
+/** A case closer that runs on into another case instead of leaving the
+ *  construct (isa-core.md §4.5). For the two-block form the two coincide:
+ *  the case `DEFAULT` names is `case[1]`, which is also the next one. */
+static bool continuesIntoAnotherCase(Op op)
+{
+    return op == Op::FALLTHROUGH || op == Op::DEFAULT;
+}
 
 void Ctx::localJumpCleanup(uint32_t tos)
 {
@@ -91,7 +139,7 @@ bool Ctx::translateIfThen(BranchWidth width)
         return false;
     }
 
-    assert(term.op != Op::FALLTHROUGH); // GCOV_EXCL_LINE — malformed: nothing follows the default case
+    assert(!continuesIntoAnotherCase(term.op)); // GCOV_EXCL_LINE — malformed: nothing follows the default case
 
     if(isProcTerminator(term))
     {
@@ -152,14 +200,15 @@ bool Ctx::translateIfThenElse(BranchWidth width)
 
         if(arm == 0)
         {
-            // A FALLTHROUGH arm runs straight on into the next one, which
-            // is where `otherwise` is bound — so it needs no branch, and no
-            // literal pool spliced into the path it keeps running down.
+            // An arm that runs straight on into the next one — which is
+            // where `otherwise` is bound, and which for N=1 is also the
+            // case `DEFAULT` names — needs no branch, and no literal pool
+            // spliced into the path it keeps running down.
             if(term.op == Op::BLOCK_END && !a.branchTo(end))
             {
                 return false;
             }
-            if(term.op != Op::FALLTHROUGH)
+            if(!continuesIntoAnotherCase(term.op))
             {
                 a.flushPool();
             }
@@ -202,13 +251,20 @@ bool Ctx::translateSwitch(BranchWidth width, uint32_t n)
 
     a.flushPool();
 
-    Label end;
+    Label end, dflt;
 
     /* N indexed cases plus the default case (isa-core.md §4.5): the jump
      * table's last slot is a block of its own now, not the merge. */
     for(uint32_t i = 0; i <= n; i++)
     {
         a.patchRawHalfword(base + i * 2, (uint16_t)(a.pc() - base));
+
+        /* The default case is where every DEFAULT closer lands — bound
+         * here, once its own code starts, and patched back into each. */
+        if(i == n && dflt.chain != -1 && !a.bind(dflt))
+        {
+            return false;
+        }
 
         // Every case is entered through the jump-table helper's own BLX.
         this->accState.edge();
@@ -235,6 +291,19 @@ bool Ctx::translateSwitch(BranchWidth width, uint32_t n)
             continue;
         }
 
+        if(term.op == Op::DEFAULT)
+        {
+            /* Forward to case[n], which is emitted last — the same forward
+             * chain-and-patch `end` uses for the merge. */
+            if(!a.branchTo(dflt))
+            {
+                return false;
+            }
+
+            a.flushPool();
+            continue;
+        }
+
         if(i < n)
         {
             if(!a.branchTo(end))
@@ -254,16 +323,80 @@ bool Ctx::translateSwitch(BranchWidth width, uint32_t n)
     return end.chain == -1 || a.bind(end);
 }
 
-bool Ctx::translateLoop(BranchWidth width)
+/**
+ * isa-core.md §7.2's rotated shape, which the body-first block order is
+ * there to make emittable in one pass:
+ *
+ *     B    cond          ; LOOP_PRE only — LOOP_POST just falls in
+ *   body:  <body block>
+ *   cond:  <condition block>
+ *          Bcc  body
+ *   out:
+ *
+ * One taken branch per iteration rather than two, and the entry branch is
+ * the only thing the two openers differ in. It also splits the ±2046-byte
+ * branch budget: the entry branch spans the body and the back-edge spans
+ * the condition, where a condition-first layout needed one branch to span
+ * both.
+ */
+bool Ctx::translateLoop(BranchWidth width, bool postTest)
 {
     const auto entryTos = this->window.tos;
 
     this->accState.flushLive(a, ACC_REG);
-
-    // The back edge lands here too, carrying flags of its own; acc is
-    // canonicalized into ACC_REG for both paths and does cross.
     this->accState.apply(Effect::flagsUnknown());
-    const auto start = a.pc();
+
+    Label cond;
+
+    if(!postTest && !a.branchTo(cond))
+    {
+        return false; // `branchTo` flushes the pool for us on the way
+    }
+
+    // Both openers enter the body across a CFG split (isa-core.md §8.7):
+    // the condition's own branch, which LOOP_POST's sequential entry edge
+    // meets right here.
+    this->accState.edge();
+    const auto bodyStart = a.pc();
+
+    Instr bodyTerm;
+    if(!this->GUARDED_processUntilTerminator(width, false, bodyTerm))
+    {
+        return false;
+    }
+
+    if(isProcTerminator(bodyTerm))
+    {
+        // §8.5 only allows this under LOOP_PRE, where the condition block
+        // below is still reachable through the entry branch.
+        assert(!postTest); // GCOV_EXCL_LINE — malformed program
+        this->handleGlobalJump(bodyTerm, entryTos);
+        a.flushPool();
+    }
+    else
+    {
+        assert(bodyTerm.op == Op::BLOCK_END);
+        // The body's own closer is an unconditional continue into the
+        // condition, which sits physically next — nothing to emit but the
+        // TOS restore.
+        this->localJumpCleanup(entryTos);
+    }
+
+    if(!postTest && !a.bind(cond))
+    {
+        return false;
+    }
+
+    // A merge, and acc crosses it: isa-core.md §8.7 has the condition
+    // block inherit liveness from the entry edge and the body's
+    // fallthrough both, so this is `translateBrTable`'s merge treatment,
+    // not a split successor's. Every predecessor flushed acc into ACC_REG
+    // on its way here — the opener above, and `localJumpCleanup` — so the
+    // one agreed place is where it is read from. Only the flags go: the
+    // back-edge arrives carrying the condition's own, which nothing here
+    // may fuse against.
+    this->accState.edge();
+    this->accState.pending(Shape::ofReg(ACC_REG));
 
     Instr condTerm;
     if(!this->GUARDED_processUntilTerminator(width, true, condTerm))
@@ -279,43 +412,18 @@ bool Ctx::translateLoop(BranchWidth width)
         this->accState.apply(this->window.restore(a, entryTos));
     }
 
-    const auto cond = this->accState.testNonzero(a);
+    const auto test = this->accState.testNonzero(a);
 
-    Label out;
-    if(!emitBranch(a, out, ArmV6M::inverse(cond), width))
+    if(!emitBackBranch(a, bodyStart, test, width))
     {
         return false;
     }
 
+    // The exit falls out of the conditional branch — a split successor, so
+    // acc is dead and the flags are the test's, which nothing may reuse.
     this->accState.edge();
 
-    Instr bodyTerm;
-    if(!this->GUARDED_processUntilTerminator(width, false, bodyTerm))
-    {
-        return false;
-    }
-
-    if(bodyTerm.op == Op::BLOCK_END)
-    {
-        this->localJumpCleanup(entryTos);
-        int32_t delta = (int32_t)start - (int32_t)(a.pc() + 4);
-        if(!ArmV6M::Ioff<1, 11>::isInRange(delta))
-        {
-            runtimeBail(&a.runtime, RESOURCE_LIMIT_LOOP_BACK_EDGE);
-            return false;
-        }
-        a.emit(ArmV6M::b(ArmV6M::Ioff<1, 11>((int16_t)delta)));
-    }
-    else
-    {
-        this->handleGlobalJump(bodyTerm, entryTos);
-    }
-
-    a.flushPool();
-
-    this->accState.edge();
-
-    return a.bind(out);
+    return true;
 }
 
 bool Ctx::translateBody(BranchWidth width)

@@ -70,10 +70,10 @@ const Instr endlessProc0[] = {
 };
 const Instr endlessProc1[] = {LOAD(0), call(2), bare(Op::RETURN)};
 const Instr endlessProc2[] = {
-    bare(Op::LOOP),
-        CONST(1),
-    bare(Op::BLOCK_END),
+    bare(Op::LOOP_PRE),
         CONST(0),
+    bare(Op::BLOCK_END),
+        CONST(1),
     bare(Op::BLOCK_END),
     CONST(7), bare(Op::RETURN),
 };

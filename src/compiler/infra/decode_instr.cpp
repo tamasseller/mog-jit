@@ -11,6 +11,19 @@ enum AuxKind : uint8_t
     AUX_EXT_BR = 3, // that LEB128 plus 2 — BR_TABLE's biased case count (§5.4)
 };
 
+/** `MISC_OTHER`'s assigned sub-codes (isa-core.md §5.3). `DROP #1..#4` sit
+ *  on the four codes above `SUB_DROP_EXT`, so a small count's sub-code is
+ *  `n + 2`; the extended form's own operand is biased by `DROP_EXT_BIAS`. */
+enum MiscOtherSub : uint32_t
+{
+    SUB_FALLTHROUGH = 0,
+    SUB_DEFAULT = 1,
+    SUB_DROP_EXT = 2,
+};
+static constexpr uint32_t DROP_SMALL_MAX = 4;
+static constexpr uint32_t DROP_EXT_BIAS = DROP_SMALL_MAX + 1;
+static constexpr uint32_t MISC_OTHER_SUB_MAX = SUB_DROP_EXT + DROP_SMALL_MAX;
+
 
 struct Entry
 {
@@ -55,9 +68,9 @@ constexpr Entry TABLE[] = {
     row(Op::UXTB, Combo::NONE, AUX_NONE),      // 94
     row(Op::UXTH, Combo::NONE, AUX_NONE),      // 95
     row(Op::BLOCK_END, Combo::NONE, AUX_NONE), // 96
-    row(Op::LOOP, Combo::NONE, AUX_NONE),      // 97
-    row(Op::BR_TABLE, Combo::NONE, AUX_ONE),   // 98
-    row(Op::FALLTHROUGH, Combo::NONE, AUX_NONE), // 99
+    row(Op::LOOP_PRE, Combo::NONE, AUX_NONE),  // 97
+    row(Op::LOOP_POST, Combo::NONE, AUX_NONE), // 98
+    row(Op::BR_TABLE, Combo::NONE, AUX_ONE),   // 99
     row(Op::BR_TABLE, Combo::NONE, AUX_EXT_BR), // 100
     row(Op::CALL, Combo::NONE, AUX_EXT),       // 101
     row(Op::RETURN, Combo::NONE, AUX_NONE),    // 102
@@ -84,8 +97,9 @@ static constexpr uint32_t MISC_UNARY_COUNT = sizeof(MISC_UNARY_OPS) / sizeof(MIS
 
 bool miscSubCodeAssigned(uint32_t code, uint32_t sub)
 {
-    /* MISC_CF and MISC_BINARY have none yet. */
-    return code == MISC_UNARY && sub < MISC_UNARY_COUNT;
+    /* MISC_BINARY has none yet. */
+    return (code == MISC_UNARY && sub < MISC_UNARY_COUNT)
+        || (code == MISC_OTHER && sub <= MISC_OTHER_SUB_MAX);
 }
 
 bool decodeLeb128(BcReader &r, uint32_t &value)
@@ -132,7 +146,37 @@ bool decodeInstr(uint8_t code, BcReader &r, Instr &out)
             return false;
         }
 
-        instr.op = MISC_UNARY_OPS[sub];
+        if(code == MISC_UNARY)
+        {
+            instr.op = MISC_UNARY_OPS[sub];
+            out = instr;
+            return true;
+        }
+
+        if(sub == SUB_FALLTHROUGH)
+        {
+            instr.op = Op::FALLTHROUGH;
+        }
+        else if(sub == SUB_DEFAULT)
+        {
+            instr.op = Op::DEFAULT;
+        }
+        else if(sub == SUB_DROP_EXT)
+        {
+            uint32_t n = 0;
+            if(!decodeLeb128(r, n))
+            {
+                return false;
+            }
+            instr.op = Op::DROP;
+            instr.imm = (int32_t)(n + DROP_EXT_BIAS);
+        }
+        else
+        {
+            instr.op = Op::DROP;
+            instr.imm = (int32_t)(sub - SUB_DROP_EXT);
+        }
+
         out = instr;
         return true;
     }
