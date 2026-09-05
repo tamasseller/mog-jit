@@ -47,6 +47,10 @@
  *                  (resource_codes.h) — a legitimate outcome, not
  *                  comparable against the reference VM
  *     X:xxxxxxxx   rejected before running (length past PROGRAM_MAX)
+ * each result line except X: is followed by
+ *     M:xxxxxxxx   FNV-1a-32 over the extension buffer after the program,
+ *                  so a store to a wrongly computed address is visible even
+ *                  when nothing reads that slot back
  * then
  *     DONE:xxxxxxxx  how many programs were run
  *
@@ -106,13 +110,25 @@ static constexpr uint32_t BATCH_MAGIC = 0x50504C42u; /* "PPLB" */
  * check. Running out is still a legitimate outcome the comparison skips
  * rather than a failure — there just shouldn't be that much of it. */
 static constexpr uint32_t PROGRAM_MAX = 4096;
-/* oracle_server.ts's own REALISTIC_MAX_ARG_COUNT — the entry-argument
- * staging buffer below is sized off it, so a batch naming more is rejected
- * rather than truncated. */
+/* driver.ts's own REALISTIC_MAX_ARG_COUNT — the entry-argument staging
+ * buffer below is sized off it, so a batch naming more is rejected rather
+ * than truncated. */
 static constexpr uint32_t ENTRY_ARGS_MAX = 16;
 static constexpr uint32_t CODE_ARENA_BYTES = 3072;
 
 static uint8_t g_codeArena[CODE_ARENA_BYTES] __attribute__((aligned(4)));
+
+/* FNV-1a-32 over the extension buffer, matching rawmem_ext.ts's own. */
+static uint32_t rawMemDigest()
+{
+    uint32_t h = 2166136261u;
+    for(uint32_t i = 0; i < RAWMEM_BYTES; i++)
+    {
+        h ^= g_rawMem[i];
+        h *= 16777619u;
+    }
+    return h;
+}
 
 /* Flash is byte-addressable here, but the batch's own u32 fields have no
  * alignment guarantee relative to a preceding program's length, so they are
@@ -224,6 +240,13 @@ int main(void)
         {
             semihostWriteTagged("R:", r.value);
         }
+
+        /* The buffer's own digest, not its bytes: a store whose address the
+         * translator computed wrong is otherwise invisible unless the
+         * program happens to read that exact slot back. A kilobyte of hex
+         * per program over semihosting is not worth it, and a mismatch is
+         * localised by minimising, not by reading the dump. */
+        semihostWriteTagged("M:", rawMemDigest());
     }
 
     semihostWriteTagged("DONE:", ran);

@@ -64,6 +64,19 @@ interface Candidate
     /** The entry procedure's own arguments, as fed to both the reference VM
      *  and the guest — one array, so the two cannot disagree. */
     entryArgs: number[]
+    /** FNV-1a-32 over the extension buffer once the reference VM has run,
+     *  against the runner's own `M:` line. A store to a wrongly computed
+     *  address is invisible in `acc` unless the program reads that slot
+     *  back; this sees it either way. */
+    expectedDigest: number
+}
+
+/** Matches exec_runner.cpp's `rawMemDigest`. */
+function digestOf(mem: Uint8Array): number
+{
+    let h = 2166136261
+    for(const b of mem) { h ^= b; h = Math.imul(h, 16777619) }
+    return h >>> 0
 }
 
 const skipped: Record<string, number> = {}
@@ -112,6 +125,7 @@ function classify(file: string): Candidate | null
     const entryArgs = entryArgsFor(program.procedures[0]!.argCount)
 
     let expected: Expected
+    let expectedDigest = 0
     try
     {
         EXT.reset() // the target zeroes its own buffer per program
@@ -133,6 +147,7 @@ function classify(file: string): Candidate | null
         expected = result.ok
             ? { kind: "return", acc: result.acc >>> 0 }
             : { kind: "trap", code: (result.trapCode ?? 0) >>> 0 }
+        expectedDigest = digestOf(EXT.mem)
     }
     catch(e)
     {
@@ -154,7 +169,7 @@ function classify(file: string): Candidate | null
         skip("reference VM threw"); return null
     }
 
-    return { file, bytes, expected, entryArgs }
+    return { file, bytes, expected, entryArgs, expectedDigest }
 }
 
 function collect(targets: string[]): string[]
@@ -334,7 +349,20 @@ for(let bi = 0; bi < pending.length; bi++)
         // first hang, in batch 102.
         continue
     }
-    const results = lines.filter(l => /^[RTEX]:/.test(l))
+    // One result line per program, each but `X:` followed by its buffer
+    // digest — read in order, since the two interleave.
+    const results: {kind: string; value: number; digest: number | null}[] = []
+    for(const line of lines)
+    {
+        if(/^[RTEX]:/.test(line))
+        {
+            results.push({kind: line[0]!, value: parseInt(line.slice(2), 16) >>> 0, digest: null})
+        }
+        else if(line.startsWith("M:") && results.length > 0)
+        {
+            results[results.length - 1]!.digest = parseInt(line.slice(2), 16) >>> 0
+        }
+    }
 
     if(results.length !== batch.length)
     {
@@ -347,9 +375,7 @@ for(let bi = 0; bi < pending.length; bi++)
 
     batch.forEach((c, i) =>
     {
-        const line = results[i]!
-        const kind = line[0]!
-        const value = parseInt(line.slice(2), 16) >>> 0
+        const {kind, value, digest} = results[i]!
 
         if(kind === "X") { rejected++; return }
         if(kind === "E")
@@ -373,7 +399,13 @@ for(let bi = 0; bi < pending.length; bi++)
                 ? actual.acc === (c.expected as { acc: number }).acc
                 : actual.code === (c.expected as { code: number }).code)
 
-        if(agrees) matched++
+        // The buffer has to agree too, and it is compared for a trap as
+        // well: both sides stop at the same instruction, so both leave the
+        // same memory behind. A resource bail is the exception — the target
+        // abandoned the excursion partway, so its buffer means nothing.
+        const memAgrees = digest === null || digest === c.expectedDigest
+
+        if(agrees && memAgrees) matched++
         else
         {
             // Printed as found, not only in the summary: this sweep can run
@@ -383,6 +415,7 @@ for(let bi = 0; bi < pending.length; bi++)
             // exactly what happened the first time a hang aborted a sweep
             // that had already found three mismatches.
             const text = `  ${c.file}\n      reference VM:  ${show(c.expected)}\n      emitted Thumb: ${show(actual)}`
+                + (memAgrees ? "" : `\n      buffer digest: reference ${c.expectedDigest.toString(16)}, target ${(digest ?? 0).toString(16)}`)
             mismatches.push(text)
             console.log(`\nMISMATCH\n${text}`)
         }

@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Replays one saved input through the exact harness the fuzzer runs.
+# Replays one program through the exact harness the crash sink runs — the
+# host translator under ASan/UBSan with asserts live.
 #
-#   ./repro.sh last_input.bin
+# The driver reports a finding as `(corpus entry, seed)` rather than a file,
+# so the program is written out first:
+#
+#   npx ts-node --transpile-only ts/gen/show.ts nested_loop 4242 --emit /tmp/p.bin
+#   ./repro.sh /tmp/p.bin
 set -euo pipefail
 
 # Resolve arguments before the cd, so a path relative to the caller's own

@@ -15,10 +15,13 @@ field widths (`MAX_ARG_COUNT = 2047`, `MAX_BODY_BYTES ~1M`,
 ones — a real handwritten or lowered procedure never comes anywhere close
 to either. The gap between "the generic validator allows it" and "any
 plausible real program would ever produce it" is exactly the space
-`fuzz/ts/oracle_server.ts`'s validator gate was finding nothing but
-noise in: `argCount = 972` is a perfectly valid, `validateProgram`-approved
+the byte-mutation fuzzer's validator gate was finding nothing but noise
+in: `argCount = 972` is a perfectly valid, `validateProgram`-approved
 program that no real caller would ever construct, and chasing what happens
-to it finds ABI-encoding-width bugs, not `mog-jit` bugs.
+to it finds ABI-encoding-width bugs, not `mog-jit` bugs. Generating at DSL
+level does not wander there on its own, so the caps below are now an
+assertion rather than a gate — tripping one means the generator has drifted
+outside the profile this document describes.
 
 This document collects those target-specific "realistic profile" limits —
 constants worth reasoning about deliberately, checking somewhere, and
@@ -26,7 +29,7 @@ extending as more are found — separately from generic ISA validation.
 `mog-core`'s own `Extension` hook (isa-core.md §5.1, `extension.ts`)
 is the natural long-term home for a "target profile" extension a validator
 call could take alongside the generic checks; for now these live here and
-in `oracle_server.ts`'s own extra gate, both by hand.
+in `fuzz/ts/driver.ts`, both by hand.
 
 ## TOS depth (argCount included) vs. the window's stack-reclaim encoding
 
@@ -62,7 +65,7 @@ or a bailout), it just asserts.
 | | value | meaning |
 |---|---|---|
 | Hard ABI ceiling | `argCount ≤ 131` | above this, `discardWindow`'s single-instruction reclaim can't encode the byte count at all and the translator bails with `RESOURCE_LIMIT_WINDOW_RECLAIM` (see below) — a capability limit, not a policy choice |
-| Realistic-profile cap | `argCount ≤ 16` | `oracle_server.ts`'s own extra gate (`REALISTIC_MAX_ARG_COUNT`) — no real procedure needs more than a handful of parameters; keeping the fuzz search inside this band means every crash it finds is worth investigating on its own terms, not "well, nobody would ever call it with 900 arguments anyway" |
+| Realistic-profile cap | `argCount ≤ 16` | `driver.ts`'s own assertion (`REALISTIC_MAX_ARG_COUNT`) — no real procedure needs more than a handful of parameters; keeping the fuzz search inside this band means every crash it finds is worth investigating on its own terms, not "well, nobody would ever call it with 900 arguments anyway" |
 
 **Closed:** `discardWindow` now range-checks the reclaim and calls
 `Assembler::fail(RESOURCE_LIMIT_WINDOW_RECLAIM)` instead of asserting, so
@@ -87,7 +90,7 @@ spilled frame, so 131 caps *total TOS depth* — arguments and pushed operands
 together. That is the same number for a procedure with 131 arguments and for
 one with none that pushes 132 operands, and the second is the case that
 actually matters: it is what a fuzzer produces by the thousand.
-`oracle_server.ts` gates on it (`REALISTIC_MAX_TOTAL_DEPTH = 128`, against
+`driver.ts` asserts it (`REALISTIC_MAX_TOTAL_DEPTH = 128`, against
 `validateProgram`'s own whole-program `totalDepth`) for a measured reason —
 unbounded, **84% of a real fuzz corpus landed above the ceiling**, so 84% of
 the fuzzer's budget went to programs that could only ever bail, and whose
@@ -142,7 +145,7 @@ anything else, so the budget is four *entries*, not four declarations:
 
 A procedure written to stay inside four entries pays nothing for any of
 them; one written a step over pays on every access to whatever it pushed
-past. `oracle_server.ts` gates nothing on this (there is no crash behind
+past. `driver.ts` asserts nothing on this (there is no crash behind
 it), and the cost is a cliff rather than a ceiling, so it belongs here as a
 number to design against rather than as a cap to enforce.
 
@@ -184,8 +187,8 @@ completely unchallenged.
 
 **The gate:** rather than teach every LEB128 call site on both sides of the
 language boundary to reject overlong fields individually,
-`oracle_server.ts` re-encodes whatever it just decoded
-(`encodeLeb128`/`encodeBody`) and compares byte lengths against the
+a byte-level producer had to re-encode whatever it just decoded
+(`encodeLeb128`/`encodeBody`) and compare byte lengths against the
 original input — `bytecode.ts`'s encoders are always canonical, so any
 length mismatch means some field along the way was non-canonical,
 regardless of which one. Treated the same as a plain decode failure
@@ -272,7 +275,7 @@ a frame whose out-of-window arguments sit below a pushed record) and by the
 ## Whole-program procedure count
 
 `ProcSlot`'s directory is sized by `procCount` with no ceiling of its own
-beyond storage. `oracle_server.ts` caps it at 16
+beyond storage. `driver.ts` caps it at 16
 (`REALISTIC_MAX_PROC_COUNT`), the same kind of realistic-profile bound as
 `REALISTIC_MAX_ARG_COUNT` above: a fuzzer left unbounded spends its budget
 on hundred-procedure programs whose procedures are one instruction each,
@@ -308,5 +311,4 @@ When the fuzzer (or anything else) turns up another "validator says yes,
 no real program would ever do this, and here's what breaks" case: measure
 the actual hard limit the way the section above does (don't guess), pick a
 realistic-profile cap comfortably under it, add both to the table pattern
-above, and wire the cap into `oracle_server.ts`'s `withinRealisticProfile`
-gate.
+above, and wire the cap into `driver.ts`'s own profile assertion.

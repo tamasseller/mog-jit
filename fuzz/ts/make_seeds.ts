@@ -1,5 +1,5 @@
 // fuzz — writes the whole seeds/ corpus in the whole-program
-// envelope format harness.cpp/oracle_server.ts speak (bytecode.ts's
+// envelope format the sinks read (bytecode.ts's
 // encodeJitEnvelope) — unframed: the fuzzer mutates these bytes, and
 // harness.cpp reaches Runtime::loadProgram without passing the frame check.
 //
@@ -1047,7 +1047,7 @@ const pushInLoopCondition: RtlProgram = {
 
 /** Entry procedures taking more than one argument. Both harness halves used
  *  to discard these — qemu_exec.ts skipped anything declaring more than one,
- *  oracle_server.ts anything declaring any at all — so a shape that hung the
+ *  the sweep anything declaring any at all — so a shape that hung the
  *  emulator deterministically for every count of five or more went unseen
  *  through a whole campaign (docs/fuzzing-campaign.md). Three counts, chosen
  *  for what each one reaches:

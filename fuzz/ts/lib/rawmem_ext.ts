@@ -17,8 +17,9 @@
 // is simply the buffer size, and an end at or below its start copies
 // nothing rather than something surprising.
 
+import { PUSH, extInstr, pBuiltinCall, pRtl, rule, unaryNode, unaryTosNode } from "mog-core"
 import type { Extension, ExtOpEffect } from "mog-core"
-import type { ExtInstr } from "mog-core"
+import type { ExtInstr, OutputLocation, Resource, Rule, RtlInstr, RtlNode } from "mog-core"
 
 export const RAWMEM_BYTES = 1024
 export const ADDR_MASK = 0x3ff // the whole buffer — see this file's header
@@ -77,6 +78,120 @@ export interface RawMemExtension extends Extension
     reset(): void
 }
 
+// ── DSL surface ─────────────────────────────────────────────────────────
+//
+// Without a `rules()` hook the extension is reachable only from hand-written
+// RTL (make_seeds.ts's `extInstr`), so nothing starting from DSL source could
+// emit an EXT op and the whole seam would be unreachable to an AST-level
+// producer.
+//
+// Operand order is `exec`'s own read backwards — it pops in reverse, so a
+// call's arguments push in source order. A store takes its address off the
+// stack and its value from acc, matching `st`/`ld` in make_seeds.ts.
+
+/** Compose N tiled arguments followed by one extension opcode — the
+ *  multi-operand counterpart to rules.ts's `unaryNode`, which carries only
+ *  one child's invariants. */
+function seqNode(children: readonly RtlNode[], op: RtlInstr, demand: "acc" | "tos", effect: ExtOpEffect): RtlNode
+{
+    let running = 0
+    let maxStack = 0
+    for(const c of children)
+    {
+        maxStack = Math.max(maxStack, running + c.maxStack)
+        running += c.tosDelta
+    }
+    maxStack = Math.max(maxStack, running + effect.maxTransient)
+
+    const after = running + effect.tosDelta
+    const fragment = [...children.flatMap(c => c.fragment), op]
+
+    const clobbers = new Set<Resource>(children.flatMap(c => c.clobbers))
+    if(demand === "tos") {clobbers.add("acc"); clobbers.delete("tos")}
+    else clobbers.delete("acc")
+    // An op that destroys acc says so even where `output` names it: the
+    // output is declared only to satisfy orchestrator.ts's statement filter.
+    if(effect.killsAcc) clobbers.add("acc")
+
+    const output: OutputLocation[] = demand === "tos" ? ["tos"] : ["acc"]
+
+    return demand === "tos"
+        ? {type: "RtlNode", output, fragment: [...fragment, PUSH()], clobbers: [...clobbers],
+           tosDelta: after + 1, maxStack: Math.max(maxStack, after + 1)}
+        : {type: "RtlNode", output, fragment, clobbers: [...clobbers], tosDelta: after, maxStack}
+}
+
+/** Every argument of a stack-operand op, tiled to `"tos"`. */
+const tosArgs = (m: {argumentMatches: readonly unknown[]}): RtlNode[] =>
+    (m.argumentMatches as readonly {node: RtlNode}[]).map(a => a.node)
+
+/** `Extension.rules` (extension.ts) — `resolveLocal`/`resolveCallee` are
+ *  both unused: every operand here is an ordinary tiled value, never a
+ *  named local or a callee reference. */
+export function rawMemRules(): Rule[]
+{
+    const rules: Rule[] = []
+
+    // A load is a unary transform on acc, exactly `clz`/`revbits`' shape.
+    // The `:tos` variant is what lets one initialize a declaration.
+    for(const name of ["LD8", "LD16", "LD32"] as const)
+    {
+        const dsl = name.toLowerCase()
+        const body = (m: {argumentMatches: readonly {node: RtlNode}[]}): RtlInstr[] =>
+            [...m.argumentMatches[0].node.fragment, extInstr(name, [])]
+
+        rules.push(
+            rule(`rawmem:${dsl}`, pBuiltinCall(dsl, pRtl("acc")), m =>
+                unaryNode(m.argumentMatches[0].node, ["acc"], body(m))),
+            rule(`rawmem:${dsl}:tos`, pBuiltinCall(dsl, pRtl("acc")), m =>
+                unaryTosNode(m.argumentMatches[0].node, body(m))),
+        )
+    }
+
+    // `st32(addr, value)` — address to the stack, value to acc, in that
+    // order, which is the sequence `exec`'s own pop expects. A store keeps
+    // acc (it only reads it), so its value is the value stored and both
+    // demands have a form — without the `:tos` one a store nested in a
+    // value position has no tiling at all.
+    for(const name of ["ST8", "ST16", "ST32"] as const)
+    {
+        const dsl = name.toLowerCase()
+        const build = (m: {argumentMatches: readonly {node: RtlNode}[]}, demand: "acc" | "tos"): RtlNode =>
+            seqNode([m.argumentMatches[0]!.node, m.argumentMatches[1]!.node], extInstr(name, []), demand, EFFECTS[name])
+
+        rules.push(
+            rule(`rawmem:${dsl}`, pBuiltinCall(dsl, pRtl("tos"), pRtl("acc")), m => build(m, "acc")),
+            rule(`rawmem:${dsl}:tos`, pBuiltinCall(dsl, pRtl("tos"), pRtl("acc")), m => build(m, "tos")),
+        )
+    }
+
+    // Every operand off the stack: memmove(src, dstStart, dstEnd),
+    // memcmp(aStart, aEnd, bStart), slicecmp(aStart, aEnd, bStart, bEnd).
+    const STACK_ARITY: Readonly<Record<string, number>> = {MEMMOVE: 3, MEMCMP: 3, SLICECMP: 4}
+    for(const [name, arity] of Object.entries(STACK_ARITY))
+    {
+        const dsl = name.toLowerCase()
+        const args = Array.from({length: arity}, () => pRtl("tos"))
+
+        rules.push(
+            rule(`rawmem:${dsl}`, pBuiltinCall(dsl, ...args), m =>
+                seqNode(tosArgs(m), extInstr(name, []), "acc", EFFECTS[name])),
+        )
+
+        // MEMMOVE gets no value-producing form: it declares `killsAcc`, so
+        // there is nothing to read back and a use would fail validation.
+        if(name !== "MEMMOVE")
+        {
+            rules.push(
+                rule(`rawmem:${dsl}:tos`, pBuiltinCall(dsl, ...args), m =>
+                    seqNode(tosArgs(m), extInstr(name, []), "tos", EFFECTS[name])),
+            )
+        }
+    }
+
+    return rules
+}
+
 export function rawMemExtension(): RawMemExtension
 {
     const mem = new Uint8Array(RAWMEM_BYTES)
@@ -105,6 +220,7 @@ export function rawMemExtension(): RawMemExtension
         mem,
         reset() {mem.fill(0)},
         effects: EFFECTS,
+        rules: rawMemRules,
         exec(instr, state)
         {
             const name = instr.ext

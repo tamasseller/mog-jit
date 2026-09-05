@@ -1,6 +1,6 @@
 src/**/.o/
 src/driver/fuzz_driver
-src/driver/fuzz_driver_afl
+src/driver/fuzz_driver_cov
 src/repro/repro_driver
 src/probe-arena/probe_arena
 src/dump-seeds/dump_seeds

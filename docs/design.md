@@ -1776,27 +1776,69 @@ diagnosis via `qemu-system-arm -d exec`.
 
 ## 17. Differential fuzzing
 
-`fuzz/` is two harnesses, because they catch disjoint bug classes and each
-is structurally blind to the other's.
+`fuzz/` generates programs at **DSL level** and requires three engines to
+agree: an AST evaluator, `mog-core`'s reference VM, and the emitted Thumb
+running on `qemu-system-arm` against the real, unmodified `runtime/`. A
+fourth sink runs the translator on the host under ASan/UBSan with asserts
+live, which is the only one that can see a crash — the target image is built
+`-DNDEBUG`.
 
-`fuzz/harness.cpp` runs the real translator on the host, under ASan/UBSan
-with asserts live, on whole programs a `validateProgram` gate has already
-approved (over a socket to `fuzz/oracle_server.ts`, so Node starts once
-rather than per test case). Each procedure is translated once into a fresh
-`Runtime` and then the whole program is translated again over four rounds
-against one small arena, sized to the program so eviction actually bites —
-that second pass is what reaches `findEvictionVictim`/`evict`'s compaction
-memmove, `Runtime::commit` and `finalize`'s dispatch registration. It finds
-crashes, and nothing else: it never executes what it emitted.
+Generating rather than mutating wire bytes changed what the campaign
+reaches. Validator approval went from ~13% of candidates to ~98%, so the
+work lands on programs that reach the translator; deep nests, wide jump
+tables and call graphs come out of the grammar instead of being
+hand-authored one at a time; and the **lowerer** joined the axis. That last
+one is the structural gain: the reference VM and the JIT both consume the
+same `RtlProgram`, so a lowerer emitting valid-but-wrong RTL makes them
+agree on the wrong answer. Only an engine that never sees the lowerer's
+output can catch it, which is what the AST evaluator is for — it restates
+the language contract rather than importing any part of the implementation
+of it.
 
-`fuzz/src/qemu-exec/` closes exactly that gap, and needs no new emulator —
-§16's own `qemu-system-arm` setup already runs this translator plus the
-real, unmodified `runtime/`. A batch of programs is loaded straight into
-guest flash (`-device loader`; semihosting file I/O was tried first and
-`SYS_OPEN` returns -1 on this machine), each is run through the real
-`Executor::split`, and the results are diffed against `mog-core`'s
-reference VM. One boot per batch, so the emulator's startup cost amortizes
-away.
+Two filters keep the comparison strict rather than carrying per-engine
+exceptions. A **static** one drops programs whose operands are unsequenced
+with conflicting effects: the DSL leaves a binary operator's operands
+unsequenced exactly as C does (`lift.ts`), and `pickBinaryOrder` really does
+reorder them on stack-depth score, so such a program has no single right
+answer. A **dynamic** one drops a shift by 32 or more, which §4.1 leaves
+undefined and no tree walk can see in advance.
+
+The two tiers cost three orders of magnitude apart. The inner one — mutate,
+filter, evaluate, lower, validate, run the reference VM, compare — needs no
+emulator and runs on everything. The outer one batches whatever survived to
+the two out-of-process sinks, retained on a structural signature (procedure
+count, nesting depth, the validator's own `totalDepth`/`maxCallDepth`,
+compiled size) so a QEMU boot is spent on shapes it has not run yet. Both
+sinks read the same batch file, and a crashing batch is bisected to the one
+program responsible.
+
+Results are compared on the value, the trap code **and** the extension
+buffer, the last through a digest the runner prints per program: a store to
+a wrongly computed address is otherwise invisible unless the program happens
+to read that slot back.
+
+A campaign feeds novel programs back into its own corpus — without that,
+every candidate is one generation from a hand-written seed and the shapes
+several mutations deep are never reached. That also means a finding's
+`(corpus entry, seed)` pair names the seed it descends from rather than the
+program that failed, so the program itself is what gets written out, as
+readable source. `fuzz/ts/gen/minimize.ts` shrinks it on the tree.
+
+Coverage over the host sink is what says whether a campaign is
+throughput-bound or reach-bound, and it says reach: 400 candidates already
+cover 93.6% of translator lines, 3000 cover 94.9%. So the lever is what the
+generator can build, not how fast it builds it. Mutation adds a statement at
+a time against a bounded corpus, which cannot reach a body long enough to
+overrun a branch — a size-directed lane builds that shape directly, and took
+`assembler.cpp`'s literal-pool machinery and
+`translate_control_flow.cpp`'s out-of-range paths from cold to covered.
+
+AFL is not used. It appears nowhere in `fuzz/`'s own campaign record — every
+finding below came from the uninstrumented mutation loop plus the execution
+sweep — and under a generator its signal degrades further: coverage guidance
+needs small input changes to cause small behaviour changes, and a generator
+tape reshapes the whole program on one byte flip, with an entire TypeScript
+pipeline between the mutated bytes and the instrumented C++.
 
 **What the execution half found that the crash half could not.** Every one
 of these produced no crash, no assert and no `RESOURCE_ERROR` — just the
