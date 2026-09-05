@@ -346,3 +346,49 @@ TEST(SwitchSharedCaseBody)
         CHECK(r.value == expected[arg]);
     }
 }
+
+// ---- An empty case[1]: the merge sits exactly where case[0] runs off its
+// own end, so case[0] leaves by falling through rather than by a branch.
+static const Instr emptySecondCaseProc0[] = {
+    CONST(0), PUSH(),
+    LOAD(0), brTable(1),
+        CONST(5), STORE(1), bare(Op::BLOCK_END),
+        bare(Op::BLOCK_END),
+    LOAD(1), opImm(Op::ADD, 1), bare(Op::RETURN),
+};
+
+TEST(TwoBlockDispatchWithAnEmptySecondCase)
+{
+    const uint32_t expected[] = {6, 1};
+    for(uint32_t arg = 0; arg < 2; arg++)
+    {
+        ProcSource procs[] = {PROC(1, emptySecondCaseProc0)};
+        uint32_t args[] = {arg};
+        ProgramResult r = runProgram(procs, 1, args);
+
+        CHECK(!r.trapped);
+        CHECK(r.value == expected[arg]);
+    }
+}
+
+// ---- Both cases empty: the dispatch decides between two merges that are
+// the same address, and must still leave everything around it standing.
+static const Instr bothCasesEmptyProc0[] = {
+    LOAD(0), brTable(1),
+        bare(Op::BLOCK_END),
+        bare(Op::BLOCK_END),
+    LOAD(0), opImm(Op::ADD, 3), bare(Op::RETURN),
+};
+
+TEST(TwoBlockDispatchWithBothCasesEmpty)
+{
+    for(uint32_t arg = 0; arg < 2; arg++)
+    {
+        ProcSource procs[] = {PROC(1, bothCasesEmptyProc0)};
+        uint32_t args[] = {arg};
+        ProgramResult r = runProgram(procs, 1, args);
+
+        CHECK(!r.trapped);
+        CHECK(r.value == arg + 3);
+    }
+}

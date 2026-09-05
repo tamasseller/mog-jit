@@ -83,6 +83,23 @@ TEST(RawMemWordRoundTrips)
     CHECK(r.value == 0x12345678u);
 }
 
+TEST(RawMemStoreLeavesAccReadableThroughACoreScratchUse)
+{
+    // ST32 declares no writesAcc, so the value has to still be readable
+    // after it — including across a core emission that wants a scratch
+    // register of its own, which an `AND` by an immediate too wide for
+    // Thumb-1 is.
+    Body b;
+    b.store(9, 4, RAWMEM_ST32);
+
+    const Instr tail[] = {opImm(Op::AND, 112), bare(Op::RETURN)};
+    b.add(tail, 2);
+
+    ProgramResult r = runBody(b, 1);
+    CHECK(!r.trapped);
+    CHECK(r.value == (9u & 112u));
+}
+
 TEST(RawMemNarrowWidthsWriteOnlyTheirOwnBytes)
 {
     Body b;

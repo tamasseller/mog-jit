@@ -1930,7 +1930,9 @@ TEST(AnArmThatEstablishesNothingCostsNoInstructionAtItsClose)
 {
     // §8.7: a case starts with acc dead. An arm that never produces one
     // reaches the merge with nothing to canonicalize, so its close must
-    // emit no instruction at all.
+    // emit no instruction at all — and an empty case1 puts that merge
+    // exactly where case0 already runs off its own end, so case0's exit
+    // branch goes too.
     Instr body[] = {
         CONST(5), opImm(Op::GT_U, 3),
         brTable(1),
@@ -1942,15 +1944,14 @@ TEST(AnArmThatEstablishesNothingCostsNoInstructionAtItsClose)
     FakeRuntime<1> rt;
     rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
     uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
-    CHECK(halfwordCount == 11);
+    CHECK(halfwordCount == 10);
 
     const uint16_t expected[] = {
         PROLOGUE_STUB,
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(5)), // MOVS r0,#5 (CONST 5)
         ArmV6M::cmp(ArmV6M::LoReg(0), ArmV6M::Imm<8>(3)),  // CMP r0,#3 (GT_U, fused)
-        ArmV6M::bhi(ArmV6M::Ioff<1, 8>(2)),                // BHI +2 — to the empty case1
+        ArmV6M::bhi(ArmV6M::Ioff<1, 8>(0)),                // BHI to the merge, which is where case1 would start
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(2)), // MOVS r0,#2 (case0: CONST 2)
-        ArmV6M::b(ArmV6M::Ioff<1, 11>(-2)),                // B to the next halfword — case0's exit branch, over nothing
         ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(0)), // MOVS r0,#0 (RETURN's own producer)
         RETURN_VIA_LR,
     };
@@ -1958,6 +1959,134 @@ TEST(AnArmThatEstablishesNothingCostsNoInstructionAtItsClose)
     {
         CHECK(rt.code()[i] == expected[i]);
     }
+}
+
+TEST(ADispatchBetweenTwoEmptyCasesEmitsNothingAtAll)
+{
+    // Both cases empty puts both merges at the same address, so the
+    // dispatch decides nothing — and its discriminant, still an
+    // unmaterialized immediate, is never even loaded.
+    Instr body[] = {
+        CONST(5),
+        brTable(1),
+            bare(Op::BLOCK_END),
+            bare(Op::BLOCK_END),
+        CONST(9),
+        bare(Op::RETURN),
+    };
+    FakeRuntime<1> rt;
+    rt.set(0, 0, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
+    CHECK(halfwordCount == 6);
+
+    const uint16_t expected[] = {
+        PROLOGUE_STUB,
+        ArmV6M::movs(ArmV6M::LoReg(0), ArmV6M::Imm<8>(9)),
+        RETURN_VIA_LR,
+    };
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        CHECK(rt.code()[i] == expected[i]);
+    }
+}
+
+// The jump table's own halfwords, which start right after the BLX into the
+// jump helper — the one BLX these fixtures emit, having no CALL.
+static const uint16_t *jumpTable(const uint16_t *buf, uint32_t halfwords)
+{
+    for(uint32_t i = 0; i < halfwords; i++)
+    {
+        if(buf[i] == ArmV6M::blx(ArmV6M::AnyReg(ENTRY_JUMP_REG)))
+        {
+            return buf + i + 1;
+        }
+    }
+    return nullptr; // GCOV_EXCL_LINE — only on a failing test's own bad fixture
+}
+
+// Cases 1 and 3 are the gaps; 0 leaves for the merge and 2 runs on into the
+// default case, so both closers a case with a body of its own can take are
+// in the same fixture.
+static uint32_t gapDispatchHalfwords(FakeRuntime<1> &rt, Op gapCloser)
+{
+    const Instr body[] = {
+        CONST(0), PUSH(),
+        LOAD(0), brTable(4),
+            CONST(1), STORE(1), bare(Op::BLOCK_END),
+            bare(gapCloser),
+            CONST(2), STORE(1), bare(Op::DEFAULT),
+            bare(gapCloser),
+            CONST(9), STORE(1), bare(Op::BLOCK_END), // case[4], the default
+        LOAD(1), bare(Op::RETURN),
+    };
+    rt.set(0, 1, /*savesLR=*/true, body, sizeof(body) / sizeof(body[0]));
+    return translateProc(0, rt.runtime(), LRU_TICK);
+}
+
+TEST(AGapCaseIsCodeless)
+{
+    // A case that is nothing but DEFAULT (isa-core.md §7.1's gap fill) has
+    // its table slot name the default case outright. The same case closed
+    // by BLOCK_END has to reach the merge instead, which costs it a branch.
+    FakeRuntime<1> gaps, exits;
+
+    const uint32_t withGaps = gapDispatchHalfwords(gaps, Op::DEFAULT);
+    const uint32_t withExits = gapDispatchHalfwords(exits, Op::BLOCK_END);
+
+    CHECK(withGaps > 0);
+    CHECK(withExits == withGaps + 2); // one branch each
+}
+
+TEST(AGapCaseSlotNamesTheDefaultCaseItself)
+{
+    FakeRuntime<1> rt;
+    const uint32_t halfwordCount = gapDispatchHalfwords(rt, Op::DEFAULT);
+    const uint16_t *table = jumpTable(rt.code(), halfwordCount);
+
+    CHECK(table != nullptr);
+    CHECK(table[1] == table[4]); // both gaps resolved to case[4]'s own offset
+    CHECK(table[3] == table[4]);
+    CHECK(table[0] != table[4]); // and the two cases with bodies did not
+    CHECK(table[2] != table[4]);
+}
+
+// The same two-case dispatch twice over, differing only in whether the
+// default case[2] has a body of its own.
+static const Instr emptyDefaultCaseProc0[] = {
+    CONST(0), PUSH(),
+    LOAD(0), brTable(2),
+        CONST(1), STORE(1), bare(Op::BLOCK_END),
+        CONST(2), STORE(1), bare(Op::BLOCK_END),
+        bare(Op::BLOCK_END),                     // case[2], the merge itself
+    LOAD(1), bare(Op::RETURN),
+};
+
+static const Instr bodiedDefaultCaseProc0[] = {
+    CONST(0), PUSH(),
+    LOAD(0), brTable(2),
+        CONST(1), STORE(1), bare(Op::BLOCK_END),
+        CONST(2), STORE(1), bare(Op::BLOCK_END),
+        CONST(3), STORE(1), bare(Op::BLOCK_END), // case[2], with a body
+    LOAD(1), bare(Op::RETURN),
+};
+
+TEST(TheCaseBeforeAnEmptyDefaultCaseFallsIntoTheMerge)
+{
+    // A `switch` with no `default:` clause ends on an empty case[N], which
+    // is the merge — so the last indexed case reaches it by running off its
+    // own end rather than by branching.
+    auto measure = [](const Instr *body, uint32_t count)
+    {
+        FakeRuntime<1> rt;
+        rt.set(0, 1, /*savesLR=*/true, body, count);
+        return translateProc(0, rt.runtime(), LRU_TICK);
+    };
+
+    const uint32_t emptyDefault = measure(emptyDefaultCaseProc0, sizeof(emptyDefaultCaseProc0) / sizeof(Instr));
+    const uint32_t bodiedDefault = measure(bodiedDefaultCaseProc0, sizeof(bodiedDefaultCaseProc0) / sizeof(Instr));
+
+    CHECK(emptyDefault > 0);
+    CHECK(bodiedDefault == emptyDefault + 3); // case[2]'s two instructions, and case[1]'s exit branch
 }
 
 TEST(TruthyBranchReusesTheFlagsItsArithmeticProducerAlreadySet)

@@ -77,11 +77,13 @@ void emitSampleAt(ExtSite &site)
 void emitOutAt(ExtSite &site)
 {
     site.pop(OFF_REG);
-    site.accInto(VAL_REG);
+    // The value stays in acc's own register: nothing below touches it, and
+    // that is what "acc is left alone" above has to mean.
+    site.accInto(ACC_REG);
     maskAndScale(site.a, OFF_REG, SAMP_OUT_BITS, 1);
     site.a.materializeImm32(BASE_REG, (uint32_t)(uintptr_t)g_sampOut);
 
-    site.a.emit(ArmV6M::strh(R((uint16_t)VAL_REG), R((uint16_t)BASE_REG), R((uint16_t)OFF_REG)));
+    site.a.emit(ArmV6M::strh(R((uint16_t)ACC_REG), R((uint16_t)BASE_REG), R((uint16_t)OFF_REG)));
 }
 
 /* events.entries[count++ & MASK] = (acc << 4) | kind.

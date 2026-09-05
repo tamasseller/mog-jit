@@ -928,3 +928,94 @@ MEMMOVE at the top of a dispatch case where `acc` is already dead.
 - Extension opcodes carrying real operands: rawmem's are all single-byte, so
   `extDecodeLength`'s LEB128 path and the operand-bearing shapes
   `test/host/test_ext.cpp` covers by stub are still unfuzzed.
+
+---
+
+# Fourth campaign — the execution sweep at corpus scale
+
+The three campaigns above swept a few thousand inputs at a time. This one
+runs the sweep over a corpus the crash half had already accumulated —
+150k programs, 6,000 of them sampled — which is the first time the
+reference VM and the emitted Thumb were compared on that many distinct
+shapes.
+
+## Scale
+
+| | |
+|---|---|
+| Crash campaign | 4.5M executions, 551k validator-approved, **0 crashes** |
+| Execution sweep, first pass | 6,000 inputs, 3,945 compared, **47 mismatches, 0 hangs** |
+| Execution sweep, after §1 and §2 | 6,000 inputs, 5,438 compared, **0 mismatches, 0 hangs** |
+| Seeds | 61 (58 comparable), **0 mismatches** |
+
+46 of the 47 were §1, one was §2.
+
+## 1. The sweep compared a void entry procedure's result
+
+**Symptom.** A four-instruction program disagrees:
+
+```
+argCount = 1
+PUSH; CONST 22; ADD PEEK_PEEK; RETURN
+```
+
+Reference VM `0x16`, emitted Thumb `0x4d`.
+
+**Cause.** `ADD PEEK_PEEK` writes back in place, which invalidates acc
+(isa-core.md §8.7), so the `RETURN` after it returns no value. `VmResult`
+says so in `accLive` — its own comment says to read that before `acc`
+wherever the entry procedure may be void — and `qemu-exec.ts` compared
+`acc` regardless. The reference VM reports what it happened to hold and the
+translator holds something else; both are right.
+
+**Fix.** `ts/qemu-exec.ts` skips those the way it already skips a shift by
+32 or more, and `ts/minimize-exec.ts` refuses to shrink towards one, which
+it otherwise would — a disagreement that is not a failure is the easiest
+thing in the world to minimize towards.
+
+`ts/minimize-exec.ts` also wrote its result through `encodeJitProgram`,
+which appends the program frame the guest demands, so its own `.min.bin`
+came back "trailing bytes" from every reader of a corpus file. It writes the
+envelope now.
+
+## 2. `ExtSite::accInto` parked the accumulator in a core scratch register
+
+**Symptom.** After §1, one mismatch left:
+
+```
+argCount = 0
+CONST 9; PUSH; EXT ST32; AND #112; RETURN
+```
+
+Reference VM `0`, emitted Thumb `0x70`. `0x70` is `112 & 112` — acc read
+back as the immediate the `AND` had just staged.
+
+**Cause.** `accInto(dstReg)` flushed acc *to* `dstReg` and left `AccState`
+saying that is where acc lives. `ext_rawmem.cpp`'s `emitStore` asked for
+`VAL_REG`, which is r2, which is `SCRATCH_REG` — so the next core emission
+that wanted a scratch overwrote the accumulator. A store declares no
+`writesAcc`, so every program that read acc after one was miscompiled.
+
+The same line is in the benchmark extension's `emitOutAt`, under a comment
+saying "acc is left alone — OUT_AT declares no writesAcc, so the value stays
+readable after the write". Two independent emitters wrote the same bug from
+the same accessor, which is what makes it the accessor's.
+
+**Fix.** `accInto` hands out a *copy* and acc keeps its home in r0;
+`accIsNowIn` is how an emitter moves it, and now asserts the register is not
+one of `EXT_SCRATCH_MASK`'s. Both emitters take the value straight in
+`ACC_REG`, which nothing else in either touches, so the copy costs nothing —
+and where acc was already there, one `MOV` less than before.
+
+## Coverage added
+
+- `test/qemu/test_ext_rawmem.cpp`: a store followed by an `AND` whose
+  immediate is too wide for Thumb-1, so the core has to reach for a scratch.
+  It fails on the pair — the old `accInto` with an emitter asking for a
+  scratch — and passes as soon as either half is fixed.
+- `ext_store_keeps_acc`, the corpus's regression seed for the shape.
+
+## Still not covered
+
+- Non-terminating programs, unchanged from the first campaign.
+- Extension opcodes carrying real operands, unchanged from the third.

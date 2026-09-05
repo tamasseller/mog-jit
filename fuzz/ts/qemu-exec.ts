@@ -124,6 +124,12 @@ function classify(file: string): Candidate | null
         // to be set aside — the translator compiled TRAP as an ordinary
         // return, which handed a nested trap's code to its caller as a
         // return value.
+        //
+        // A void entry procedure's result, on the other hand, is
+        // unspecified (isa-core.md §8.7): the reference VM reports whatever
+        // it happened to hold and any other backend is free to disagree.
+        if(result.ok && !result.accLive) { skip("void entry procedure (§8.7)"); return null }
+
         expected = result.ok
             ? { kind: "return", acc: result.acc >>> 0 }
             : { kind: "trap", code: (result.trapCode ?? 0) >>> 0 }

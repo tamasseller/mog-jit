@@ -69,14 +69,21 @@ void ExtSite::pop(uint32_t dstReg)
     acc.apply(window.finishPop(a)); // must run after the read above — same register
 }
 
+/* A read: the caller gets acc's value in `dstReg`, and acc keeps its own
+ * home in ACC_REG. Leaving it in one of EXT_SCRATCH_MASK's registers instead
+ * would have the next core emission that wants a scratch — an immediate, a
+ * spill load — overwrite the accumulator behind everyone's back. An emitter
+ * that means to *move* acc says so with accIsNowIn. */
 uint32_t ExtSite::accInto(uint32_t dstReg)
 {
-    acc.flush(a, dstReg);
+    acc.flush(a, ACC_REG);
+    moveIfNeeded(a, dstReg, ACC_REG);
     return dstReg;
 }
 
 void ExtSite::accIsNowIn(uint32_t reg)
 {
+    assert(((1u << reg) & EXT_SCRATCH_MASK) == 0); // GCOV_EXCL_LINE — a scratch is not a home the core respects
     acc.pending(Shape::ofReg(reg));
 }
 

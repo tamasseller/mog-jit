@@ -128,11 +128,13 @@ void emitLoad(ExtSite &site, uint32_t width)
 void emitStore(ExtSite &site, uint32_t width)
 {
     site.pop(OFF_REG);
-    site.accInto(VAL_REG);
+    // The value stays in acc's own register: nothing below touches it, and
+    // a store leaves acc readable (no writesAcc in the effect table).
+    site.accInto(ACC_REG);
     maskAndAlign(site.a, OFF_REG, width);
     site.a.materializeImm32(BASE_REG, (uint32_t)(uintptr_t)g_rawMem);
 
-    const R val((uint16_t)VAL_REG), base((uint16_t)BASE_REG), off((uint16_t)OFF_REG);
+    const R val((uint16_t)ACC_REG), base((uint16_t)BASE_REG), off((uint16_t)OFF_REG);
     site.a.emit(width == 1 ? ArmV6M::strb(val, base, off)
         : (width == 2 ? ArmV6M::strh(val, base, off) : ArmV6M::str(val, base, off)));
 }

@@ -938,7 +938,11 @@ Per-opcode-class notes:
   `else` is that same shape with an empty `case[0]`, which a one-byte
   lookahead at the dispatch site sends to `translateIfThen` instead: the
   inverse branch alone, no block for the empty case and no branch out of
-  `case[1]` to a merge sitting right after it. `N ≥ 2`
+  `case[1]` to a merge sitting right after it. An empty `case[1]` is the
+  same saving from the other side — the merge is then where `case[0]` runs
+  off its own end, so `case[0]` leaves by falling through — and with both
+  cases empty the two merges are one address, which is nothing to decide
+  between and nothing to emit. `N ≥ 2`
   (`translate_control_flow.cpp`'s `BR_TABLE` arm) needs a literal-pool jump
   table plus a computed `BX`, but not one dispatch routine per site: one
   flash-resident copy for the whole program (§11's reserved slot 6,
@@ -951,6 +955,17 @@ Per-opcode-class notes:
   slot is an ordinary case target rather than the merge. The register
   holding the clamped index is deliberately never `acc`, so it survives
   dispatch unmodified on both paths.
+
+  A case that is nothing but `DEFAULT` — isa-core.md §7.1's gap fill, and
+  the only thing a `switch` over a sparse label set puts between its real
+  clauses — gets no code at all: its slot names `case[N]` outright. The
+  slots waiting on that offset chain through the table halfwords themselves
+  while it is still unknown, the way `Label` chains branch sites through the
+  instruction stream, and resolve when `case[N]` starts.
+
+  An empty `case[N]` — a `switch` with no `default:` clause — is the merge,
+  so the case before it exits by falling through, the same saving the
+  two-block form takes on an empty `case[1]`.
 
   **A non-obvious ARMv6-M trap here.** `BL`/`BLX` always set `lr` with bit 0
   forced to 1, the Thumb-mode marker a later `BX`/`POP{PC}` needs. Harmless
@@ -1232,8 +1247,8 @@ Still unprototyped, and the only reason a fixup pass is needed at all.
 
 *Jump tables* need none. A jump-table `BR_TABLE`'s table entries resolve exactly as
 ordinary branch targets do (`blocks.ts`): each slot is a deferred fixup,
-patched the moment the corresponding case's `BLOCK_END` is reached in the
-single forward pass, never needing to have seen anything past that point.
+patched the moment its own case starts in the single forward pass — or, for
+a gap case naming `case[N]`, when that last case does.
 
 ---
 
@@ -1466,20 +1481,20 @@ disadvantage: `-Os` C pays the first too, and the second is comparable to
 any real calling convention's bookkeeping.
 
 **Measured** (`bench/`, three DSP workloads on the microbit model, modelled
-Cortex-M0 cycles over the exact executed instruction stream): 1.02-2.06×
-against `-Os` C and 1.59-2.38× against each workload's best level — at or
+Cortex-M0 cycles over the exact executed instruction stream): 1.07-1.93×
+against `-Os` C and 1.65-2.13× against each workload's best level — at or
 below the bottom of the range above. Byte expansion of emitted Thumb over
-bytecode came out 1.29-1.93×, i.e. the 4-6× guess for control-flow-heavy
+bytecode came out 1.22-1.86×, i.e. the 4-6× guess for control-flow-heavy
 code was pessimistic; a nine-comparator sorting network, the most
 control-flow-dense of the three, expands least.
 
 Where the gap is widest the cause is this design's own 4-register window:
-in that same sorting network, 35 of 147 emitted instructions are SP-relative
+in that same sorting network, 40 of 146 emitted instructions are SP-relative
 spill and fill against seven live locals, where GCC has eight low registers
 to work with. `bench/README.md` carries the rest.
 
 The Appendix's data point: a leaf loop-and-comparison procedure (14 bytecode
-opcodes / 24 bytes, excluding the structural loop marker) comes in at 21
+opcodes / 23 bytes, excluding the structural loop marker) comes in at 21
 native instructions (42 bytes) with no fusion, 16 (32 bytes) with
 branch-fusion only, 13 (26 bytes) once destination-folding joins, and 10 (20
 bytes) with the full §10.1 scheme, which is *below* the bytecode's own
@@ -1512,10 +1527,10 @@ This does more work per opcode than a threaded dispatcher, but the opcode
 count and addressing-mode space are both small and heavily templated,
 keeping the emitter compact.
 
-**Measured**: ~9.8 KB of `.text` for translator plus runtime in `bench/`'s
-images, at the top of the estimate but inside it. Attribution there is by
-symbol name rather than from a link map, so treat it as the right order of
-magnitude and not a budget.
+**Measured**: ~10.1 KB of `.text` for translator plus runtime in `bench/`'s
+images, at the top of the estimate. Attribution there is by symbol name
+rather than from a link map, so treat it as the right order of magnitude and
+not a budget.
 
 ---
 ## Appendix - Worked Example: `leb128_len`
@@ -1916,6 +1931,13 @@ so by leaving the accumulator poisoned; one that recovers a result says so
 with `accIsNowIn`. The validator upstream decided acc liveness the same way
 (isa-core.md §11.2), and the two halves of an extension agreeing about it
 is that extension's business, not the core's.
+
+The accumulator's own home is r0 and does not move: `accInto` hands the
+emitter a copy in whatever register it asks for, and `accIsNowIn` names a
+register the core will respect. Neither ever leaves acc parked in one of
+`EXT_SCRATCH_MASK`'s registers, which the next immediate or spill load is
+free to overwrite — the class of bug that reads as a store silently
+corrupting the value it just wrote.
 
 **One extension per image, bound by the linker.** `extDescribe`, `extEmit`
 and `extHelperStackBytes` are `extern "C"` symbols whose weak defaults live

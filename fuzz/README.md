@@ -90,7 +90,10 @@ diffs. `ts/minimize-exec.ts` shrinks a mismatching program by deleting whole
 instructions and re-encoding, so every candidate stays validator-approved —
 one QEMU boot per pass, not per candidate.
 
-One thing it deliberately does not compare: a resource error, a legitimate
+Two things it deliberately does not compare. A **void entry procedure**'s
+result is unspecified (isa-core.md §8.7): `VmResult.accLive` says the
+reference VM established no value, so whatever it holds and whatever the
+target holds are both right. A **resource error** is a legitimate
 outcome with no reference counterpart. It is still counted and now bucketed
 by its own `RESOURCE_*` code (design.md §12), which is what tells an arena
 that wants growing from a corpus this target cannot compile at any size.

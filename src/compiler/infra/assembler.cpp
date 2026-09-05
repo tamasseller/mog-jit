@@ -161,6 +161,16 @@ void Assembler::patchRawHalfword(uint32_t siteOffset, uint16_t value)
     buf[idx] = value;
 }
 
+uint16_t Assembler::readRawHalfword(uint32_t siteOffset) const
+{
+    uint32_t idx = siteOffset / 2;
+    if(idx >= count)
+    {
+        return 0; // GCOV_EXCL_LINE — see patchBranch's own comment
+    }
+    return buf[idx];
+}
+
 // ── immediates ───────────────────────────────────────────────────────────
 
 __attribute__((always_inline)) inline void Assembler::parkPoolSite(uint32_t dstReg, uint32_t value)

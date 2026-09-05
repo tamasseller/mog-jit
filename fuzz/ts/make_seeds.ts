@@ -218,6 +218,44 @@ const ifThenDeadMerge: RtlProgram = {
     ],
 }
 
+/** The mirror of it: an empty `case[1]`, which puts the merge exactly where
+ *  `case[0]` runs off its own end. Both arms establish acc, so the merge is
+ *  live and the fall-through has to carry it. */
+const emptySecondArm: RtlProgram = {
+    procedures: [
+        {
+            argCount: 1,
+            body: [
+                { op: "CONST", imm: 0 }, { op: "PUSH" },
+                { op: "LOAD", target: 0 },
+                { op: "BR_TABLE", imm: 1 },
+                    { op: "CONST", imm: 5 }, { op: "STORE", target: 1 }, { op: "BLOCK_END" },
+                    { op: "BLOCK_END" },
+                { op: "LOAD", target: 1 }, { op: "ADD", combo: "IMM_ACC", imm: 1 },
+                { op: "RETURN" },
+            ],
+        },
+    ],
+}
+
+/** Both cases empty: the two merges are one address, so the dispatch
+ *  decides nothing — and everything around it still has to stand. */
+const emptyBothArms: RtlProgram = {
+    procedures: [
+        {
+            argCount: 1,
+            body: [
+                { op: "LOAD", target: 0 },
+                { op: "BR_TABLE", imm: 1 },
+                    { op: "BLOCK_END" },
+                    { op: "BLOCK_END" },
+                { op: "LOAD", target: 0 }, { op: "ADD", combo: "IMM_ACC", imm: 3 },
+                { op: "RETURN" },
+            ],
+        },
+    ],
+}
+
 /** Fused form of the same: a comparison immediately before the BR_TABLE 1,
  *  which blocks.cpp folds into the branch condition without ever
  *  materializing a 0/1 — the exact optimization isa-rationale.md names as
@@ -619,6 +657,21 @@ const extLoadStore: RtlProgram = {
                 { op: "PUSH" },
                 ...ld(0x1003, "LD8"),               // masks to 0x03
                 { op: "ADD", combo: "POP_ACC" },
+            ]),
+        },
+    ],
+}
+
+/** A store declares no `writesAcc`, so the value stays readable after it —
+ *  across a core emission that wants a scratch register of its own, which an
+ *  `AND` by an immediate too wide for Thumb-1 is. */
+const extStoreKeepsAcc: RtlProgram = {
+    procedures: [
+        {
+            argCount: 0,
+            body: ret([
+                ...st(4, 9, "ST32"),
+                { op: "AND", combo: "IMM_ACC", imm: 112 },
             ]),
         },
     ],
@@ -1182,6 +1235,29 @@ const defaultCases: RtlProgram = {
     ],
 }
 
+/** Gaps at both ends of the table, one pair of them adjacent: four slots
+ *  waiting on the same offset, which only `case[N]` fixes. */
+const defaultLeadingGap: RtlProgram = {
+    procedures: [
+        {
+            argCount: 1,
+            body: [
+                { op: "CONST", imm: 0 }, { op: "PUSH" },
+                { op: "LOAD", target: 0 },
+                { op: "BR_TABLE", imm: 5 },
+                    { op: "DEFAULT" },
+                    { op: "CONST", imm: 100 }, { op: "STORE", target: 1 }, { op: "BLOCK_END" },
+                    { op: "DEFAULT" },
+                    { op: "DEFAULT" },
+                    { op: "DEFAULT" },
+                    { op: "CONST", imm: 9 }, { op: "STORE", target: 1 }, { op: "BLOCK_END" },
+                { op: "LOAD", target: 1 },
+                { op: "RETURN" },
+            ],
+        },
+    ],
+}
+
 /** DEFAULT out of the two-block form, where the case it names is also the
  *  physically next one — the shape a one-label `switch` with a `default:`
  *  clause lowers to, and the one path translateIfThenElse takes for it. */
@@ -1226,6 +1302,7 @@ const authored: [string, RtlProgram][] = [
     ["arith", arith],
     ["signed_and_extend", signedAndExtend],
     ["ext_load_store", extLoadStore],
+    ["ext_store_keeps_acc", extStoreKeepsAcc],
     ["ext_memmove", extMemmove],
     ["ext_memmove_empty", extMemmoveEmpty],
     ["ext_memcmp", extMemcmp],
@@ -1240,6 +1317,7 @@ const authored: [string, RtlProgram][] = [
     ["post_test_loop", postTestLoop],
     ["drop_slots", dropSlots],
     ["default_cases", defaultCases],
+    ["default_leading_gap", defaultLeadingGap],
     ["default_two_block", defaultTwoBlock],
     ["literal_pool_pressure", literalPoolPressure],
     ["deep_spill", deepSpill],
@@ -1256,6 +1334,8 @@ const authored: [string, RtlProgram][] = [
     ["call_in_loop", callInLoop],
     ["br_table_live_merge", brTableLiveMerge],
     ["if_then_dead_merge", ifThenDeadMerge],
+    ["empty_second_arm", emptySecondArm],
+    ["empty_both_arms", emptyBothArms],
     ["fused_if_then_dead_merge", fusedIfThenDeadMerge],
 ]
 

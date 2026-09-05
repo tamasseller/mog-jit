@@ -49,6 +49,11 @@ constexpr uint32_t EXT_SCRATCH_MASK = (1u << 1) | (1u << 2) | (1u << 3) | (1u <<
  * and invalidate the accumulator themselves; an op that has to keep a value
  * across one stages it on the operand stack, as its own maxTransient.
  *
+ * Acc's home is r0 and stays there: accInto hands out a *copy* in whatever
+ * register the emitter asks for, and accIsNowIn names a register the core
+ * will respect — never one of EXT_SCRATCH_MASK's, which the next immediate
+ * or spill load is free to overwrite.
+ *
  * The site owns the wire as well: `opcode()` is the byte the core already
  * read, `operand()` reads the next one. An emitter must consume exactly the
  * operands its own extDescribe did — that cursor is the core's position too,

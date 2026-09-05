@@ -112,6 +112,16 @@ void Ctx::handleGlobalJump(Instr term, uint32_t tos)
     this->window.tos = tos;
 }
 
+/** True when the case standing next is empty — nothing but the `BLOCK_END`
+ *  that closes it. Its predecessor then reaches the merge by falling
+ *  through it, so the branch out of that predecessor is one to the very
+ *  next halfword. Leaves the closer standing for the case's own round. */
+bool Ctx::nextCaseIsEmpty()
+{
+    const Instr *la = this->peek();
+    return la != nullptr && la->op == Op::BLOCK_END;
+}
+
 /**
  * `BR_TABLE 1` whose case[0] is empty — what an `if` with no `else` lowers
  * to (isa-core.md §7.1). Branching over case[1] on the inverse condition is
@@ -121,6 +131,15 @@ void Ctx::handleGlobalJump(Instr term, uint32_t tos)
 bool Ctx::translateIfThen(BranchWidth width)
 {
     const auto entryTos = this->window.tos;
+
+    if(this->nextCaseIsEmpty())
+    {
+        // Both cases empty: the dispatch decides between two merges that
+        // are the same address, so not even the test is worth emitting.
+        this->consume();
+        this->accState.edge();
+        return true;
+    }
 
     Label end;
 
@@ -203,12 +222,17 @@ bool Ctx::translateIfThenElse(BranchWidth width)
             // An arm that runs straight on into the next one — which is
             // where `otherwise` is bound, and which for N=1 is also the
             // case `DEFAULT` names — needs no branch, and no literal pool
-            // spliced into the path it keeps running down.
-            if(term.op == Op::BLOCK_END && !a.branchTo(end))
+            // spliced into the path it keeps running down. An empty case[1]
+            // puts the merge at that same address, so it is the same
+            // situation reached from the other side.
+            const bool runsOn = continuesIntoAnotherCase(term.op)
+                || (term.op == Op::BLOCK_END && this->nextCaseIsEmpty());
+
+            if(term.op == Op::BLOCK_END && !runsOn && !a.branchTo(end))
             {
                 return false;
             }
-            if(!continuesIntoAnotherCase(term.op))
+            if(!runsOn)
             {
                 a.flushPool();
             }
@@ -253,17 +277,46 @@ bool Ctx::translateSwitch(BranchWidth width, uint32_t n)
 
     Label end, dflt;
 
+    /* Gap cases whose slot will name the default case, chained through the
+     * table halfwords themselves the way `Label` chains branch sites. */
+    int32_t gaps = -1;
+
     /* N indexed cases plus the default case (isa-core.md §4.5): the jump
      * table's last slot is a block of its own now, not the merge. */
     for(uint32_t i = 0; i <= n; i++)
     {
-        a.patchRawHalfword(base + i * 2, (uint16_t)(a.pc() - base));
+        /* A case that is nothing but `DEFAULT` — isa-core.md §7.1's gap
+         * fill — has no code to enter: its slot can name the default case
+         * outright, once case[n] says where that is. */
+        if(i < n)
+        {
+            if(const Instr *la = this->peek(); la != nullptr && la->op == Op::DEFAULT)
+            {
+                this->consume();
+                a.patchRawHalfword(base + i * 2, (uint16_t)gaps);
+                gaps = (int32_t)i;
+                continue;
+            }
+        }
+
+        const uint16_t here = (uint16_t)(a.pc() - base);
+        a.patchRawHalfword(base + i * 2, here);
 
         /* The default case is where every DEFAULT closer lands — bound
          * here, once its own code starts, and patched back into each. */
-        if(i == n && dflt.chain != -1 && !a.bind(dflt))
+        if(i == n)
         {
-            return false;
+            for(int32_t slot = gaps; slot != -1;)
+            {
+                const int32_t next = (int16_t)a.readRawHalfword(base + slot * 2);
+                a.patchRawHalfword(base + slot * 2, here);
+                slot = next;
+            }
+
+            if(dflt.chain != -1 && !a.bind(dflt))
+            {
+                return false;
+            }
         }
 
         // Every case is entered through the jump-table helper's own BLX.
@@ -306,6 +359,14 @@ bool Ctx::translateSwitch(BranchWidth width, uint32_t n)
 
         if(i < n)
         {
+            /* An empty case[n] is where the merge is, so the case before it
+             * leaves by running off its own end — and takes no pool with
+             * it, the same as the two-block form's fall-through. */
+            if(i + 1 == n && this->nextCaseIsEmpty())
+            {
+                continue;
+            }
+
             if(!a.branchTo(end))
             {
                 return false;

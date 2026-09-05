@@ -31,7 +31,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { spawnSync } from "child_process"
-import { decodeJitEnvelope, encodeJitProgram, validateProgram, run, StepLimitExceeded } from "../../../packages/machine/src/index"
+import { decodeJitEnvelope, encodeJitEnvelope, encodeJitProgram, validateProgram, run, StepLimitExceeded } from "../../../packages/machine/src/index"
 import type { RtlProgram } from "../../../packages/machine/src/index"
 import { entryArgsFor } from "./lib/entry_args"
 import { rawMemExtension } from "./lib/rawmem_ext"
@@ -70,6 +70,10 @@ function prepare(program: RtlProgram): Variant | null
     {
         EXT.reset()
         const r = run(program, EXT, entryArgs)
+        // Same as the sweep: a void entry procedure's result is
+        // unspecified (isa-core.md §8.7), so shrinking towards one would be
+        // shrinking towards a disagreement that is not a failure.
+        if(r.ok && !r.accLive) return null
         const value = (r.ok ? r.acc : (r.trapCode ?? 0)) >>> 0
         return { program, bytes, expected: { trap: !r.ok, value }, entryArgs }
     }
@@ -218,8 +222,12 @@ for(let pass = 1; ; pass++)
     if(width > count(best.program)) width = Math.max(1, Math.floor(count(best.program) / 2))
 }
 
-fs.writeFileSync(outFile, best.bytes)
-console.log(`\nminimized to ${count(best.program)} instructions, ${best.bytes.length} bytes: ${outFile}`)
+// The envelope shape, not `bytes`: `bytes` carries the program frame the
+// guest's own `Executor::run` demands, while every reader of a corpus file —
+// this minimizer included — takes the unframed envelope.
+const out = Buffer.from(encodeJitEnvelope(best.program, EXT))
+fs.writeFileSync(outFile, out)
+console.log(`\nminimized to ${count(best.program)} instructions, ${out.length} bytes: ${outFile}`)
 best.program.procedures.forEach((p, pi) =>
 {
     console.log(`  proc ${pi}: argCount=${p.argCount}`)

@@ -84,6 +84,7 @@ public:
     void flushPool(bool emitGuard = false);
 
     void patchRawHalfword(uint32_t siteOffset, uint16_t value);
+    uint16_t readRawHalfword(uint32_t siteOffset) const;
 
     /** N/Z come out set from `dstReg`, except on the pool-load path. */
     Effect materializeImm32(uint32_t dstReg, uint32_t value, bool allowTwoIsnSeq = true);

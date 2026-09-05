@@ -35,21 +35,22 @@ agrees with the reference VM on its return value and on every byte it wrote.
 
 | workload | JIT cycles/sample | vs -Os | vs best level | emitted / bytecode |
 |---|---|---|---|---|
-| pulse-trigger | 29.77 | 1.10x | 1.72x | 144 B / 80 B |
-| iq-preamble | 14.36 | 1.39x | 1.68x | 190 B / 101 B |
-| median5 | 148.38 | 1.96x | 2.16x | 298 B / 240 B |
+| pulse-trigger | 28.77 | 1.07x | 1.66x | 144 B / 82 B |
+| iq-preamble | 14.11 | 1.37x | 1.65x | 192 B / 103 B |
+| median5 | 146.38 | 1.93x | 2.13x | 296 B / 242 B |
 
 Against docs/design.md: §14 predicted throughput within "roughly 2-4x" of
-`-Os` C, and the measured 1.10x-1.96x sits at or below the bottom of that
-range; against each workload's best level it is 1.68x-2.16x. §15 estimated
-4-10 KB of flash for the whole JIT, and ~9.8 KB is inside it. Cold start is
-23k-57k instructions depending on program size, paid once per procedure.
+`-Os` C, and the measured 1.07x-1.93x sits at or below the bottom of that
+range; against each workload's best level it is 1.65x-2.13x. §15 estimated
+4-10 KB of flash for the whole JIT, and ~10.1 KB sits at the top of it. Cold
+start is 24k-60k instructions depending on program size, paid once per
+procedure.
 
 The three workloads are chosen to be different shapes, and they behave like
 it:
 
 **pulse-trigger** — a two-state machine with hysteresis, on unsigned ADC
-codes. Almost no arithmetic, and the closest result: 1.10x against `-Os`.
+codes. Almost no arithmetic, and the closest result: 1.07x against `-Os`.
 
 **iq-preamble** — quadrature demodulation of a tone sampled at four times
 its frequency, where the mixer coefficients are [1,0,-1,0] and [0,1,0,-1],
@@ -65,7 +66,7 @@ neither gets to hide the work in a conditional move.
 
 ### Where the JIT loses, concretely
 
-**Registers, on median5.** 40 of the 126 instructions in its loop body are
+**Registers, on median5.** 38 of the 119 instructions in its loop body are
 stack traffic — the 4-register TOS window against seven live locals (the
 validator reports `totalDepth` 9). GCC has eight low registers here and
 spills far less. This is the workload with the worst ratio against `-O2`,
@@ -98,7 +99,9 @@ directly while GCC is indifferent to nearly all of it. A body written for
 the lowerer's convenience would report a ratio that says nothing.
 
 Cumulative from the top, both sides spelled the same way. The last row of
-each is what the suite runs.
+each is what the suite runs; only that spelling is still in the tree, so
+these figures are one measurement pass and the deltas down a column are what
+they are for, not the absolutes.
 
 | iq-preamble | JIT | -Os |
 |---|---|---|
@@ -160,8 +163,8 @@ lands exactly on fall-through and costs nothing extra.
 
 It matters. The JIT reaches locals in memory where C keeps them in
 registers, so it issues proportionally more loads; weighting them moved the
-`-Os` ratio on pulse-trigger from 1.21x counting instructions to 1.10x
-counting cycles, and its `-O2` ratio the other way, 1.62x to 1.67x.
+`-Os` ratio on pulse-trigger from 1.15x counting instructions to 1.07x
+counting cycles, and its `-O2` ratio the other way, 1.54x to 1.61x.
 
 `MUL` is a knob (`mul=` plugin argument, default 1) because Cortex-M0
 permits both a 1-cycle and a 32-cycle multiplier and the choice is

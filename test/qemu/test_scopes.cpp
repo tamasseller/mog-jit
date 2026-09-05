@@ -145,3 +145,30 @@ TEST(TheOtherCasesOfADefaultCarryingTableAreUnaffected)
     CHECK(dispatchWith(4) == 7);   // out of range, straight to case[N]
     CHECK(dispatchWith(99) == 7);
 }
+
+// ---- A leading gap and a pair of adjacent ones: three slots on the same
+// chain, resolved when case[N] finally says where the default is.
+static const Instr leadingGapProc0[] = {
+    CONST(0), PUSH(),                   // k1 = result
+    LOAD(0), brTable(4),
+        bare(Op::DEFAULT),
+        CONST(100), STORE(1), bare(Op::BLOCK_END),
+        bare(Op::DEFAULT),
+        bare(Op::DEFAULT),
+        CONST(9), STORE(1), bare(Op::BLOCK_END), // case[N]
+    LOAD(1), bare(Op::RETURN),
+};
+
+TEST(EveryGapOnTheChainReachesTheDefaultCase)
+{
+    const uint32_t expected[] = {9, 100, 9, 9, 9, 9};
+    for(uint32_t arg = 0; arg < 6; arg++)
+    {
+        ProcSource procs[] = {PROC(1, leadingGapProc0)};
+        uint32_t args[] = {arg};
+        ProgramResult r = runProgram(procs, 1, args);
+
+        CHECK(!r.trapped);
+        CHECK(r.value == expected[arg]);
+    }
+}
