@@ -188,26 +188,6 @@ TEST(executorRunRejectsAnArgumentCountTheEntryProcedureDoesNotDeclare)
     CHECK(!g_captured.called);
 }
 
-TEST(executorRunRejectsOutOfWindowArgsPastTheEnvelopesOwnTotalDepth)
-{
-    // total_depth is trusted wire data, and enterDispatch is about to push
-    // arg_count - WINDOW_SIZE words against a reservation sized from it. A
-    // well-formed envelope never understates this (validateProgram seeds
-    // every procedure's local peak at its own argCount), so reaching this
-    // means the envelope was forged or mis-generated.
-    uint8_t bytes[32];
-    uint32_t len = buildProgram(/*entryArgCount=*/8, /*totalDepth=*/1, bytes, sizeof(bytes));
-
-    uint32_t args[8];
-    for(uint32_t k = 0; k < 8; k++) args[k] = k;
-
-    ProgramResult r = enter(args, 8, bytes, len);
-
-    CHECK(r.trapped == LANDING_RESOURCE_ERROR);
-    CHECK(r.value == RESOURCE_PROGRAM_ENTRY_DEPTH);
-    CHECK(!g_captured.called);
-}
-
 TEST(executorRunAcceptsOutOfWindowArgsThatDoFitTotalDepth)
 {
     // The other side of the same guard: 8 arguments need 4 pushed words, and
@@ -224,22 +204,6 @@ TEST(executorRunAcceptsOutOfWindowArgsThatDoFitTotalDepth)
     CHECK(!r.trapped);
     CHECK(g_captured.called);
     CHECK(g_captured.spilledCount == 4);
-}
-
-TEST(executorRunRejectsAProgramWithNoProcedures)
-{
-    // max_call_depth:0 total_depth:0 proc_count:0 — rejected before any
-    // Runtime storage is sized, since entering procedure 0 would read one
-    // ProcSlot past what storageBytesFor(0) allocates. Covered on the
-    // emulated side too, but free here.
-    const uint8_t literal[] = {0x00, 0x00, 0x00};
-    const FramedProgram p = framedProgram(literal, sizeof(literal));
-
-    ProgramResult r = enter(nullptr, 0, p.bytes, p.len);
-
-    CHECK(r.trapped == LANDING_RESOURCE_ERROR);
-    CHECK(r.value == RESOURCE_PROGRAM_NO_PROCS);
-    CHECK(!g_captured.called);
 }
 
 /* max_call_depth=0 total_depth=0 proc_count=1 arg_count=0 body=[0x80, RETURN] */

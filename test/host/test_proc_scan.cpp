@@ -221,24 +221,6 @@ TEST(ScanProcBodyAcceptsAnAssignedEscapeSubCode)
     CHECK(r.needsLRSave); // CLZ reaches a helper
 }
 
-TEST(ScanProcBodyRejectsAnUnassignedEscapeSubCode)
-{
-    // An unassigned sub-code has no defined operand shape, so it has no
-    // length either — the walk cannot skip it and must stop.
-    const uint8_t cases[][3] = {
-        {125, 0, 102}, // MISC_BINARY, entirely reserved
-        {125, 3, 102},
-        {126, 2, 102}, // MISC_UNARY, past its assigned sub-codes
-        {127, 7, 102}, // MISC_OTHER, past DROP #4
-    };
-    for(uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
-    {
-        BodyScanResult r = scanBytes(cases[i], 3);
-        CHECK(!r.ok);
-        CHECK(r.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE);
-    }
-}
-
 TEST(ScanProcBodyStepsOverEveryMiscOtherSubCode)
 {
     // DROP is ordinary straight-line code to the walk; its extended form
@@ -293,15 +275,6 @@ TEST(ScanProcBodyStepsOverADispatchAndItsFallthrough)
     CHECK(r.bodyBytes == sizeof(bytes));
 }
 
-TEST(ScanProcBodyRejectsAnEscapeWithNoSubCodeAtAll)
-{
-    // Truncated right after the escape byte: there is no sub-code to read.
-    const uint8_t bytes[] = {126};
-    BodyScanResult r = scanBytes(bytes, sizeof(bytes));
-    CHECK(!r.ok);
-    CHECK(r.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE);
-}
-
 TEST(ScanProcBodyRejectsAnExtensionOpcodeAfterAValidPrefix)
 {
     // Not just the first byte: the walk must stop mid-body too, and must not
@@ -314,19 +287,4 @@ TEST(ScanProcBodyRejectsAnExtensionOpcodeAfterAValidPrefix)
     BodyScanResult r = scanBytes(bytes, len);
     CHECK(!r.ok);
     CHECK(r.failCode == RESOURCE_PROGRAM_EXT_UNKNOWN);
-}
-
-TEST(ScanProcBodyRunningOffTheEndIsNotAStackFloorHit)
-{
-    // A loop with nothing closing it: the walk runs off maxBytes with a
-    // level still open. Same !ok as the floor case above, and the other
-    // half of the distinction failCode exists to draw — a body that
-    // was never well-formed, which no amount of stack would fix.
-    const Instr body[] = {bare(Op::LOOP_PRE), CONST(1)};
-    uint8_t bytes[16];
-    uint32_t len = encodeBody(body, 2, bytes, sizeof(bytes));
-
-    BodyScanResult r = scanBytes(bytes, len);
-    CHECK(!r.ok);
-    CHECK(r.failCode == RESOURCE_PROGRAM_BODY_UNTERMINATED);
 }

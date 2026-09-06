@@ -112,7 +112,6 @@ TEST(DecodeInstrYieldsOpExtWithItsOpcodeAndNoOperandsRead)
     const uint8_t bytes[] = {EXT_INLINE, 0xe5, 0x8e, 0x26};
 
     WireInstr d = decodeOne(bytes, sizeof(bytes));
-    CHECK(d.ok);
     CHECK(d.instr.op == Op::EXT);
     CHECK(d.instr.extOpcode == EXT_INLINE);
     CHECK(d.consumed == 1);
@@ -197,18 +196,12 @@ TEST(TheTopOfCoreOpcodeSpaceIsNeverOfferedToAnExtension)
     // The boundary this pins: the core assigns every byte up to 127 and the
     // extension range starts at 128 (isa-core.md §5.1). GREEDY accepts every
     // byte it is shown, so an off-by-one in the gate would let it squat on
-    // core opcode space — here the last CONST small form and §5.3's own
-    // escapes, which are core too however their sub-codes are resolved.
+    // core opcode space — here the last CONST small form.
     ExtScope ext(&GREEDY);
     const uint8_t lastConst[] = {124, 102 /* RETURN */};
     BodyScanResult constScan = scanBytes(lastConst, sizeof(lastConst));
     CHECK(constScan.ok);
     CHECK(constScan.failCode == 0);
-
-    const uint8_t escape[] = {125, 0, 102 /* RETURN */};
-    BodyScanResult escapeScan = scanBytes(escape, sizeof(escape));
-    CHECK(!escapeScan.ok);
-    CHECK(escapeScan.failCode == RESOURCE_PROGRAM_RESERVED_OPCODE); // core's own reason, never the extension's
 
     // ...and 128 is the first byte it legitimately does get.
     const uint8_t first[] = {0x80, 102 /* RETURN */};

@@ -19,7 +19,9 @@
 
 import * as fs from "fs"
 import * as path from "path"
-import { decodeLeb128, decodeBody, encodeJitEnvelope, extInstr, validateProgram } from "mog-core"
+import { decodeLeb128, decodeBody, encodeJitEnvelope, extInstr, ir, lowerProgram, validateProgram } from "mog-core"
+import { toProcedures } from "./gen/corpus"
+import type { GenProgram } from "./gen/corpus"
 import type { RtlInstr, RtlProc, RtlProgram } from "mog-core"
 import { rawMemExtension } from "./lib/rawmem_ext"
 
@@ -1339,6 +1341,38 @@ const authored: [string, RtlProgram][] = [
     ["fused_if_then_dead_merge", fusedIfThenDeadMerge],
 ]
 
+// ── regressions from the AST-level campaign ─────────────────────────────
+//
+// A finding from ts/driver.ts arrives as DSL, so it is lowered here rather
+// than spelled out instruction by instruction. What it pins is a shape, not
+// a byte sequence: the codegen that produced the bug may change completely
+// and the program must still answer what the reference VM answers.
+
+const astRegressions: { name: string; procs: { args?: string[]; source: string }[] }[] = [
+    {
+        // A CALL's dispatch record carries the offset execution resumes at
+        // when the callee returns, and `abiEmitCall` measured it before
+        // `AtomicBlock` had flushed the literal pool. The flush emits a
+        // branch over the pool and the pool itself, moving the whole call
+        // sequence forward — so the return landed *inside* the pool,
+        // executed pool words as instructions, fell through into the call
+        // sequence and called again. An infinite loop, from a program the
+        // reference VM answers in a millisecond. All four statements are
+        // load-bearing: drop any one and the pool lands elsewhere.
+        name: "call_resume_after_pool_flush",
+        procs: [
+            { args: ["a"], source:
+                `ld32(ld8(ld16(ld8(ld8(0)))));\n`
+                + `ld32(ld8(ld16(ld8(p1(a)))));\n`
+                + `ld32(ld8(ld16(ld8(p1(a)))));\n`
+                + `i8 p = ld16(p2());\n`
+                + `return 0;` },
+            { args: ["v4"], source: `return 3;` },
+            { source: `return 0x10000;` },
+        ],
+    },
+]
+
 // ── write them all ──────────────────────────────────────────────────────
 
 let staged = 0
@@ -1358,4 +1392,12 @@ else
 }
 
 for(const [name, program] of authored) write(name, program)
-console.log(`wrote ${staged} staged + ${authored.length} authored = ${staged + authored.length} seeds`)
+
+for(const r of astRegressions)
+{
+    const gen: GenProgram = { procs: r.procs.map(x => ({ args: x.args ?? [], body: [...ir`${x.source}`.body] })) }
+    write(r.name, lowerProgram(toProcedures(gen, false), EXT) as unknown as RtlProgram)
+}
+
+console.log(`wrote ${staged} staged + ${authored.length} authored + ${astRegressions.length} regression(s) `
+    + `= ${staged + authored.length + astRegressions.length} seeds`)

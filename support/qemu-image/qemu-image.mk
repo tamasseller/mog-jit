@@ -27,9 +27,11 @@ OBJSIZE := arm-none-eabi-size
 COMMONFLAGS := -mcpu=cortex-m0 -mthumb -DNDEBUG
 COMMONFLAGS := $(COMMONFLAGS) -ffixed-r8 -ffixed-r9 -ffixed-r10 -ffixed-r11
 COMMONFLAGS := $(COMMONFLAGS) -fno-use-cxa-atexit
+COMMONFLAGS := $(COMMONFLAGS) -ffunction-sections -fdata-sections
 
 ASMFLAGS := $(ASMFLAGS) -mcpu=cortex-m0 -mthumb
 CXXFLAGS := $(CXXFLAGS) $(COMMONFLAGS) -std=gnu++17 -fno-exceptions -fno-rtti
 LDFLAGS  := $(LDFLAGS)  -mcpu=cortex-m0 -mthumb -static -nostartfiles -specs=nosys.specs
+LDFLAGS  := $(LDFLAGS)  -Wl,--gc-sections
 
 undefine curdir

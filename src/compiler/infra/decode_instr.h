@@ -37,7 +37,7 @@ bool miscSubCodeAssigned(uint32_t code, uint32_t sub);
  *  An extension opcode yields `Op::EXT` with its operands still unread — only
  *  the extension knows how many there are, and only it may consume them
  *  (ext.h). */
-bool decodeInstr(uint8_t code, BcReader &r, Instr &out);
+void decodeInstr(uint8_t code, BcReader &r, Instr &out);
 
 } // namespace jitc
 

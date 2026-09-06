@@ -352,20 +352,24 @@ TEST(DeepNestingStaysWithinStackBudget)
     // processNonTerminators + processUntilTerminator's real combined
     // frame, not a hypothetical one — tools/stack-margin.ts reports the
     // same inlining.)
+    // Two closers per opener, not one: `BR_TABLE 1` opens case[0] and
+    // case[1] (isa-core.md §4.5), so half as many leaves the body
+    // unterminated. That is malformed input, which design.md §1.1 asserts
+    // rather than reports — a program this suite must not build.
     constexpr int kDepth = 8;
-    Instr body[2 * kDepth + 2];
+    Instr body[3 * kDepth + 2];
     for(int i = 0; i < kDepth; i++)
     {
         body[i] = brTable(1);
     }
-    for(int i = 0; i < kDepth; i++)
+    for(int i = 0; i < 2 * kDepth; i++)
     {
         body[kDepth + i] = bare(Op::BLOCK_END);
     }
-    body[2 * kDepth] = CONST(0);
-    body[2 * kDepth + 1] = bare(Op::RETURN);
+    body[3 * kDepth] = CONST(0);
+    body[3 * kDepth + 1] = bare(Op::RETURN);
 
-    ProcSource procs[] = {{0, body, (uint32_t)(2 * kDepth + 2)}};
+    ProcSource procs[] = {{0, body, (uint32_t)(3 * kDepth + 2)}};
     uint8_t progBytes[256];
     uint32_t progLen = encodeJitProgram(/*maxCallDepth=*/0, /*totalDepth=*/0, procs, 1, progBytes, sizeof(progBytes));
 

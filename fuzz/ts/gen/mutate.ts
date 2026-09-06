@@ -512,9 +512,12 @@ function mutateStatement(s: Statement, ctx: Ctx, scope: Scope): Statement
                 while(used.has(next)) next++
                 const body: Statement[] = [sideEffect(ctx, childScope(scope, true)), {type: "BreakStatement"}]
                 const at = cases.findIndex(c => c.test === null)
-                const entry = {type: "SwitchCase" as const, test: lit(next), consequent: body}
-                if(at < 0) cases.push(entry)
-                else cases.splice(at, 0, entry)
+                const where = at < 0 ? cases.length : at
+                // Never between a case that runs on and the one it runs into:
+                // the new label lands in the middle of the chain and the
+                // fall-through no longer names the next value.
+                if(where === 0 || !fallsInto(cases[where - 1]!))
+                    cases.splice(where, 0, {type: "SwitchCase" as const, test: lit(next), consequent: body})
             }
 
             // Drop a case's closer so it runs on into the next one. Legal

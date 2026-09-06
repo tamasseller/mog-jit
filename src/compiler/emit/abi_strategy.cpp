@@ -32,6 +32,14 @@ static constexpr uint32_t CALL_SEQUENCE_BYTES = CALL_SEQUENCE_HALFWORDS * 2;
 
 Effect abiEmitCall(Assembler &a, uint32_t procIdx, uint32_t calleeIndex)
 {
+    // Opened before `pc()` is read, not after: its `ensurePoolRoom` may
+    // flush the literal pool here, which emits a branch over the pool and
+    // the pool itself and moves the whole call sequence forward. A resume
+    // offset measured first names an address inside that pool — the return
+    // lands in pool data, executes it, and falls through into the call
+    // sequence, which calls again and returns to the same place.
+    Assembler::AtomicBlock atomic(a, /*poolEntries=*/2);
+
     uint32_t preCallPc = a.pc();
 
     uint32_t k = (preCallPc - STUB_SIZE) + CALL_SEQUENCE_HALFWORDS * 2;
@@ -41,7 +49,6 @@ Effect abiEmitCall(Assembler &a, uint32_t procIdx, uint32_t calleeIndex)
     }
     uint32_t record = packRecord(procIdx, k + 1);
 
-    Assembler::AtomicBlock atomic(a, /*poolEntries=*/2);
     a.materializeImm32(ENTRY_IDX_REG, record, false);
     a.materializeImm32(ENTRY_OFFSET_REG, calleeIndex, false);
     a.emit(ArmV6M::mov(ArmV6M::AnyReg(ENTRY_JUMP_REG), ArmV6M::AnyReg(HELPER_VEC_REG)));

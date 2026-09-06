@@ -12,7 +12,7 @@
 // is also why the graph needs no separate edge list: the calls in the tree
 // are the edges.
 
-import { lowerProgram, proc } from "mog-core"
+import { declareProc, defineProc, lowerProgram, proc } from "mog-core"
 import { ir } from "mog-core"
 import type { IrFragment, Procedure, RtlProgram, Statement } from "mog-core"
 import type { Extension } from "mog-core"
@@ -104,6 +104,34 @@ export function toProcedures(gen: GenProgram, verify = true): Procedure
     }
 
     return built[0]!
+}
+
+/** The same graph, built without the acyclicity invariant. `declareProc`
+ *  mints every identity before any fragment is built, so a call may name any
+ *  procedure — its own included. Only the invalid lane wants this: it is how
+ *  a program that violates isa-core.md §8.2 becomes expressible at all, and
+ *  therefore the only way `validateProgram`'s rejection of one gets tested.
+ *  `checkGraph` would refuse it here, which would prove nothing about
+ *  mog-core. */
+export function toProceduresUnchecked(gen: GenProgram, verify = true): Procedure
+{
+    const declared = gen.procs.map(p => declareProc(p.args))
+
+    gen.procs.forEach((p, i) =>
+    {
+        const calls = new Map<string, Procedure>()
+        for(const callee of calleesOf(p.body))
+        {
+            const target = declared[callee]
+            if(target !== undefined) calls.set(procName(callee), target)
+        }
+
+        defineProc(declared[i]!, verify
+            ? { type: "IrFragment", ...roundTrip(p.body), calls }
+            : { type: "IrFragment", body: p.body, calls, get source() { return print(p.body) } })
+    })
+
+    return declared[0]!
 }
 
 export function lowerGen<E extends {ext: string}>(

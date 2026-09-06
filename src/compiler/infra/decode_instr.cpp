@@ -1,5 +1,7 @@
 #include "decode_instr.h"
 
+#include <cassert>
+
 namespace jitc
 {
 
@@ -126,7 +128,11 @@ bool decodeLeb128(BcReader &r, uint32_t &value)
     return true;
 }
 
-bool decodeInstr(uint8_t code, BcReader &r, Instr &out)
+/* No failure return. Every encoding it could refuse is malformed input,
+ * which design.md §1.1 makes the validator's guarantee and the frame's
+ * binding — and both callers do no more than assert, so a bool would be
+ * state kept for the assertions alone. */
+void decodeInstr(uint8_t code, BcReader &r, Instr &out)
 {
     Instr instr{};
 
@@ -135,22 +141,21 @@ bool decodeInstr(uint8_t code, BcReader &r, Instr &out)
         instr.op = Op::EXT;
         instr.extOpcode = code;
         out = instr;
-        return true;
+        return;
     }
 
     if(code >= MISC_BASE)
     {
         uint32_t sub = 0;
-        if(!decodeLeb128(r, sub) || !miscSubCodeAssigned(code, sub))
-        {
-            return false;
-        }
+        const bool subOk = decodeLeb128(r, sub);
+        assert(subOk && miscSubCodeAssigned(code, sub)); // GCOV_EXCL_LINE — malformed input
+        (void)subOk;
 
         if(code == MISC_UNARY)
         {
             instr.op = MISC_UNARY_OPS[sub];
             out = instr;
-            return true;
+            return;
         }
 
         if(sub == SUB_FALLTHROUGH)
@@ -164,10 +169,9 @@ bool decodeInstr(uint8_t code, BcReader &r, Instr &out)
         else if(sub == SUB_DROP_EXT)
         {
             uint32_t n = 0;
-            if(!decodeLeb128(r, n))
-            {
-                return false;
-            }
+            const bool nOk = decodeLeb128(r, n);
+            assert(nOk); // GCOV_EXCL_LINE — malformed input
+            (void)nOk;
             instr.op = Op::DROP;
             instr.imm = (int32_t)(n + DROP_EXT_BIAS);
         }
@@ -178,7 +182,7 @@ bool decodeInstr(uint8_t code, BcReader &r, Instr &out)
         }
 
         out = instr;
-        return true;
+        return;
     }
 
     if(code >= SMALL_CONST_BASE)
@@ -186,7 +190,7 @@ bool decodeInstr(uint8_t code, BcReader &r, Instr &out)
         instr.op = Op::CONST;
         instr.imm = (int32_t)(code - SMALL_CONST_BASE);
         out = instr;
-        return true;
+        return;
     }
 
     const Entry &entry = TABLE[code];
@@ -197,10 +201,9 @@ bool decodeInstr(uint8_t code, BcReader &r, Instr &out)
     if(aux == AUX_EXT || aux == AUX_EXT_BR)
     {
         uint32_t value = 0;
-        if(!decodeLeb128(r, value))
-        {
-            return false;
-        }
+        const bool valueOk = decodeLeb128(r, value);
+        assert(valueOk); // GCOV_EXCL_LINE — malformed input
+        (void)valueOk;
         instr.imm = (int32_t)value + (aux == AUX_EXT_BR ? 2 : 0);
     }
     else
@@ -209,7 +212,6 @@ bool decodeInstr(uint8_t code, BcReader &r, Instr &out)
     }
 
     out = instr;
-    return true;
 }
 
 } // namespace jitc

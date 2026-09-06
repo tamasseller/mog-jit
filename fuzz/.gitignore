@@ -10,3 +10,6 @@ last_input.bin
 out/
 out_*/
 seeds_raw/
+src/readc-spike/spike.elf
+src/qemu-exec/exec_runner_dbg.elf
+src/qemu-exec/exec_runner_cov.elf

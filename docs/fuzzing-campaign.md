@@ -1,11 +1,15 @@
 # Differential fuzzing campaign — findings
 
-Record of one campaign against `fuzz`, for review. The permanent
+Record of the campaigns against `fuzz`, for review. The permanent
 versions of the conclusions live in `design.md` §17 and `target-profile.md`;
 this file is the working detail behind them — what was run, what broke, and
 which side of each disagreement was wrong.
 
-**Nine findings, all fixed.** §1 (`TRAP` does not unwind) was the one left
+**Ten findings, all fixed.** Nine came from the byte-mutation campaign
+(§1-§9); §10 came from the AST-level generator that replaced it, and is the
+same class as §6 at a different site.
+
+ §1 (`TRAP` does not unwind) was the one left
 open at the end of the campaign, as a deliberate decision rather than an
 oversight — it needed new runtime asm and an ABI contract change. It has
 since been fixed too; that section records both the finding and the fix.
@@ -41,6 +45,7 @@ justification the first pass gave.
 | 7 | `BR_TABLE 2` folds the implicit default into `case[1]` | miscompilation | translator | fixed |
 | 8 | `LOOP` condition block's TOS surplus never dropped | miscompilation | translator | fixed |
 | 9 | Callee entry `acc`: seeded to 0, and live when nothing sets it | miscompilation | `mog-core` | fixed |
+| 10 | A `CALL`'s resume offset measured before the literal-pool flush | miscompilation | translator | fixed |
 
 ---
 
@@ -563,6 +568,73 @@ with `READ; WRITE` were rejected. `packages/codecs` went 41 failures mid-change
 
 ---
 
+## 10. A `CALL`'s resume offset measured before the literal-pool flush
+
+From the AST-level campaign, not the byte one — the first finding it
+produced, at 6,000 candidates.
+
+**Symptom.** The emitted code never finished. Same surface as §6, and the
+same underlying shape: a computed offset that does not account for a
+literal pool landing between where it was measured and what it names.
+
+**Repro.** Minimized 60+ statements to five, across three procedures — 44
+bytes of bytecode:
+
+```
+p0(a):  ld32(ld8(ld16(ld8(ld8(0)))));
+        ld32(ld8(ld16(ld8(p1(a)))));
+        ld32(ld8(ld16(ld8(p1(a)))));
+        i8 p = ld16(p2());
+        return 0;
+p1(v4): return 3;
+p2():   return 0x10000;
+```
+
+All four statements of `p0` are load-bearing: drop any one and the pool
+lands somewhere harmless. No loop anywhere, and the reference VM answers
+`0` in a millisecond. `fuzz/seeds/call_resume_after_pool_flush` is this
+program, as a standing regression.
+
+**Diagnosis.** `qemu-system-arm -d exec` showed a period-14 cycle entirely
+within the code arena and the dispatch helpers — no translator frame in it,
+so nothing was being retranslated and eviction was not involved (the whole
+program compiles to 248 bytes against a 3072-byte arena). The same address
+appeared twice per period, once as a return target and once as a call
+target: a return landing at a call rather than after one.
+
+**Cause.** `abiEmitCall` read `a.pc()` *before* constructing its
+`Assembler::AtomicBlock`. That constructor calls `ensurePoolRoom`, which may
+flush the literal pool — emitting a branch over the pool and the pool
+itself, moving the whole call sequence forward. The dispatch record's resume
+offset was therefore short by the pool's own length, and named an address
+inside the pool. Disassembled: the record held `0xa7` (resume `0xaa`, in the
+middle of the pool at `0xa4`-`0xae`) where the actual resume point was
+`0xba`. Returning there executed pool words as instructions, fell through
+into the call sequence, called again, and returned to the same place.
+
+**Fix.** Open the `AtomicBlock` first, then read `pc()`. One line moved. The
+record now holds `0xb7` — resume `0xba`, which is the `pop {r7}` after the
+call.
+
+**The rest of the class.** Every other `a.pc()` in `src/compiler` was
+audited. `translateBrTable`'s jump-table base already reads it inside its
+own `AtomicBlock`, which is the correct shape. The remaining three
+(`emitBackBranch`'s two deltas, `translateLoop`'s `bodyStart`) are followed
+immediately by the `emit` they measure, and `Assembler::emit` writes the
+halfword before it checks the pool — so nothing moves under them. Where one
+of those is a *branch target* rather than a delta, a flush landing on it is
+still harmless: the guard branch the flush emits sits exactly there and
+jumps over the pool to the same place.
+
+**Why nothing else caught it.** The host crash sink never executes what it
+emits, so a wrong-but-well-formed return address is invisible to it; it
+reported the program clean. `test/host` and `test/qemu` between them cover
+`abiEmitCall` fully by line — the bug needed a pool flush to fall in one
+specific place, which is a shape no hand-written test had. And the reference
+VM has no literal pool at all.
+
+---
+
 ## Harness bugs — the fuzzer was lying about its own coverage
 
 Worth listing separately: several of these meant the pre-existing harness was
@@ -655,14 +727,21 @@ Recorded because each cost real time and none is discoverable from the docs.
   every path tried, the `:tt` stdin special case included, while `SYS_WRITE0`
   works. The batch therefore arrives via `-device loader` into guest flash,
   which needs no semihosting for input at all.
+- **`SYS_READC` works, but only through an explicit `-chardev`**, and is
+  non-blocking and lossy: an empty buffer reads back 0 rather than waiting,
+  and interleaving `SYS_WRITE0` on the same chardev drops every other input
+  byte. `fuzz/src/readc-spike/` is the probe. Enough for a transport, not
+  enough for one without framing and retry.
 - **`-device loader` caps a blob at `ram_size`.** At `-m 8k` it silently
   refused anything over 8192 bytes with nothing but "Cannot load specified
-  image". `qemu_exec.ts` passes `-m 64k`; the board takes its SRAM size from
+  image". `lib/batch.ts` passes `-m 1M`; the board takes its SRAM size from
   its own SoC, not from `-m`, so the guest still sees exactly what it links
-  for. That cap, not flash, is what bounds `BATCH_LIMIT` on `microbit`.
-- **The runner's `rom` region is 16 KB**, against an image of about 11 KB,
-  which both leaves the 24 KB batch window and makes the *linker* guarantee
-  image and batch never overlap.
+  for. That cap has to clear `BATCH_LIMIT`, which is 128 KB.
+- **The runner's `rom` region is 16 KB**, against an image of about 12 KB,
+  which both leaves the 128 KB batch window below the model's 256 KB flash
+  and makes the *linker* guarantee image and batch never overlap. The two
+  instrumented variants (asserts, coverage) do not fit 16 KB and share a
+  32 KB script of their own, with their batch moved to match.
 - **`-serial none`, not `-nographic`.** The latter wires the model's UART to
   stdio and interleaves it with the semihosting result lines. Semihosting
   output arrives on **stderr** under `target=native`.

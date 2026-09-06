@@ -225,20 +225,6 @@ TEST(WalkFailsWithoutTouchingDispatchStateWhenAProcedureCantBeScanned)
     CHECK(runtime->loadProgram(wire) == RESOURCE_EXHAUSTED_SCAN_STACK);
 }
 
-TEST(WalkReportsAnUnterminatedBodySeparatelyFromRunningOutOfStack)
-{
-    const Instr body[] = {bare(Op::LOOP_PRE), CONST(1)};
-    ProcSource procs[] = {ProcSource{0, body, 2}};
-    uint8_t programBytes[16];
-    uint32_t len = encodeProgram(procs, 1, programBytes, sizeof(programBytes));
-
-    alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
-    Runtime *runtime = new(bytes) Runtime(1, arena);
-    BcReader wire = wireAtBodies(programBytes, len);
-    CHECK(runtime->loadProgram(wire) == RESOURCE_PROGRAM_BODY_UNTERMINATED);
-}
-
 TEST(WalkReportsAnArgCountPastProcSlotsOwnFieldWidth)
 {
     const Instr body[] = {bare(Op::RETURN)};

@@ -28,6 +28,13 @@ struct ScanFrame
     bool dispatch;
 };
 
+/* `failCode` carries the only two rejections this walk makes. Malformed
+ * input is not among them: design.md §1.1 makes wire validity the
+ * validator's guarantee and the frame's binding, so it is asserted and
+ * `-DNDEBUG` strips it from every real image. The extension pair is
+ * different — the frame seeds on PROGRAM_CONTRACT_VERSION alone and says
+ * nothing about which extension the image links, and nothing host-side
+ * rejects a call-shaped extension for this JIT at all. */
 static void GUARDED_scanBody(BcReader &r, bool &needsLRSave, ScanFrame *frame, uint32_t stackFloor, bool &stop, bool &foundEnd, uint32_t &failCode)
 {
     register uint32_t sp asm("sp");
@@ -41,12 +48,7 @@ static void GUARDED_scanBody(BcReader &r, bool &needsLRSave, ScanFrame *frame, u
     while(!r.atEnd())
     {
         Instr instr;
-        if(!decodeInstr(r.next(), r, instr))
-        {
-            stop = true;
-            failCode = RESOURCE_PROGRAM_RESERVED_OPCODE;
-            return;
-        }
+        decodeInstr(r.next(), r, instr);
 
         if(instr.op == Op::EXT)
         {
@@ -137,11 +139,8 @@ BodyScanResult scanProcBody(BcReader &r, uint32_t stackFloor)
 
     GUARDED_scanBody(r, needsLRSave, nullptr, stackFloor, stop, foundEnd, failCode);
 
-    if(!foundEnd && failCode == 0)
-    {
-        failCode = RESOURCE_PROGRAM_BODY_UNTERMINATED;
-    }
-
+    // Running off the end without a terminator is malformed input.
+    assert((foundEnd || failCode != 0) && "body with no terminator"); // GCOV_EXCL_LINE
     return BodyScanResult{before - r.remaining(), needsLRSave, failCode == 0, failCode};
 }
 

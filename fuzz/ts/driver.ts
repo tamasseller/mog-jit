@@ -1,9 +1,10 @@
 // fuzz — the campaign driver.
 //
-//     npx ts-node --transpile-only fuzz/ts/driver.ts [--rounds N] [--batch N] [--seed N] [--no-qemu] [--no-host]
+//     npx ts-node --transpile-only fuzz/ts/driver.ts [--rounds N] [--batch N] [--seed N]
+//         [--no-qemu] [--no-host] [--no-dbg] [--qemu-elf F] [--host-driver F]
 //
-// TS generates and owns the campaign; the two out-of-process sinks are
-// handed batches of programs that already passed everything cheap.
+// TS generates and owns the campaign; the out-of-process sinks are handed
+// batches of programs that already passed everything cheap.
 //
 // Two tiers, because they cost three orders of magnitude apart:
 //
@@ -14,11 +15,14 @@
 //           never sees the lowerer's output can disagree with it.
 //
 //   outer   whatever survived, in batches, to the emulated target (wrong
-//           answers from real emitted Thumb) and to the host translator
-//           under ASan/UBSan with asserts live (crashes). Neither sink can
-//           see the other's findings.
+//           answers from real emitted Thumb), to the same target image built
+//           with asserts live, and to the host translator under ASan/UBSan
+//           (crashes). No sink sees another's findings: the host one never
+//           executes what it emits, and the shipped target image is
+//           -DNDEBUG and so cannot see an assert fire.
 //
-// A finding's repro is `(corpus entry, seed)` — `gen/show.ts` prints it.
+// A finding is written out as a program under `--save`; the `(corpus entry,
+// seed)` it is reported under names the seed it descends from.
 
 import * as fs from "fs"
 import * as path from "path"
@@ -26,7 +30,7 @@ import { encodeJitProgram, run, validateProgram, StepLimitExceeded, UnspecifiedS
 import type { RtlProgram } from "mog-core"
 import { rawMemExtension } from "./lib/rawmem_ext"
 import { entryArgsFor } from "./lib/entry_args"
-import { chunk, digestOf, parseResults, runQemu, writeBatch, PROGRAM_MAX } from "./lib/batch"
+import { chunk, digestOf, parseResults, runQemu, unionCoverage, writeBatch, BATCH_ADDR, BATCH_ADDR_DBG, PROGRAM_MAX } from "./lib/batch"
 import { lowerGen, seedCorpus } from "./gen/corpus"
 import type { GenProgram } from "./gen/corpus"
 import { inflateSequenced, mutateSequenced, nestDepth } from "./gen/mutate"
@@ -37,7 +41,13 @@ import { evaluate } from "./eval/ast-eval"
 
 const EXT = rawMemExtension()
 const HERE = __dirname
-const EXEC_ELF = path.join(HERE, "..", "src", "qemu-exec", "exec_runner.elf")
+const EXEC_ELF_DEFAULT = path.join(HERE, "..", "src", "qemu-exec", "exec_runner.elf")
+// The same runner with asserts live. The shipped image is -DNDEBUG, so
+// nothing that executes emitted Thumb has ever been able to see an assert
+// fire: the host sink asserts but never runs the code, this one runs it and
+// was blind. That is the only reason this ELF exists — its answers are the
+// other one's by construction.
+const EXEC_ELF_DBG = path.join(HERE, "..", "src", "qemu-exec", "exec_runner_dbg.elf")
 const HOST_DRIVER_DEFAULT = path.join(HERE, "..", "src", "driver", "fuzz_driver")
 // Per process, so several workers can run a campaign at once without
 // clobbering each other's batch between writing it and running it.
@@ -95,17 +105,31 @@ const SAVE_DIR = at < 0 ? "/tmp/ppl-fuzz-findings" : argv[at + 1]!
 // that propagates one) are unreachable from it however long a campaign runs.
 // The ladder straddles both thresholds: a conditional branch reaches ±254
 // bytes of code and the wide form the translator retries in reaches ±2046.
+// How many batches apart the assert image runs. Not every batch: it is a
+// second QEMU boot over programs the first has already answered, and only
+// its asserts are new.
+const DBG_EVERY = value("--dbg-every", 4)
+
 const BULK_EVERY = value("--bulk-every", 32)
 const BULK_SIZES = [80, 160, 240, 320]
 
 const USE_QEMU = !flag("--no-qemu")
 const USE_HOST = !flag("--no-host")
+const USE_DBG = !flag("--no-dbg")
 // Which build of the host sink a campaign feeds. The default is the
 // ASan/UBSan one that hunts crashes; `src/driver/fuzz_driver_cov` is the
 // same code built for line coverage, and answers the other question — which
 // translator branches a campaign never reaches at all.
 const hostAt = argv.indexOf("--host-driver")
 const HOST_DRIVER = hostAt < 0 ? HOST_DRIVER_DEFAULT : path.resolve(argv[hostAt + 1]!)
+// Which target image answers. `exec_runner_cov.elf` is the same code with
+// `-fsanitize-coverage=trace-pc`, and prints an edge bitmap per boot; its
+// rom is larger, so its batch starts somewhere else.
+const qemuAt = argv.indexOf("--qemu-elf")
+const EXEC_ELF = qemuAt < 0 ? EXEC_ELF_DEFAULT : path.resolve(argv[qemuAt + 1]!)
+const EXEC_ADDR = qemuAt < 0 ? BATCH_ADDR : BATCH_ADDR_DBG
+const coverage = new Uint8Array(256)
+let coverageBits = 0
 
 // ── the inner loop ──────────────────────────────────────────────────────
 
@@ -295,7 +319,8 @@ function sweepRoundTrip(entries: readonly {name: string; program: GenProgram}[])
 function runTarget(batch: Verified[]): void
 {
     writeBatch(BATCH_PATH, batch)
-    const r = runQemu(EXEC_ELF, BATCH_PATH, QEMU_TIMEOUT_MS)
+    const r = runQemu(EXEC_ELF, BATCH_PATH, QEMU_TIMEOUT_MS, EXEC_ADDR)
+    coverageBits += unionCoverage(r.output, coverage)
 
     if(r.timedOut)
     {
@@ -339,6 +364,35 @@ function runTarget(batch: Verified[]): void
     })
 }
 
+/** The same programs through the assert image. Answers are not re-compared —
+ *  it is the same translator and runtime — only whether an `assert` fired. */
+function runTargetDbg(batch: Verified[]): void
+{
+    writeBatch(BATCH_PATH, batch)
+    const r = runQemu(EXEC_ELF_DBG, BATCH_PATH, QEMU_TIMEOUT_MS, BATCH_ADDR_DBG)
+
+    const results = parseResults(r.output)
+
+    if(r.timedOut)
+    {
+        // The same programs the answer image has already run, in an image
+        // that differs only by its assertions — so this should not be
+        // reachable, and is worth the same attribution a target hang gets.
+        const culprit = batch[results.length]
+        report("DBG HANG", culprit?.entry ?? "?", culprit?.seed ?? 0,
+            `assert image did not finish (${r.status}), ${results.length} of ${batch.length} reported`, culprit?.gen)
+        return
+    }
+
+    const at = results.findIndex(x => x.kind === "A")
+    if(at < 0) { bump("dbg clean"); return }
+
+    const culprit = batch[at]
+    const text = r.output.split("\n").filter(l => l.startsWith("ASSERT ")).slice(0, 2).join("\n  ")
+    report("TARGET ASSERT", culprit?.entry ?? "?", culprit?.seed ?? 0,
+        `${text}\n  at line ${results[at]!.value}`, culprit?.gen)
+}
+
 function runHost(batch: Verified[]): void
 {
     writeBatch(BATCH_PATH, batch)
@@ -377,6 +431,7 @@ function bisect(batch: Verified[]): Verified | undefined
 // ── main ────────────────────────────────────────────────────────────────
 
 if(USE_QEMU && !fs.existsSync(EXEC_ELF)) { console.error(`no ${EXEC_ELF} — run "make -C src/qemu-exec"`); process.exit(1) }
+if(USE_QEMU && USE_DBG && !fs.existsSync(EXEC_ELF_DBG)) { console.error(`no ${EXEC_ELF_DBG} — run "make -C src/qemu-exec DEBUG=1"`); process.exit(1) }
 if(USE_HOST && !fs.existsSync(HOST_DRIVER)) { console.error(`no ${HOST_DRIVER} — run "make -C src/driver"`); process.exit(1) }
 
 // The corpus grows. Without that every mutant is one generation from a
@@ -385,14 +440,14 @@ if(USE_HOST && !fs.existsSync(HOST_DRIVER)) { console.error(`no ${HOST_DRIVER} �
 // graph three procedures long — are never reached at all: a single pass at
 // this mutation rate simply does not build them.
 const corpus = seedCorpus()
-const CORPUS_MAX = 400
+const CORPUS_MAX = value("--corpus-max", 400)
 // A mutation adds far more often than it deletes, so a corpus that fed back
 // every novel program would drift monotonically upward until everything in
 // it sat against PROGRAM_MAX. Only programs inside this band are fed back,
 // which keeps a spread of sizes; a mutant of one may still grow past it and
 // be tested, it just does not become the thing the next generation grows
 // from.
-const CORPUS_MAX_BYTES = 1024
+const CORPUS_MAX_BYTES = value("--corpus-max-bytes", 1024)
 const started = Date.now()
 let pool: Verified[] = []
 const seen = new Set<string>()
@@ -433,6 +488,7 @@ for(let i = 0; i < ROUNDS; i++)
         for(const part of chunk(pool))
         {
             if(USE_QEMU) runTarget(part)
+            if(USE_QEMU && USE_DBG && batches % DBG_EVERY === 0) runTargetDbg(part)
             if(USE_HOST) runHost(part)
         }
         batches++
@@ -453,6 +509,7 @@ if(pool.length > 0)
     for(const part of chunk(pool))
     {
         if(USE_QEMU) runTarget(part)
+        if(USE_QEMU && USE_DBG) runTargetDbg(part)
         if(USE_HOST) runHost(part)
     }
     batches++
@@ -464,5 +521,6 @@ const seconds = (Date.now() - started) / 1000
 console.log(`\n${ROUNDS} candidates in ${seconds.toFixed(1)}s, ${batches} batch(es), `
     + `${seen.size} distinct shapes, corpus grew to ${corpus.length}`)
 for(const [k, v] of Object.entries(counts).sort((a, b) => b[1] - a[1])) console.log(`  ${String(v).padStart(6)}  ${k}`)
+if(coverageBits > 0) console.log(`\ntarget edge coverage: ${coverageBits} of ${coverage.length * 8} bits`)
 console.log(findings.length === 0 ? "\nno findings" : `\n${findings.length} FINDING(S)`)
 process.exit(findings.length === 0 ? 0 : 1)

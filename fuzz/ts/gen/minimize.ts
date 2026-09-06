@@ -1,6 +1,6 @@
 // fuzz — shrink a finding to the smallest program that still shows it.
 //
-//     npx ts-node --transpile-only fuzz/ts/gen/minimize.ts <program.json> [--jit] [-o out.json]
+//     npx ts-node --transpile-only fuzz/ts/gen/minimize.ts <program.json> [--jit] [--timeout ms] [-o out.json]
 //
 // Works on the tree rather than on instructions or bytes, so what comes out
 // is readable DSL source — the form a person reasons about — and every
@@ -38,6 +38,10 @@ const BATCH_PATH = `/tmp/ppl-fuzz-minimize-${process.pid}.bin`
 const MAX_STEPS = 200_000
 
 const JIT = process.argv.includes("--jit")
+// A healthy program answers in well under a second, so the campaign's 20s is
+// pure waste here: every candidate that still hangs pays it in full.
+const tAt = process.argv.indexOf("--timeout")
+const TIMEOUT_MS = tAt < 0 ? 20_000 : Number(process.argv[tAt + 1])
 
 /** Does `gen` still show the finding? Anything that no longer lowers, no
  *  longer terminates or has become unsequenced is not a smaller witness —
@@ -90,7 +94,7 @@ function stillFails(gen: GenProgram): boolean
     catch { return false }
 
     writeBatch(BATCH_PATH, [{bytes, entryArgs: args}])
-    const r = runQemu(ELF, BATCH_PATH, 20_000)
+    const r = runQemu(ELF, BATCH_PATH, TIMEOUT_MS)
     if(r.timedOut) return true // a hang is a finding too
 
     const [result] = parseResults(r.output)

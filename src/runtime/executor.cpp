@@ -107,10 +107,9 @@ ProgramResult Executor::run(BcHandle program, uint32_t programSize, uint32_t *ar
         return ProgramResult{ RESOURCE_EXHAUSTED_STACK_BUDGET, LANDING_RESOURCE_ERROR };
     }
 
-    if(hdr.procCount == 0)
-    {
-        return ProgramResult{ RESOURCE_PROGRAM_NO_PROCS, LANDING_RESOURCE_ERROR };
-    }
+    // A program with no procedures is malformed input, which design.md §1.1
+    // makes the validator's guarantee and the frame's binding.
+    assert(hdr.procCount != 0); // GCOV_EXCL_LINE
 
     CodeArena::Excursion excursion(arena, codeLimit);
 
@@ -129,11 +128,10 @@ ProgramResult Executor::run(BcHandle program, uint32_t programSize, uint32_t *ar
         return ProgramResult{ RESOURCE_PROGRAM_ENTRY_ARG_COUNT, LANDING_RESOURCE_ERROR };
     }
 
-    const uint32_t entrySpilled = declared > jitc::WINDOW_SIZE ? declared - jitc::WINDOW_SIZE : 0;
-    if(entrySpilled > hdr.totalDepth)
-    {
-        return ProgramResult{ RESOURCE_PROGRAM_ENTRY_DEPTH, LANDING_RESOURCE_ERROR };
-    }
+    // The entry procedure's out-of-window arguments have to fit the depth its
+    // own envelope declares; validateProgram computes both. Unlike the arg
+    // count above, nothing here comes from the caller.
+    assert((declared > jitc::WINDOW_SIZE ? declared - jitc::WINDOW_SIZE : 0) <= hdr.totalDepth); // GCOV_EXCL_LINE
 
     EntryArgs entryArgs;
     buildEntryArgs(&entryArgs, args, declared);

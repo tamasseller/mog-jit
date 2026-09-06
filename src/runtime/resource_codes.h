@@ -12,15 +12,10 @@
 #define RESOURCE_ERROR_CLASS_EXHAUSTED 2u
 #define RESOURCE_ERROR_CLASS_LIMIT 3u
 
-#define RESOURCE_PROGRAM_NO_PROCS 0x52451100u          /* proc_count is zero */
-#define RESOURCE_PROGRAM_BODY_UNTERMINATED 0x52451200u /* a body ran off the blob with a block still open */
-#define RESOURCE_PROGRAM_CALLEE_RANGE 0x52451300u      /* CALL names a procedure index the program doesn't have */
 #define RESOURCE_PROGRAM_FRAME 0x52451400u             /* truncated, corrupt, or built against another contract version */
 #define RESOURCE_PROGRAM_ENTRY_ARG_COUNT 0x52451500u /* argCount != the entry procedure's own declared arg_count */
-#define RESOURCE_PROGRAM_ENTRY_DEPTH 0x52451600u     /* entry procedure's out-of-window args over the envelope's own total_depth */
 #define RESOURCE_PROGRAM_EXT_UNKNOWN 0x52451700u
 #define RESOURCE_PROGRAM_EXT_UNSUPPORTED 0x52451800u
-#define RESOURCE_PROGRAM_RESERVED_OPCODE 0x52451900u /* a §5.3 escape naming a sub-code nothing has assigned */
 
 #define RESOURCE_EXHAUSTED_ARENA 0x52452100u            /* code arena full with nothing left to evict */
 #define RESOURCE_EXHAUSTED_STACK_BUDGET 0x52452200u     /* the up-front whole-excursion stack check failed; nothing was touched */
@@ -43,11 +38,8 @@
 namespace
 {
 constexpr uint32_t RESOURCE_CODES[] = {
-    RESOURCE_PROGRAM_NO_PROCS, RESOURCE_PROGRAM_BODY_UNTERMINATED,
-    RESOURCE_PROGRAM_CALLEE_RANGE, RESOURCE_PROGRAM_FRAME,
-    RESOURCE_PROGRAM_ENTRY_ARG_COUNT,
-    RESOURCE_PROGRAM_ENTRY_DEPTH, RESOURCE_PROGRAM_EXT_UNKNOWN,
-    RESOURCE_PROGRAM_EXT_UNSUPPORTED, RESOURCE_PROGRAM_RESERVED_OPCODE,
+    RESOURCE_PROGRAM_FRAME, RESOURCE_PROGRAM_ENTRY_ARG_COUNT,
+    RESOURCE_PROGRAM_EXT_UNKNOWN, RESOURCE_PROGRAM_EXT_UNSUPPORTED,
     RESOURCE_EXHAUSTED_ARENA, RESOURCE_EXHAUSTED_STACK_BUDGET,
     RESOURCE_EXHAUSTED_TRANSLATOR_STACK, RESOURCE_EXHAUSTED_SCAN_STACK,
     RESOURCE_LIMIT_WINDOW_RECLAIM, RESOURCE_LIMIT_SPILL_OFFSET,

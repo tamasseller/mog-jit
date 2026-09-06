@@ -17,6 +17,8 @@
  * test/qemu/linker.ld's header for the history behind that.
  */
 
+ENTRY(_start)
+
 MEMORY
 {
     rom : ORIGIN = 0x00000000, LENGTH = 0x40000

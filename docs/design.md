@@ -1376,14 +1376,9 @@ unencodable at any size, this backend cannot compile it at all.
 
 | code | value | site | predicate |
 |---|---|---|---|
-| `RESOURCE_PROGRAM_NO_PROCS` | `0x52451100` | `executor.cpp` `Executor::run` | `proc_count == 0` |
-| `RESOURCE_PROGRAM_BODY_UNTERMINATED` | `0x52451200` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | ran off the blob with a block still open |
-| `RESOURCE_PROGRAM_CALLEE_RANGE` | `0x52451300` | `translate_data_flow.cpp`'s `CALL` arm | `calleeIndex >= procCount` |
 | `RESOURCE_PROGRAM_FRAME` | `0x52451400` | `executor.cpp` `Executor::run` | §1.1's frame does not verify: truncated, corrupt, or another contract version |
 | `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` | `0x52451500` | `executor.cpp` `Executor::run` | `argCount != slot(0).argCount()` |
-| `RESOURCE_PROGRAM_ENTRY_DEPTH` | `0x52451600` | `executor.cpp` `Executor::run` | the entry procedure's out-of-window args exceed `total_depth` |
 | `RESOURCE_PROGRAM_EXT_UNKNOWN` | `0x52451700` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | a wire byte past `LAST_CORE_OPCODE`: the extension range (§11), and nothing claimed it |
-| `RESOURCE_PROGRAM_RESERVED_OPCODE` | `0x52451900` | `Runtime::loadProgram` via `proc_scan.cpp`'s `scanProcBody` | one of isa-core.md §5.3's escapes naming a sub-code nothing has assigned |
 | `RESOURCE_PROGRAM_EXT_UNSUPPORTED` | `0x52451800` | `Runtime::loadProgram`, and `translate_proc.cpp`'s `EXT` arm | a declaration asking for a capability this core doesn't implement, or one the emitted code then contradicts (halfword overrun, `tosDelta` mismatch) |
 | `RESOURCE_EXHAUSTED_ARENA` | `0x52452100` | `assembler.cpp` `emit` | buffer full and nothing left to evict (§8) |
 | `RESOURCE_EXHAUSTED_STACK_BUDGET` | `0x52452200` | `executor.cpp`, both variants | the up-front §2 check; nothing was touched |
@@ -1400,24 +1395,35 @@ Two things this deliberately does not cover. Stack overflow proper still
 shouldn't happen — §2's regions are sized from `validateProgram`'s own
 figures and checked before use; the two `EXHAUSTED_*_STACK` codes are the
 *translator's own* C recursion against a live floor, not the compiled
-program's operand stack. And malformed wire bytes stay asserted rather
-than reported, the convention `decode_instr.h` and `proc_scan.h` already
-document: `PROGRAM_BODY_UNTERMINATED`, `PROGRAM_CALLEE_RANGE`,
-`PROGRAM_EXT_UNKNOWN` and `PROGRAM_RESERVED_OPCODE` are the checks that
-exist because the walk needs them anyway, not the start of a validating
-decoder. The last of those is forced rather than chosen: an unassigned
-escape sub-code has no defined operand shape and therefore no length, so
-the walk cannot step over one even if it wanted to. What used to be
-unreportable here is the truncated envelope: `parseProgramHeader` runs
-before there is anywhere to report to, so §1.1's frame is checked ahead of
-it and `PROGRAM_FRAME` is what a short or wrong buffer comes back as.
+program's operand stack. And malformed wire bytes are asserted rather than
+reported, the convention `decode_instr.h` and `proc_scan.h` already
+document, applied without exception: anything §1.1's frame binds — a body
+with no terminator, a `CALL` naming a procedure that isn't there, a
+`proc_count` of zero, an entry whose spilled arguments overrun its own
+`total_depth`, an unassigned escape sub-code — is an `assert`, and
+`-DNDEBUG` strips every one of them from a real image. The JIT relies on
+the validator, and a spot check that the validator already makes buys
+nothing but flash. `decodeInstr` has no failure return at all for the same
+reason: both its callers only ever asserted on one.
 
-`PROGRAM_EXT_UNKNOWN` is the one of those three that is not really about
-malformedness: a byte in the extension range is plausibly the *right*
-program against an image built without that extension registered, so it is
-reported rather than asserted. With an extension registered it means that
-extension declined the byte; §18 has the rest of the seam. It is also the only place that byte is
-stopped. `decodeInstr` merely asserts, and both the QEMU suite and
+What used to be unreportable here is the truncated envelope:
+`parseProgramHeader` runs before there is anywhere to report to, so §1.1's
+frame is checked ahead of it and `PROGRAM_FRAME` is what a short or wrong
+buffer comes back as. `PROGRAM_ENTRY_ARG_COUNT` stays a reported check for
+the opposite reason: `argCount` is the caller's own runtime argument, not
+wire the validator ever saw.
+
+`PROGRAM_EXT_UNKNOWN` and `PROGRAM_EXT_UNSUPPORTED` are the two that survive
+the rule above, and neither is really about malformedness. The frame seeds
+on `PROGRAM_CONTRACT_VERSION` alone, so it says nothing about *which*
+extension the image links: a byte in the extension range is plausibly the
+right program against an image built without that extension registered, and
+nothing binds the two. `EXT_UNSUPPORTED` is worse — mog-core's validator
+supports call-shaped extensions and this backend does not, so that check is
+the only enforcement of the restriction anywhere. Folding an extension
+identity into the frame seed would retire both; docs/TODO.md carries it.
+
+`decodeInstr` merely asserts, and both the QEMU suite and
 `fuzz/src/qemu-exec` build `-DNDEBUG`, so before `GUARDED_scanBody` gained its own
 check a body byte of `0x80` decoded as `CONST 20` on real hardware and
 silently reinterpreted the rest of the instruction stream. The check sits
@@ -1824,6 +1830,25 @@ several mutations deep are never reached. That also means a finding's
 program that failed, so the program itself is what gets written out, as
 readable source. `fuzz/ts/gen/minimize.ts` shrinks it on the tree.
 
+Four sinks, not two. The emulated target answers, the host translator runs
+under ASan/UBSan with asserts live, and two more close gaps the first pair
+left. `exec_runner_dbg.elf` is the same target runner built with asserts:
+the shipped image is `-DNDEBUG`, so before it nothing that *executed*
+emitted Thumb could see an assert fire — the host sink asserts but never
+runs the code. `exec_runner_cov.elf` is the same runner again with
+`-fsanitize-coverage=trace-pc`, and answers the coverage question for the
+half no host build links.
+
+Two lanes ask the opposite question from the rest. The **invalid lane**
+breaks exactly one named invariant per program and requires the host
+toolchain to refuse it — which is the whole contract now that §12 makes wire
+validity the validator's guarantee: past `validateProgram` a program is
+translated on trust. The **frame lane** damages a program the valid lane
+accepted and requires §1.1's frame to catch it, that being the only runtime
+check left between a corrupt buffer and the translator. A folded 16-bit hash
+misses about one corruption in 65536; those are computed host-side and not
+run, because past the frame the bytes are garbage.
+
 Coverage over the host sink is what says whether a campaign is
 throughput-bound or reach-bound, and it says reach: 400 candidates already
 cover 93.6% of translator lines, 3000 cover 94.9%. So the lever is what the
@@ -1832,6 +1857,9 @@ a time against a bounded corpus, which cannot reach a body long enough to
 overrun a branch — a size-directed lane builds that shape directly, and took
 `assembler.cpp`'s literal-pool machinery and
 `translate_control_flow.cpp`'s out-of-range paths from cold to covered.
+Target-side edge coverage says the same thing about the runtime half, and
+says it faster: ~600 of 2048 bitmap bits at 1000 candidates, 619 at 3000,
+620 at 10000.
 
 AFL is not used. It appears nowhere in `fuzz/`'s own campaign record — every
 finding below came from the uninstrumented mutation loop plus the execution
@@ -1901,7 +1929,7 @@ core never interprets them. The core assigns every one of its own 128 codes
 | bytes | owner | a program using one |
 |---|---|---|
 | 0-124 | core (§5.2) | translated |
-| 125-127 | core's own escapes (§5.3) | translated if the sub-code is assigned, else `RESERVED_OPCODE` |
+| 125-127 | core's own escapes (§5.3) | translated; an unassigned sub-code is asserted, not reported (§12) |
 | ≥128 | the registered extension (§5.1, §11) | `EXT_UNKNOWN` if nothing claims it |
 
 **Two calls on two phases.** The core's two needs fall in different passes,

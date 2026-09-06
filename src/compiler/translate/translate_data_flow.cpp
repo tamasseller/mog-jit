@@ -19,9 +19,7 @@ const Instr *Ctx::peek()
             return nullptr;
         }
 
-        const bool ok = decodeInstr(this->body.next(), this->body, this->lookahead);
-        assert(ok); // GCOV_EXCL_LINE — the scan already refused every encoding this can
-        (void)ok;
+        decodeInstr(this->body.next(), this->body, this->lookahead);
 
         this->hasLookahead = true;
     }
@@ -103,11 +101,10 @@ bool Ctx::GUARDED_processUntilTerminator(BranchWidth width, bool isThisLoopCondB
 
             case Op::CALL:
             {
-                if(instr.calleeIndex >= this->a.runtime.getProcCount())
-                {
-                    runtimeBail(&a.runtime, RESOURCE_PROGRAM_CALLEE_RANGE);
-                }
-                else
+                // A CALL naming a procedure the program does not have is
+                // malformed input — validateProgram's guarantee, bound by the
+                // frame (design.md §1.1).
+                assert(instr.calleeIndex < this->a.runtime.getProcCount()); // GCOV_EXCL_LINE
                 {
                     uint32_t calleeArgCount = this->a.runtime.slot(instr.calleeIndex).argCount();
                     uint32_t stackArgs = calleeArgCount > 0 ? calleeArgCount - 1 : 0;

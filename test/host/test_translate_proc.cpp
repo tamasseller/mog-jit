@@ -265,19 +265,6 @@ TEST(OverflowIsReportedRatherThanOverrunningTheBuffer)
     EXPECT_RESOURCE_ERROR(RESOURCE_EXHAUSTED_ARENA, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
-TEST(CallToAProcedureIndexTheProgramDoesntHaveIsReported)
-{
-    // calleeIndex comes off the wire and Runtime::slot() applies no bound
-    // of its own, so this is the one program-shape rejection the
-    // translator itself has to make. Reported as a PROGRAM code, not an
-    // EXHAUSTED one: no arena size makes a call to procedure 5 of a
-    // one-procedure program work.
-    const Instr body[] = {CONST(1), call(5), bare(Op::RETURN)};
-    FakeRuntime<1> rt(/*arenaBytes=*/128);
-    rt.set(0, 0, /*savesLR=*/true, body, 3);
-    EXPECT_RESOURCE_ERROR(RESOURCE_PROGRAM_CALLEE_RANGE, translateProc(0, rt.runtime(), LRU_TICK));
-}
-
 TEST(LoopBackEdgeBailsWhenTheConditionExceedsTheEncodableBranchRange)
 {
     // The back edge runs from the end of the condition block to the start

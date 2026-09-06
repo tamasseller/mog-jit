@@ -70,17 +70,28 @@
 #include "resource_codes.h"
 #include "ext_rawmem.h"
 
-/* Exactly linker.ld's own rom ORIGIN+LENGTH. BATCH_LIMIT is a window into
- * flash rather than all of it — the microbit model has far more, but the
- * generic loader will not place a blob larger than `-m`.
- * Placing the batch immediately above the rom region is what makes the
- * linker itself guarantee the two never overlap — an image that outgrew its
- * region would fail to link rather than quietly run over the batch. Flash,
- * never RAM: vectors.S's own .bss zeroing would erase it. BATCH_LIMIT is
- * therefore the hard per-boot batch ceiling, and qemu_exec.ts chunks to
- * it. */
-static constexpr uint32_t BATCH_ADDR = 0x00004000u;
-static constexpr uint32_t BATCH_LIMIT = 0x00006000u;
+#ifdef PPL_COVERAGE
+#include "cov_rt.h"
+#endif
+
+/* Exactly linker.ld's own rom ORIGIN+LENGTH. Placing the batch immediately
+ * above the rom region is what makes the linker itself guarantee the two
+ * never overlap — an image that outgrew its region would fail to link rather
+ * than quietly run over the batch. Flash, never RAM: vectors.S's own .bss
+ * zeroing would erase it.
+ *
+ * BATCH_LIMIT is the window above that, and the hard per-boot ceiling the
+ * host chunks to. 128KB, which with BATCH_ADDR at 16KB leaves the microbit
+ * model's 256KB flash a comfortable margin — and which the size-directed
+ * lane needs, since a batch of 200 programs at 3KB each is 600KB of chunks
+ * at anything smaller. The other half of that ceiling is QEMU's own `-m`,
+ * which caps the blob the generic loader will place at all; lib/batch.ts
+ * passes enough for this. */
+#ifndef PPL_BATCH_ADDR
+#define PPL_BATCH_ADDR 0x00004000u
+#endif
+static constexpr uint32_t BATCH_ADDR = PPL_BATCH_ADDR;
+static constexpr uint32_t BATCH_LIMIT = 0x00020000u;
 static constexpr uint32_t BATCH_MAGIC = 0x50504C42u; /* "PPLB" */
 
 /* Programs are run *in place, out of flash* — Runtime::init only ever reads
@@ -114,7 +125,10 @@ static constexpr uint32_t PROGRAM_MAX = 4096;
  * buffer below is sized off it, so a batch naming more is rejected rather
  * than truncated. */
 static constexpr uint32_t ENTRY_ARGS_MAX = 16;
-static constexpr uint32_t CODE_ARENA_BYTES = 3072;
+#ifndef PPL_CODE_ARENA_BYTES
+#define PPL_CODE_ARENA_BYTES 3072
+#endif
+static constexpr uint32_t CODE_ARENA_BYTES = PPL_CODE_ARENA_BYTES;
 
 static uint8_t g_codeArena[CODE_ARENA_BYTES] __attribute__((aligned(4)));
 
@@ -249,6 +263,9 @@ int main(void)
         semihostWriteTagged("M:", rawMemDigest());
     }
 
+#ifdef PPL_COVERAGE
+    covReport();
+#endif
     semihostWriteTagged("DONE:", ran);
     semihostExit(0);
 }

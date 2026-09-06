@@ -299,11 +299,11 @@ could only express the acc-borne last argument (isa-core.md §4.6), so an
 entry procedure declaring 2-4 arguments read window registers
 `enterDispatch` never initialized, and one declaring 5 or more also
 reclaimed a frame nobody had pushed — a deterministic hang, on 2.56% of a
-validator-approved fuzz corpus. Two `PROGRAM`-class codes now police the
-pairing instead: `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` when the caller's count
-disagrees with the program's declaration, and
-`RESOURCE_PROGRAM_ENTRY_DEPTH` when a program's own `total_depth` does not
-cover the out-of-window arguments the runtime is about to push for it.
+validator-approved fuzz corpus. `RESOURCE_PROGRAM_ENTRY_ARG_COUNT` polices the
+pairing when the caller's count disagrees with the program's declaration.
+Whether a program's own `total_depth` covers the out-of-window arguments is
+asserted rather than reported (design.md §12): both numbers come off the
+wire, so it is the validator's guarantee and the frame's binding.
 
 ## Adding another entry
 

@@ -13,6 +13,18 @@ instead of having to be hand-authored. And the **lowerer** joins the axis:
 the reference VM and the JIT both consume the same `RtlProgram`, so only an
 engine that never sees the lowerer's output can disagree with it.
 
+## Gates
+
+```sh
+./gates.sh
+```
+
+Everything that has to hold before a campaign's findings mean anything —
+the evaluator against hand-picked answers, the UB analysis calibrated both
+ways, the inner differential, generator survival, the invalid lane and the
+frame lane. If one of these fails the campaign is comparing something
+against itself.
+
 ## Running a campaign
 
 ```sh
@@ -38,6 +50,13 @@ npx ts-node --transpile-only fuzz/ts/gen/minimize.ts /tmp/ppl-fuzz-findings/<fil
 npx ts-node --transpile-only fuzz/ts/gen/minimize.ts <file>.json --jit   # target predicate
 ```
 
+`--dbg-every` (default 4) also runs the batch through
+`exec_runner_dbg.elf`, the same runner with asserts live. The shipped image
+is `-DNDEBUG`, so before it nothing that *executed* emitted Thumb could see
+an assert fire: the host sink asserts but never runs the code. An assert
+comes back as an `A:` line in the failing program's own ordinal slot, so the
+driver names it without bisecting.
+
 `gen/minimize.ts` shrinks on the tree — deleting statements, collapsing an
 expression into one of its children — so what comes out is source a person
 reads, and every candidate it tries is well-formed by construction. To
@@ -53,7 +72,7 @@ npx ts-node --transpile-only fuzz/ts/gen/show.ts <entry> <seed> --emit /tmp/p.bi
 | | what runs | what it catches |
 |---|---|---|
 | inner (in process) | mutate → UB filter → AST evaluator → lower → validate → reference VM | **lowerer and VM bugs** — the two engines disagreeing, on a value, a trap code or the extension buffer |
-| outer (batched) | `src/qemu-exec/` on `qemu-system-arm`, and `src/driver/` under ASan/UBSan | **miscompilation** (the wrong number from real emitted Thumb) and **crashes** (an assert, UB, an out-of-range encoding) |
+| outer (batched) | `src/qemu-exec/` on `qemu-system-arm`, the same image again with asserts live, and `src/driver/` under ASan/UBSan | **miscompilation** (the wrong number, or no answer at all, from real emitted Thumb) and **crashes** (an assert, UB, an out-of-range encoding) |
 
 The inner tier costs no emulator and runs on everything; the outer tier only
 ever sees programs that already survived it. A batch is retained on a
@@ -117,6 +136,59 @@ has no single right answer and comparing engines on it manufactures
 mismatches that are not bugs. `ub_check.ts` calibrates it in both
 directions — missing a real conflict is as wrong as flagging a defined one.
 
+## The invalid lane (`ts/gen/invalid.ts`, `ts/invalid.ts`)
+
+The valid lane asks whether a well-formed program computes the same answer
+everywhere. This one asks the opposite, and it is the question the design
+rests on: an application composing DSL fragments is allowed to get it wrong,
+and something must catch it before a program reaches the wire. Since
+design.md §12 turned every wire-validity check in the JIT into an assert
+that `-DNDEBUG` strips, what catches it is `lowerProgram`, `signature.ts` or
+`validateProgram` — and nothing else.
+
+```sh
+npx ts-node --transpile-only fuzz/ts/invalid.ts --rounds 1000
+```
+
+Eleven breakers, each violating exactly one named invariant, so a program
+that gets through names the gate that was asleep. Calibrating it took three
+rounds of finding that an escape was the breaker's fault, and each of those
+is a fact worth keeping:
+
+- A `default:` written **last** needs no `break` — `caseCloser` closes any
+  clause with nothing after it. Only a default that runs on into another
+  case is a violation.
+- Statements after one that always terminates are **dropped, not rejected**,
+  and a procedure the entry cannot reach is **never lowered**. A breaker
+  that strikes either proves nothing, so site selection is restricted to
+  live, reachable code.
+- A shift amount of 32 or more is a *static* violation only where it lowers
+  to the immediate form; reached through a register it is a runtime value
+  §4.1 leaves unspecified, which the reference VM raises instead. Sites for
+  that breaker exclude short-circuit right-hand sides and ternary arms,
+  where an evaluation may never arrive.
+
+The graph is built through `toProceduresUnchecked`, not `toProcedures`:
+`checkGraph` is this fuzzer's own representation invariant, and a recursion
+it refuses never reaches `validateProgram`'s §8.2 rejection, which is the
+thing under test.
+
+## The frame lane (`ts/frame.ts`)
+
+§1.1's frame is the whole binding between the validator and the JIT, and
+since the demotions it is the only runtime check standing between a corrupt
+buffer and a translator that trusts its input. So it gets a lane:
+
+```sh
+npx ts-node --transpile-only fuzz/ts/frame.ts --rounds 2000
+```
+
+Seven kinds of damage to a program the valid lane accepted; the target must
+answer `RESOURCE_PROGRAM_FRAME` and nothing else. A folded 16-bit hash
+misses about one corruption in 65536 by construction — those are computed
+here rather than discovered on the target, and are **not** run, because past
+the frame the program is garbage the translator would take on trust.
+
 ## The evaluator (`ts/eval/`)
 
 `ast-eval.ts` is the third engine, and its whole value is being
@@ -178,6 +250,23 @@ computed address is otherwise invisible unless the program happens to read
 that slot back.
 
 ## Other tools
+
+**Target-side coverage** answers the half the host build cannot see — the
+dispatch path, `runtime.S`, the landing sequences:
+
+```sh
+make -C src/qemu-exec COV=1
+npx ts-node --transpile-only fuzz/ts/driver.ts --rounds 3000 \
+    --qemu-elf fuzz/src/qemu-exec/exec_runner_cov.elf
+```
+
+`-fsanitize-coverage=trace-pc` hashes each basic block's return address into
+a 2048-bit bitmap in `.bss`, dumped per boot and unioned by the driver.
+AFL's mechanism, none of AFL's plumbing. It says *whether* new edges are
+still turning up, not which are cold — `trace-pc-guard` would say the second
+and wants four bytes of RAM per edge, which this budget has not got. It
+plateaus fast, and that is the finding: 600 bits at 1000 candidates, 619 at
+3000, 620 at 10000.
 
 `coverage.sh` runs a campaign against the coverage build of the host sink
 (`make -C src/driver COV=1`) and reports which translator lines it never

@@ -35,13 +35,12 @@ inline BcReader wireAtBodies(const uint8_t *bytes, uint32_t len)
     return r;
 }
 
-/* What decodeInstr used to return: the instruction plus how far the wire
- * moved, which is what pins an operand shape. */
+/* The instruction plus how far the wire moved, which is what pins an
+ * operand shape. */
 struct WireInstr
 {
     jitc::Instr instr;
     uint32_t consumed;
-    bool ok;
 };
 
 inline WireInstr decodeFrom(BcReader &r)
@@ -49,7 +48,7 @@ inline WireInstr decodeFrom(BcReader &r)
     const uint32_t before = r.remaining();
 
     WireInstr d{};
-    d.ok = jitc::decodeInstr(r.next(), r, d.instr);
+    jitc::decodeInstr(r.next(), r, d.instr);
     d.consumed = before - r.remaining();
 
     return d;
