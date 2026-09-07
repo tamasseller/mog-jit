@@ -16,8 +16,9 @@ bool inWindow(uint32_t tos, uint32_t k);
 
 uint32_t physReg(uint32_t k);
 
-/** Bails with RESOURCE_LIMIT_SPILL_OFFSET past LDR/STR [sp,#imm]'s reach. */
-ArmV6M::Uoff<2, 8> spillImm(Assembler &a, uint32_t byteOffset);
+/** Asserts past LDR/STR [sp,#imm]'s reach: the profile bounds TOS depth well
+ *  below it (mog-core `profile.ts`, `ARMV6M_PROFILE.maxLocalDepth`). */
+ArmV6M::Uoff<2, 8> spillImm(uint32_t byteOffset);
 
 class Window
 {

@@ -57,8 +57,10 @@ endif
 # `make COV=1` instruments every basic block (cov_rt.cpp). One call per block
 # roughly doubles the image, so it gets a rom of its own and a batch window
 # moved above it.
+# `-g` costs the image nothing — DWARF is not a loaded section — and is what
+# lets a campaign name the source line of a block it never reached.
 ifdef COV
-CXXFLAGS += -fsanitize-coverage=trace-pc -DPPL_COVERAGE -DPPL_BATCH_ADDR=0x8000u
+CXXFLAGS += -fsanitize-coverage=trace-pc -DPPL_COVERAGE -DPPL_BATCH_ADDR=0x8000u -g
 endif
 
 include $(ROOT)/vendor/ultimate-makefile/Makefile.ultimate

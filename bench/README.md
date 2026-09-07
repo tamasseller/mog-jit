@@ -36,12 +36,12 @@ agrees with the reference VM on its return value and on every byte it wrote.
 | workload | JIT cycles/sample | vs -Os | vs best level | emitted / bytecode |
 |---|---|---|---|---|
 | pulse-trigger | 28.77 | 1.07x | 1.66x | 144 B / 82 B |
-| iq-preamble | 14.11 | 1.37x | 1.65x | 192 B / 103 B |
+| iq-preamble | 13.31 | 1.17x | 1.70x | 184 B / 94 B |
 | median5 | 146.38 | 1.93x | 2.13x | 296 B / 242 B |
 
 Against docs/design.md: §14 predicted throughput within "roughly 2-4x" of
 `-Os` C, and the measured 1.07x-1.93x sits at or below the bottom of that
-range; against each workload's best level it is 1.65x-2.13x. §15 estimated
+range; against each workload's best level it is 1.66x-2.13x. §15 estimated
 4-10 KB of flash for the whole JIT, and ~10.1 KB sits at the top of it. Cold
 start is 24k-60k instructions depending on program size, paid once per
 procedure.
@@ -59,6 +59,12 @@ squared threshold avoids a square root the ISA does not have. This is the
 only workload that reaches a `MUL`, and the only one whose accumulators
 need the DSL's signed types for `>>` to mean ASR.
 
+Its integration window is an inner loop with a statically known trip count,
+which is also the only place in the suite where GCC unrolls: the `-O3`
+kernel is 1000 bytes against `-Os`'s 184, for 8.24 cycles/sample against
+11.33. `n` must be a multiple of `IQ_WINDOW * 4`, which `step` states and
+`check-workload.ts` asserts.
+
 **median5** — Knuth's nine-comparator sorting network, verified
 exhaustively over all 120 permutations rather than eyeballed. Cortex-M0 has
 no IT blocks, so each compare-exchange is a real branch on both sides;
@@ -75,9 +81,10 @@ and that is why.
 **Loop-invariant addresses, on iq-preamble.** Every extension op
 materializes its buffer base itself, two instructions for the pinned
 `0x00030000`, four times an iteration. GCC loads the same address into a
-register once, outside the loop. That is 8 of the 14 cycles per iteration
-still separating the two, and it is what remains after the spills are gone:
-there is no hoisting pass, and no spare register to hoist into.
+register once, outside the loop. Those 8 cycles an iteration are now
+approximately the whole ~8 still separating the two, and they are what
+remains after the spills are gone: there is no hoisting pass, and no spare
+register to hoist into.
 
 **Range fusion and hoisting, on pulse-trigger.** GCC fuses
 `run >= 12 && run <= 60` into one `subs`/`cmp`/`bhi`, and hoists the event
@@ -103,12 +110,18 @@ each is what the suite runs; only that spelling is still in the tree, so
 these figures are one measurement pass and the deltas down a column are what
 they are for, not the absolutes.
 
+Every row but iq-preamble's last preserves the program exactly. That one
+does not: it fires its trigger at the window's end rather than at the last
+group's first sample, and it requires `n` to be a multiple of
+`IQ_WINDOW * 4`. Its delta is a different program's, not a respelling's.
+
 | iq-preamble | JIT | -Os |
 |---|---|---|
 | locals declared up front, `while (i != n)` | 19.23 | 9.34 |
 | induction variable in a `for` init | 16.28 | 9.34 |
 | `mi`/`mq` scoped to the `if` that computes them | 15.11 | 9.34 |
 | `acci += x - y` for `acci = acci + x - y` | 14.36 | 10.32 |
+| the window as an inner loop over `i < end` | 13.31 | 11.33 |
 
 | pulse-trigger | JIT | -Os |
 |---|---|---|
@@ -131,11 +144,19 @@ scoping them frees two window registers for the other fifteen.
 pulse-trigger's `s` is live every iteration, and scoping it trades one
 reload of `n` for a push and a pop.
 
-**GCC is indifferent to all of it** — the `-Os` column does not move — with
-one exception, and it is the row where the JIT gains least. `acci += x - y`
-holds both samples live at once where `acci = acci + x - y` needs one: that
-suits a stack machine and costs a register allocator, so most of that row's
-improvement is the C side getting worse rather than the JIT getting better.
+**Nesting the window** is what that last row buys: `groups` disappears into
+the inner bound, and the outer condition is the only thing left reading the
+spilled `n` — once per 64 samples instead of once per 4. It also moves
+`mi`/`mq` out of the inner loop's block entirely, which is the previous
+row's edit made structural. Against `-Os` it reads as the table's largest
+gain, but against its own best level (`-O1`) the JIT is marginally worse
+than before, 1.70x against 1.65x.
+
+**GCC is indifferent to nearly all of it** — the `-Os` column barely moves —
+and on the two rows where it does, `-Os` got worse rather than the JIT
+getting better. `acci += x - y` holds both samples live at once where
+`acci = acci + x - y` needs one: that suits a stack machine and costs a
+register allocator.
 
 ## Where the cycle figures come from
 

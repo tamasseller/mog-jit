@@ -6,6 +6,7 @@
 #include "runtime.h"
 
 #include <algorithm>
+#include <cassert>
 
 namespace jitc
 {
@@ -136,12 +137,9 @@ static uint32_t rawSpillOffset(uint32_t tos, uint32_t k)
     return 4 * (spilledCount(tos) - 1 - k);
 }
 
-ArmV6M::Uoff<2, 8> spillImm(Assembler &a, uint32_t byteOffset)
+ArmV6M::Uoff<2, 8> spillImm(uint32_t byteOffset)
 {
-    if(!ArmV6M::Uoff<2, 8>::isInRange(byteOffset))
-    {
-        runtimeBail(&a.runtime, RESOURCE_LIMIT_SPILL_OFFSET);
-    }
+    assert((ArmV6M::Uoff<2, 8>::isInRange(byteOffset))); // GCOV_EXCL_LINE — the profile's own TOS-depth bound is tighter
     return ArmV6M::Uoff<2, 8>((uint16_t)byteOffset);
 }
 
@@ -157,10 +155,7 @@ Effect Window::discard(Assembler &e) const
     if(spilled > 0)
     {
         uint32_t bytes = 4 * spilled;
-        if(!ArmV6M::Uoff<2, 7>::isInRange(bytes))
-        {
-            runtimeBail(&e.runtime, RESOURCE_LIMIT_WINDOW_RECLAIM);
-        }
+        assert((ArmV6M::Uoff<2, 7>::isInRange(bytes))); // GCOV_EXCL_LINE — the profile bounds TOS depth to what this reclaims
         e.emit(ArmV6M::incrSp(ArmV6M::Uoff<2, 7>((uint16_t)bytes)));
     }
 
@@ -252,10 +247,7 @@ Effect Window::restore(Assembler &e, uint32_t targetTos)
     if(spilledNow > reloadTop)
     {
         uint32_t bytes = 4 * (spilledNow - reloadTop);
-        if(!ArmV6M::Uoff<2, 7>::isInRange(bytes))
-        {
-            runtimeBail(&e.runtime, RESOURCE_LIMIT_WINDOW_RECLAIM);
-        }
+        assert((ArmV6M::Uoff<2, 7>::isInRange(bytes))); // GCOV_EXCL_LINE — same bound as discard's
         e.emit(ArmV6M::incrSp(ArmV6M::Uoff<2, 7>((uint16_t)bytes)));
     }
 

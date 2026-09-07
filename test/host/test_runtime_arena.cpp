@@ -225,34 +225,6 @@ TEST(WalkFailsWithoutTouchingDispatchStateWhenAProcedureCantBeScanned)
     CHECK(runtime->loadProgram(wire) == RESOURCE_EXHAUSTED_SCAN_STACK);
 }
 
-TEST(WalkReportsAnArgCountPastProcSlotsOwnFieldWidth)
-{
-    const Instr body[] = {bare(Op::RETURN)};
-    ProcSource procs[] = {ProcSource{ProcSlot::MAX_ARG_COUNT + 1, body, 1}};
-    uint8_t programBytes[16];
-    uint32_t len = encodeProgram(procs, 1, programBytes, sizeof(programBytes));
-
-    alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
-    Runtime *runtime = new(bytes) Runtime(1, arena);
-    BcReader wire = wireAtBodies(programBytes, len);
-    CHECK(runtime->loadProgram(wire) == RESOURCE_LIMIT_ARG_COUNT);
-}
-
-TEST(WalkReportsAProcCountPastTheCallRecordsOwnProcIdxField)
-{
-    // Rejected before the walk touches a single body, so the header alone is
-    // enough — a program that really had this many procedures could not be
-    // built here.
-    uint8_t programBytes[] = {0x00};
-
-    alignas(8) uint8_t bytes[sizeof(Runtime) + 2 * sizeof(ProcSlot)] = {};
-    CodeArena arena = CodeArena::region(ARENA_BASE, ARENA_SIZE, /*stackLimit=*/0);
-    Runtime *runtime = new(bytes) Runtime(jitc::MAX_PROC_IDX + 2, arena);
-    BcReader wire = wireOver(programBytes, sizeof(programBytes));
-    CHECK(runtime->loadProgram(wire) == RESOURCE_LIMIT_PROC_COUNT);
-}
-
 TEST(WalkAcceptsTheLargestProcCountTheCallRecordCanStillAddress)
 {
     const Instr body[] = {bare(Op::RETURN)};

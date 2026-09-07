@@ -110,6 +110,47 @@ TEST(abiEmitCallForcePoolsACalleeIndexNotFittingImm8Too)
     CHECK(loadedWord(buf, before + 1) == 300u);
 }
 
+TEST(abiEmitCallMeasuresItsResumeOffsetAfterThePoolFlushNotBefore)
+{
+    // fuzzing-campaign.md §10. `AtomicBlock`'s own `ensurePoolRoom` may
+    // flush here, which emits a branch over the pool plus the pool itself
+    // and moves the whole call sequence forward. A resume offset read
+    // before that names an address inside the pool: the callee returns
+    // into pool data, executes it, falls through into the call sequence and
+    // calls again — an infinite loop, from a program the reference VM
+    // answers immediately.
+    //
+    // Fifteen pooled values leave exactly one slot, so `abiEmitCall`'s
+    // request for two is what forces the flush, at the call and nowhere
+    // else.
+    TestAssembler e_ta(256);
+    Assembler &e = e_ta.a;
+    const uint16_t *buf = e_ta.code();
+    emitPrologueStub(e);
+    for(uint32_t i = 0; i < 15; i++)
+    {
+        e.materializeImm32(0, 0x10000001u + i);
+    }
+
+    const uint32_t beforeFlush = e.halfwordCount();
+    abiEmitCall(e, /*procIdx=*/0, /*calleeIndex=*/1);
+
+    // The flush really did happen at the call — otherwise this test is
+    // asserting the easy case and would pass on the unfixed code too.
+    const uint32_t call = e.halfwordCount() - 5;
+    CHECK(call > beforeFlush);
+
+    e.finalize(0);
+
+    // The record names where the callee returns to, as a byte offset from
+    // the procedure's first instruction past the stub, plus one for Thumb.
+    // Measured against the *emitted* position of the halfword after the
+    // call sequence, so nothing here re-derives the formula under test.
+    const uint32_t resumeHalfword = call + 5;
+    const uint32_t expected = (resumeHalfword * 2 - STUB_SIZE) + 1;
+    CHECK(loadedWord(buf, call + 0) == packRecord(0, expected));
+}
+
 TEST(abiEmitReturnLeafDispatchesToReturnHelperFromLr)
 {
     TestAssembler e_ta(4);

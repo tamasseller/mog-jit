@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Translate one program and disassemble what the translator emitted.
 #
-#   ./dump_code.sh seeds/arith
+#   ./fuzz/dump_code.sh /tmp/p.bin
 set -euo pipefail
 
 # Resolve arguments before the cd, so a path relative to the caller's own

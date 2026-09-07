@@ -108,35 +108,32 @@ __attribute__((noinline)) uint32_t refPulseTrigger(uint32_t n)
 
 __attribute__((noinline)) uint32_t refIqPreamble(uint32_t n)
 {
-    int32_t acci = 0;
-    int32_t accq = 0;
-    int32_t groups = 0;
-
-    for (uint32_t i = 0; i != n; i += 4)
+    for (uint32_t i = 0; i != n;)
     {
-        /* Quadrature mixing at four times the tone frequency: the
-         * coefficients are [1,0,-1,0] and [0,1,0,-1], so this is the whole
-         * demodulator and there is no multiply in it. */
-        acci += refSampleAt(i) - refSampleAt(i + 2);
-        accq += refSampleAt(i + 1) - refSampleAt(i + 3);
-        groups++;
+        const uint32_t end = i + IQ_WINDOW * 4;
 
-        if (groups == IQ_WINDOW)
+        int32_t acci = 0;
+        int32_t accq = 0;
+
+        while (i < end)
         {
-            /* Arithmetic shift, and it has to be: the accumulators go
-             * negative whenever the tone's phase puts them there. The shift
-             * is also what keeps the squares inside 32 bits. */
-            const int32_t mi = acci >> IQ_SHIFT;
-            const int32_t mq = accq >> IQ_SHIFT;
+            /* Quadrature mixing at four times the tone frequency: the
+             * coefficients are [1,0,-1,0] and [0,1,0,-1], so this is the
+             * whole demodulator and there is no multiply in it. */
+            acci += refSampleAt(i) - refSampleAt(i + 2);
+            accq += refSampleAt(i + 1) - refSampleAt(i + 3);
+            i += 4;
+        }
 
-            if ((mi * mi + mq * mq) > IQ_THRESHOLD_SQ)
-            {
-                refTrigger(IQ_TRIGGER_KIND, i);
-            }
+        /* Arithmetic shift, and it has to be: the accumulators go negative
+         * whenever the tone's phase puts them there. The shift is also what
+         * keeps the squares inside 32 bits. */
+        const int32_t mi = acci >> IQ_SHIFT;
+        const int32_t mq = accq >> IQ_SHIFT;
 
-            acci = 0;
-            accq = 0;
-            groups = 0;
+        if ((mi * mi + mq * mq) > IQ_THRESHOLD_SQ)
+        {
+            refTrigger(IQ_TRIGGER_KIND, i);
         }
     }
 

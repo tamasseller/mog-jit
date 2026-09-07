@@ -48,25 +48,26 @@ const PARAMS = {
 function body(): Procedure
 {
     return proc(["n"], ir`
-i32 acci = 0;
-i32 accq = 0;
-i32 groups = 0;
-for (u32 i = 0; i != n; i += 4)
+for (u32 i = 0; i != n;)
 {
-    acci += sample_at(i) - sample_at(i + 2);
-    accq += sample_at(i + 1) - sample_at(i + 3);
-    groups++;
-    if (groups == ${WINDOW})
+    u32 end = i + ${WINDOW * 4};
+
+    i32 acci = 0;
+    i32 accq = 0;
+
+    while (i < end)
     {
-        i32 mi = acci >> ${SHIFT};
-        i32 mq = accq >> ${SHIFT};
-        if ((mi * mi + mq * mq) > ${THRESHOLD_SQ})
-        {
-            trigger(${TRIGGER_KIND}, i);
-        }
-        acci = 0;
-        accq = 0;
-        groups = 0;
+        acci += sample_at(i) - sample_at(i + 2);
+        accq += sample_at(i + 1) - sample_at(i + 3);
+        i += 4;
+    }
+
+    i32 mi = acci >> ${SHIFT};
+    i32 mq = accq >> ${SHIFT};
+
+    if ((mi * mi + mq * mq) > ${THRESHOLD_SQ})
+    {
+        trigger(${TRIGGER_KIND}, i);
     }
 }
 return n;
@@ -101,30 +102,27 @@ function samples(): Int16Array
 
 function reference(input: Int16Array, n: number, sink: Sink): number
 {
-    let acci = 0
-    let accq = 0
-    let groups = 0
-
-    for(let i = 0; i !== n; i += 4)
+    for(let i = 0; i !== n;)
     {
-        // `| 0` at each step, matching the machine's 32-bit wrapping.
-        acci = (acci + input[i & IN_MASK]! - input[(i + 2) & IN_MASK]!) | 0
-        accq = (accq + input[(i + 1) & IN_MASK]! - input[(i + 3) & IN_MASK]!) | 0
-        groups++
+        const end = i + WINDOW * 4
 
-        if(groups === WINDOW)
+        let acci = 0
+        let accq = 0
+
+        while(i < end)
         {
-            const mi = acci >> SHIFT
-            const mq = accq >> SHIFT
+            // `| 0` at each step, matching the machine's 32-bit wrapping.
+            acci = (acci + input[i & IN_MASK]! - input[(i + 2) & IN_MASK]!) | 0
+            accq = (accq + input[(i + 1) & IN_MASK]! - input[(i + 3) & IN_MASK]!) | 0
+            i += 4
+        }
 
-            if(((Math.imul(mi, mi) + Math.imul(mq, mq)) | 0) > THRESHOLD_SQ)
-            {
-                sink.trigger(i, TRIGGER_KIND)
-            }
+        const mi = acci >> SHIFT
+        const mq = accq >> SHIFT
 
-            acci = 0
-            accq = 0
-            groups = 0
+        if(((Math.imul(mi, mi) + Math.imul(mq, mq)) | 0) > THRESHOLD_SQ)
+        {
+            sink.trigger(i, TRIGGER_KIND)
         }
     }
 
@@ -138,5 +136,5 @@ export const iqPreamble: Workload = {
     proc: body,
     samples,
     reference,
-    step: 4,
+    step: WINDOW * 4,
 }

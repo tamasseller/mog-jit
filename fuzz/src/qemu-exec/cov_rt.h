@@ -3,10 +3,13 @@
 
 #include <stdint.h>
 
-/* 2048 bits in 256 bytes of .bss. Sized against what is left of the 8KB ram
- * once the code arena and Runtime have taken theirs — see linker_cov.ld. */
-#define COV_BITMAP_BITS_LOG2 11
-#define COV_BITMAP_BYTES (1u << (COV_BITMAP_BITS_LOG2 - 3))
+/* One bit per four bytes of rom, indexed by the block's own address. Every
+ * instrumented block opens with a 4-byte `bl`, so no two blocks' return
+ * addresses are closer than four bytes and the index is injective — there is
+ * nothing to collide, and a bit number maps back to an address. The rom is
+ * PPL_BATCH_ADDR bytes because linker_big.ld ends it exactly where the batch
+ * window starts, so this cannot be outgrown without moving that too. */
+#define COV_BITMAP_BYTES (PPL_BATCH_ADDR / 32u)
 
 extern uint8_t g_covBitmap[COV_BITMAP_BYTES];
 

@@ -51,7 +51,7 @@ Effect Ctx::handleComparisonEmission(const Instr &instr)
         }
         else
         {
-            a.emit(ArmV6M::ldrSp(R(SCRATCH_REG), spillImm(a, this->window.spillOffset(instr.target))));
+            a.emit(ArmV6M::ldrSp(R(SCRATCH_REG), spillImm(this->window.spillOffset(instr.target))));
             return emitComparison(a, this->accState.operand(), instr.op, Shape::ofReg(SCRATCH_REG));
         }
     }
@@ -171,7 +171,7 @@ bool Ctx::GUARDED_processUntilTerminator(BranchWidth width, bool isThisLoopCondB
             {
                 if(!inWindow(this->window.tos, instr.target))
                 {
-                    a.emit(ArmV6M::ldrSp(R(ACC_REG), spillImm(a, this->window.spillOffset(instr.target))));
+                    a.emit(ArmV6M::ldrSp(R(ACC_REG), spillImm(this->window.spillOffset(instr.target))));
                     this->accState.apply(Effect::into(ACC_REG, false)); // LDR sets no flags
                     this->accState.pending(Shape::ofReg(ACC_REG));
                     break;
@@ -190,7 +190,7 @@ bool Ctx::GUARDED_processUntilTerminator(BranchWidth width, bool isThisLoopCondB
                 if(!inWindow(this->window.tos, instr.target))
                 {
                     uint32_t r = this->accState.sourceReg(a, SCRATCH_REG);
-                    a.emit(ArmV6M::strSp(R(r), spillImm(a, this->window.spillOffset(instr.target))));
+                    a.emit(ArmV6M::strSp(R(r), spillImm(this->window.spillOffset(instr.target))));
                 }
                 else
                 {
@@ -234,7 +234,7 @@ bool Ctx::GUARDED_processUntilTerminator(BranchWidth width, bool isThisLoopCondB
                         }
                         else
                         {
-                            a.emit(ArmV6M::ldrSp(R(SCRATCH_REG), spillImm(a, this->window.spillOffset(instr.target))));
+                            a.emit(ArmV6M::ldrSp(R(SCRATCH_REG), spillImm(this->window.spillOffset(instr.target))));
                             operandStorage = Shape::ofReg(SCRATCH_REG);
                         }
                         break;
@@ -272,7 +272,7 @@ bool Ctx::GUARDED_processUntilTerminator(BranchWidth width, bool isThisLoopCondB
 
                 if(spilledWriteBack)
                 {
-                    a.emit(ArmV6M::strSp(R(SCRATCH_REG), spillImm(a, this->window.spillOffset(instr.target))));
+                    a.emit(ArmV6M::strSp(R(SCRATCH_REG), spillImm(this->window.spillOffset(instr.target))));
                 }
 
                 if(instr.combo == Combo::POP_ACC)

@@ -60,11 +60,17 @@ uint32_t AccState::sourceReg(Assembler &e, uint32_t scratchReg)
 {
     if(kind == Kind::Boolean)
     {
-        materializeBoolean(e, scratchReg);
+        apply(materializeBoolean(e, scratchReg));
         return scratchReg;
     }
 
-    return operand().sourceReg(e, scratchReg);
+    if(operand().isReg())
+    {
+        return operand().reg();
+    }
+
+    apply(operand().materialize(e, scratchReg));
+    return scratchReg;
 }
 
 ArmV6M::Condition AccState::testNonzero(Assembler &e)

@@ -32,7 +32,7 @@ uint32_t ExtSite::load(uint32_t slot, uint32_t dstReg)
         return physReg(slot);
     }
 
-    a.emit(ArmV6M::ldrSp(ArmV6M::LoReg((uint16_t)dstReg), spillImm(a, window.spillOffset(slot))));
+    a.emit(ArmV6M::ldrSp(ArmV6M::LoReg((uint16_t)dstReg), spillImm(window.spillOffset(slot))));
     return dstReg;
 }
 
@@ -40,7 +40,7 @@ void ExtSite::store(uint32_t slot, uint32_t srcReg)
 {
     if(!inWindow(window.tos, slot))
     {
-        a.emit(ArmV6M::strSp(ArmV6M::LoReg((uint16_t)srcReg), spillImm(a, window.spillOffset(slot))));
+        a.emit(ArmV6M::strSp(ArmV6M::LoReg((uint16_t)srcReg), spillImm(window.spillOffset(slot))));
         return;
     }
 

@@ -592,8 +592,16 @@ p2():   return 0x10000;
 
 All four statements of `p0` are load-bearing: drop any one and the pool
 lands somewhere harmless. No loop anywhere, and the reference VM answers
-`0` in a millisecond. `fuzz/seeds/call_resume_after_pool_flush` is this
-program, as a standing regression.
+`0` in a millisecond.
+
+Pinned by `test/host/test_abi_strategy.cpp`'s
+`abiEmitCallMeasuresItsResumeOffsetAfterThePoolFlushNotBefore` — not this
+program, which reaches the defect only by an alignment four statements
+deep, but the defect itself: fifteen pooled values leave one slot free, so
+`abiEmitCall`'s request for two is what forces the flush, at the call and
+nowhere else. The test then checks the packed record against the *emitted*
+position of the halfword after the call sequence, and fails on the pre-fix
+ordering.
 
 **Diagnosis.** `qemu-system-arm -d exec` showed a period-14 cycle entirely
 within the code arena and the dispatch helpers — no translator frame in it,
@@ -1098,3 +1106,37 @@ and where acc was already there, one `MOV` less than before.
 
 - Non-terminating programs, unchanged from the first campaign.
 - Extension opcodes carrying real operands, unchanged from the third.
+
+## 11. A stale `ZeroOf` outliving the flags it described
+
+Found at candidate ~1000 of a 20000-run campaign, seed 4242, from
+`switch_break`. `minimize.ts --jit` reduced it to ten lines:
+
+```
+u32 s = 0;
+i16 v3 = 15;
+if (s) { } else { if (0) { } else { s = 16; } }
+return s;
+```
+
+Reference VM 16, emitted Thumb 0. `s` is slot 1, so it lives in `r6`, and
+`movs r6, #0` leaves `FlagState::ZeroOf(r6)`. Lowering the unused `i16 v3 =
+15` then reaches `translate_data_flow.cpp`'s unary arm, whose
+`AccState::sourceReg` materialized the pending immediate as `movs r0, #15`
+— which sets N/Z — and **discarded** the `Effect::into(r0, true)` that said
+so, `Shape::sourceReg` returning only a register. `SXTH`'s own
+`Effect::into(r0, false)` then reached `clobberedAny(bit(r0))`, which forgot
+nothing because the tracked register was `r6`. At the `BR_TABLE`,
+`answersZeroOf(r6)` was still true, no `CMP` was emitted, and the `BNE` read
+the flags `movs r0, #15` had left.
+
+`AccState::sourceReg` now applies what it emits, as `flushPending` and
+`flush` already did. Pinned by
+`test/host/test_translate_proc.cpp`'s
+`TruthyTestReCompatesAfterAnUnrelatedFlagSettingMaterialization`, which
+fails on the unfixed translator.
+
+The general shape is worth keeping in mind: `Effect` is the only channel
+into the flag state, so any emitter path that returns something other than
+an `Effect` is a place the state can silently go stale.
+

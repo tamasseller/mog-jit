@@ -14,9 +14,7 @@
 //   --jit    the emitted Thumb disagrees with the reference VM — one QEMU
 //            boot per candidate, which is affordable here because a boot on
 //            this model is a fraction of a second
-//
-// `minimize-exec.ts` is the instruction-level counterpart, for a finding
-// that arrives as an encoded program rather than as a `(entry, seed)` pair.
+
 
 import { encodeJitProgram, run, validateProgram, StepLimitExceeded, UnspecifiedShiftAmount } from "mog-core"
 import type { Statement } from "mog-core"

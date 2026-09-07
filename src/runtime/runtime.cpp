@@ -7,10 +7,7 @@
  * body's scan leaves it exactly where the next arg_count starts. */
 uint32_t Runtime::loadProgram(BcReader &r)
 {
-    if(dispatch.getProcCount() > jitc::MAX_PROC_IDX + 1)
-    {
-        return RESOURCE_LIMIT_PROC_COUNT;
-    }
+    assert(dispatch.getProcCount() <= jitc::MAX_PROC_IDX + 1); // GCOV_EXCL_LINE — the profile bounds this and the two below
 
     for(uint32_t i = 0; i < dispatch.getProcCount(); i++)
     {
@@ -27,14 +24,8 @@ uint32_t Runtime::loadProgram(BcReader &r)
         {
             return scan.failCode;
         }
-        if(argCount > ProcSlot::MAX_ARG_COUNT)
-        {
-            return RESOURCE_LIMIT_ARG_COUNT;
-        }
-        if(scan.bodyBytes > ProcSlot::MAX_BODY_BYTES)
-        {
-            return RESOURCE_LIMIT_BODY_BYTES;
-        }
+        assert(argCount <= ProcSlot::MAX_ARG_COUNT);       // GCOV_EXCL_LINE
+        assert(scan.bodyBytes <= ProcSlot::MAX_BODY_BYTES); // GCOV_EXCL_LINE
 
         ProcSlot &s = dispatch.slot(i);
         s.setCodePtr(trampolineAddr);

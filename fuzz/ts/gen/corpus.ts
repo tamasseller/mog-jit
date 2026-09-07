@@ -146,6 +146,11 @@ export function lowerGen<E extends {ext: string}>(
 // one is parsed at load, so a seed that does not even parse fails here
 // rather than becoming a corpus entry that silently never mutates into
 // anything.
+//
+// A seed earns its place by coverage it alone sustains, measured unmutated
+// and solo by `ts/seed_value.ts` — not by what it once found, which a unit
+// test pins instead. Measured 2026-09-06 this was 32 seeds reaching exactly
+// what 19 of them do; the other 13 went.
 
 interface SeedSpec
 {
@@ -153,8 +158,28 @@ interface SeedSpec
     procs: {args?: string[]; source: string}[]
 }
 
+/** `n` nested `if`s. The translator recurses once per open block, so depth
+ *  alone decides which guard fires: 25 reaches the translator's own stack
+ *  floor, 60 the body scan's. */
+function nest(n: number): string
+{
+    return "u32 s = 0;\n"
+        + Array.from({length: n}, (_, i) => `if (a > ${i}) {\n`).join("")
+        + "s = 1;\n" + "}\n".repeat(n) + "return s;\n"
+}
+
+/** A `do`-`while` whose body outgrows `B`'s backward reach. Every statement
+ *  reads `a`, so no run of them folds to a constant, and `do`-`while` puts
+ *  the test at the bottom — a `for`'s forward exit branch out-ranges first
+ *  and the back edge is never reached. */
+function longLoop(n: number): string
+{
+    return "u32 s = 0;\nu32 i = 0;\ndo {\n"
+        + Array.from({length: n}, (_, k) => `s = (s ^ a) + ${k % 13};\n`).join("")
+        + "i = i + 1;\n} while (i < 2);\nreturn s;\n"
+}
+
 const SEEDS: SeedSpec[] = [
-    {name: "const", procs: [{source: `return 37;`}]},
     {name: "arith", procs: [{args: ["a", "b"], source: `return (a + b) * 3 - (a ^ b);`}]},
     {name: "shift", procs: [{args: ["a"], source: `return (a << 3) | (a >> 2);`}]},
     {name: "compare", procs: [{args: ["a", "b"], source: `return (a < b) + (a == b) + (a >= b);`}]},
@@ -168,50 +193,20 @@ const SEEDS: SeedSpec[] = [
         + ` return (p < 0) + (q < 1) + (r <= 0) + (p >> 2) + (r >> 4);`}]},
     {name: "ternary", procs: [{args: ["a"], source: `return a ? a + 1 : a - 1;`}]},
     {name: "logical", procs: [{args: ["a", "b"], source: `return (a && b) || (a > b);`}]},
-    // Each update is its own statement: two in one expression would be
-    // unsequenced against each other and dropped before any engine ran it.
-    {name: "update", procs: [{args: ["a"], source:
-        `u32 i = a; u32 j = i++; u32 k = ++i; return i + j + k;`}]},
-
     {name: "if", procs: [{args: ["a"], source: `if (a > 3) { return 1; } else { return 2; }`}]},
-    {name: "nested_if", procs: [{args: ["a", "b"], source:
-        `if (a) { if (b) { return 1; } else { return 2; } } else { return 3; }`}]},
-    {name: "while", procs: [{args: ["a"], source:
-        `u32 n = a & 7; u32 s = 0; while (n) { s = s + n; n = n - 1; } return s;`}]},
-    {name: "dowhile", procs: [{args: ["a"], source:
-        `u32 n = a & 3; u32 s = 0; do { s = s + 1; n = n - 1; } while (n); return s;`}]},
-    {name: "for", procs: [{args: ["a"], source:
-        `u32 s = 0; for (u32 i = 0; i < (a & 7); i = i + 1) { s = s + i; } return s;`}]},
-    {name: "nested_loop", procs: [{args: ["a"], source:
-        `u32 s = 0; for (u32 i = 0; i < 3; i = i + 1) { for (u32 j = 0; j < 3; j = j + 1) { s = s + i * j; } } return s + a;`}]},
     {name: "switch", procs: [{args: ["a"], source:
         `switch (a & 3) { case 0: return 10; case 1: return 11; case 2: return 12; default: return 13; }`}]},
     {name: "switch_break", procs: [{args: ["a"], source:
         `u32 s = 0; switch (a & 3) { case 0: s = 1; break; case 1: s = 2; break; default: s = 9; break; } return s;`}]},
-    {name: "block_scope", procs: [{args: ["a"], source: `u32 s = a; { u32 t = 2; s = s + t; } return s;`}]},
-    {name: "trap", procs: [{args: ["a"], source: `if (a == 0) { trap(7); } return a;`}]},
     {name: "builtins", procs: [{args: ["a"], source: `return clz(a) + revbits(a);`}]},
 
     {name: "call_none", procs: [
         {source: `return p1() + 1;`},
         {source: `return 7;`},
     ]},
-    {name: "call_one", procs: [
-        {args: ["a"], source: `return p1(a);`},
-        {args: ["x"], source: `return x * 3;`},
-    ]},
-    {name: "call_four", procs: [
-        {args: ["a"], source: `return p1(a, a + 1, a + 2, a + 3);`},
-        {args: ["w", "x", "y", "z"], source: `return w + x + y + z;`},
-    ]},
     {name: "call_six", procs: [
         {args: ["a"], source: `return p1(a, 1, 2, 3, 4, 5);`},
         {args: ["u", "v", "w", "x", "y", "z"], source: `return u + v + w + x + y + z;`},
-    ]},
-    {name: "call_chain", procs: [
-        {args: ["a"], source: `return p1(a) + p2(a);`},
-        {args: ["x"], source: `return p2(x) + 1;`},
-        {args: ["x"], source: `return x * 2;`},
     ]},
     {name: "call_in_branch", procs: [
         {args: ["a"], source: `if (a & 1) { return p1(a); } return p1(a + 1);`},
@@ -228,13 +223,21 @@ const SEEDS: SeedSpec[] = [
         `st32(0x80, a); st32(0x90, a); return slicecmp(0x80, 0x84, 0x90, 0x94);`}]},
     {name: "ext_in_loop", procs: [{args: ["a"], source:
         `for (u32 i = 0; i < 4; i = i + 1) { st8(0x100 + i, a + i); } return ld32(0x100);`}]},
-    // The call is bound to a local first: a callee that writes the buffer
-    // racing a load of it in the other operand is exactly the unsequenced
-    // shape ub.ts drops.
-    {name: "ext_across_call", procs: [
-        {args: ["a"], source: `st32(0x10, a); u32 t = p1(); return t + ld32(0x10);`},
-        {source: `st32(0x14, 9); return ld32(0x14);`},
-    ]},
+
+    // Aimed at named blocks a campaign was never reaching, each verified to
+    // light one up on its own (`ts/reach.ts`). The three resource seeds are
+    // refused by the target rather than run, so they contribute to the
+    // translator's reach and nothing to the execution comparison — the point
+    // is that mutation explores the boundary from inside these, and from the
+    // rest of the corpus it never arrives at all.
+    {name: "trap_merge", procs: [{args: ["a"], source:
+        // Every case returns, so the BR_TABLE's merge has nothing to close on
+        // and the lowerer puts `TRAP #0` there — the only route from the DSL
+        // to a TRAP terminator, which has no syntax of its own.
+        `switch (a) { case 0: return 1; case 1: return 2; default: return 3; }`}]},
+    {name: "deep_translator_stack", procs: [{args: ["a"], source: nest(25)}]},
+    {name: "deep_scan_stack", procs: [{args: ["a"], source: nest(60)}]},
+    {name: "loop_back_edge", procs: [{args: ["a"], source: longLoop(320)}]},
 ]
 
 export function seedCorpus(): {name: string; program: GenProgram}[]

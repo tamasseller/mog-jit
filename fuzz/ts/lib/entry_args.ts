@@ -1,12 +1,12 @@
 // The entry procedure's argument vector, for every part of the harness that
 // needs one.
 //
-// Its own module, deliberately: qemu-exec.ts and minimize-exec.ts are both
+// Its own module, deliberately: qemu-exec.ts and minimize.ts are both
 // scripts whose top-level body runs a whole sweep, so importing the
 // generator *from* either of them would launch one as a side effect of the
 // import. Every consumer has to agree exactly — driver.ts feeds the same
 // vector to the AST evaluator, the reference VM and the guest batch;
-// qemu-exec.ts does the same for the regression corpus; minimize-exec.ts
+// qemu-exec.ts does the same for a program given on the command line; minimize.ts
 // must shrink towards the program that actually failed. A generator that
 // differed between any two of them would manufacture mismatches
 // indistinguishable from real miscompilations.

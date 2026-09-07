@@ -138,6 +138,11 @@ export function unionCoverage(output: string, into: Uint8Array): number
     if(line === undefined) return 0
 
     const hex = line.slice(4)
+    // Truncating here would under-report coverage and look like a plateau,
+    // so the buffer is sized from the image and a mismatch says so.
+    if(hex.length > into.length * 2)
+        throw new Error(`COV: line is ${hex.length / 2} bytes, the union buffer is ${into.length}`)
+
     let added = 0
     for(let i = 0; i * 2 + 1 < hex.length && i < into.length; i++)
     {

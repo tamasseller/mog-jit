@@ -2,7 +2,7 @@
 # Reports, per arena size, whether a seed actually reaches eviction -- see
 # src/probe-arena/probe_arena.cpp's own header comment. Not part of a fuzzing run.
 #
-#   ./probe_arena.sh seeds/*
+#   ./fuzz/probe_arena.sh /tmp/p.bin ...
 set -euo pipefail
 
 # Resolve arguments before the cd, so a path relative to the caller's own

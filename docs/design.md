@@ -83,6 +83,9 @@ the contract version folded into the seed
 (`src/runtime/program_frame.h`). Its job is the binding between the validator
 and the JIT: the JIT relies on the validator to hand it only programs it can
 deal with, and nothing else on the wire records that the two ever agreed.
+`encodeJitEnvelope` also checks the *target profile* there (mog-core
+`profile.ts`) — the limits that are this backend's rather than the ISA's, so
+what the frame binds is both.
 
 It is deliberately not a signature and not error correction. Adversarial
 substitution and transmission errors are an application's problem, and an
@@ -1364,7 +1367,7 @@ in the arena — the next victim, evicted before running once.
 
 `LANDING_RESOURCE_ERROR` is a failure mode this target introduces, distinct
 from anything isa-core.md §9's static guarantees cover. The tag is the
-discriminator; `value` names which of fourteen ways it happened, as a
+discriminator; `value` names which of ten ways it happened, as a
 `RESOURCE_*` code from `runtime/resource_codes.h` (`0x5245` signature, class
 nibble, reason nibble, low byte reserved for a future detail payload).
 `TRAPPED` carries the ISA's own `TRAP #code` value unchanged.
@@ -1384,12 +1387,18 @@ unencodable at any size, this backend cannot compile it at all.
 | `RESOURCE_EXHAUSTED_STACK_BUDGET` | `0x52452200` | `executor.cpp`, both variants | the up-front §2 check; nothing was touched |
 | `RESOURCE_EXHAUSTED_TRANSLATOR_STACK` | `0x52452300` | `translate_proc.cpp` `checkStackFloor` | translator recursion reached the live floor |
 | `RESOURCE_EXHAUSTED_SCAN_STACK` | `0x52452400` | `proc_scan.cpp`'s `GUARDED_scanBody` | ditto, in the directory pre-pass |
-| `RESOURCE_LIMIT_WINDOW_RECLAIM` | `0x52453100` | `window.cpp` `discardWindow`/`restoreWindow` | reclaim past `Uoff<2,7>` — TOS depth over 131 |
-| `RESOURCE_LIMIT_SPILL_OFFSET` | `0x52453200` | `translate_proc.cpp` `spillImm` | spill slot past `Uoff<2,8>` |
 | `RESOURCE_LIMIT_BRANCH_RANGE` | `0x52453300` | `assembler.cpp` `patchBranch` | fixup past `Ioff<1,8>`/`Ioff<1,11>` |
 | `RESOURCE_LIMIT_LOOP_BACK_EDGE` | `0x52453400` | `translate_proc.cpp` `translateLoop` | back-edge past `Ioff<1,11>` — it spans the condition block alone (isa-core.md §7.2), an over-long *body* overruns the entry branch instead and bails as `RESOURCE_LIMIT_BRANCH_RANGE` |
-| `RESOURCE_LIMIT_ARG_COUNT` | `0x52453500` | `Runtime::loadProgram` | `arg_count` over `ProcSlot`'s field width |
-| `RESOURCE_LIMIT_BODY_BYTES` | `0x52453600` | `Runtime::loadProgram` | body size over `ProcSlot`'s field width |
+
+The `LIMIT` class is what it is because of what a producer can know. A limit
+on a static property of the program — TOS depth, `arg_count`, body size,
+procedure count — is one the producer can check where the source still
+exists, so it is stated as a *target profile* (mog-core `profile.ts`'s
+`ARMV6M_PROFILE`), enforced by `encodeJitEnvelope`, and asserted rather than
+reported here: `WINDOW_RECLAIM`, `SPILL_OFFSET`, `ARG_COUNT`, `BODY_BYTES`
+and `PROC_COUNT` were all demoted that way. The three that remain turn on the
+size of the *emitted* code, which no producer can predict, so they stay
+reported.
 
 Two things this deliberately does not cover. Stack overflow proper still
 shouldn't happen — §2's regions are sized from `validateProgram`'s own
@@ -1857,9 +1866,14 @@ a time against a bounded corpus, which cannot reach a body long enough to
 overrun a branch — a size-directed lane builds that shape directly, and took
 `assembler.cpp`'s literal-pool machinery and
 `translate_control_flow.cpp`'s out-of-range paths from cold to covered.
-Target-side edge coverage says the same thing about the runtime half, and
-says it faster: ~600 of 2048 bitmap bits at 1000 candidates, 619 at 3000,
-620 at 10000.
+Target-side block coverage says the same thing about the runtime half, and
+says it faster: a campaign reaches 710 of the image's 740 instrumented basic
+blocks, and gets most of the way there in the first thousand candidates. So
+throughput is not the constraint on this axis either — the 30 blocks left
+are named individually, and each is a reach problem or an arm nothing can
+reach. The bitmap indexes a block by its own address rather than a hash of
+it, which costs 1KB of the fuzz image's `.bss` and buys an exact inverse:
+a clear bit names one block, not a set of them.
 
 AFL is not used. It appears nowhere in `fuzz/`'s own campaign record — every
 finding below came from the uninstrumented mutation loop plus the execution

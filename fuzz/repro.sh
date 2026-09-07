@@ -5,8 +5,8 @@
 # The driver reports a finding as `(corpus entry, seed)` rather than a file,
 # so the program is written out first:
 #
-#   npx ts-node --transpile-only ts/gen/show.ts nested_loop 4242 --emit /tmp/p.bin
-#   ./repro.sh /tmp/p.bin
+#   npx ts-node --transpile-only fuzz/ts/gen/show.ts nested_loop 4242 --emit /tmp/p.bin
+#   ./fuzz/repro.sh /tmp/p.bin
 set -euo pipefail
 
 # Resolve arguments before the cd, so a path relative to the caller's own

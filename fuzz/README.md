@@ -13,23 +13,49 @@ instead of having to be hand-authored. And the **lowerer** joins the axis:
 the reference VM and the JIT both consume the same `RtlProgram`, so only an
 engine that never sees the lowerer's output can disagree with it.
 
-## Gates
+## Running it
 
 ```sh
-./gates.sh
+./fuzz/fuzz.sh                  # until killed; Ctrl-C reports and exits
+./fuzz/fuzz.sh --for 2h         # or 90m, 300s
+./fuzz/fuzz.sh --rounds 20000
+./fuzz/fuzz.sh --stop-on-finding
+./fuzz/fuzz.sh --calibrate-only # the self-checks alone
 ```
 
-Everything that has to hold before a campaign's findings mean anything —
-the evaluator against hand-picked answers, the UB analysis calibrated both
-ways, the inner differential, generator survival, the invalid lane and the
-frame lane. If one of these fails the campaign is comparing something
-against itself.
+That is the whole interface. It builds what it needs, checks its own oracles
+before trusting them, measures what the seeds reach unmutated, runs the
+campaign with the lanes interleaved, and reports where programs died and how
+much of the target was reached. Non-zero exit on a finding or a failed
+self-check. Redirect it and the progress ticker becomes ordinary log lines.
 
-## Running a campaign
+A finding is reported as **DSL source**, minimized, which is the whole point
+of the tool: the output is a program you can read, and the same text is a
+seed file.
+
+Everything below is what that runs, and how to reach a piece on its own.
+Each `npx` line is run from the repo root, matching that entry point's own
+usage line; the shell scripts locate themselves and work from anywhere. A
+bare `ts/...` path is what a `Cannot find module './driver.ts'` means.
+
+## The pieces
+
+| kind | what | when |
+|---|---|---|
+| **calibration** | `eval/eval_check`, `gen/ub_check`, `eval/diff`, `gen/stats` | once, before a campaign means anything |
+| **lane** | `invalid`, `frame` | interleaved, every few batches |
+| **main loop** | `driver` | continuously |
+| **diagnostic** | `repro.sh`, `dump_code.sh`, `probe_arena.sh`, `gen/show`, `gen/minimize`, `qemu-exec` | by hand, on one program |
+| **measurement** | `seed_value`, `coverage.sh` | by hand; `fuzz.sh` calls `seed_value` on the seeds it finds idle |
+
+Each is a standalone script and still runs alone — `fuzz.sh` orchestrates
+them rather than absorbing them.
+
+## The campaign on its own
 
 ```sh
-make -C src/qemu-exec        # the target sink
-make -C src/driver           # the host sink
+make -C fuzz/src/qemu-exec   # the target sink
+make -C fuzz/src/driver      # the host sink
 npx ts-node --transpile-only fuzz/ts/driver.ts --rounds 20000 --batch 200
 ```
 
@@ -64,7 +90,7 @@ replay one through the host crash sink instead:
 
 ```sh
 npx ts-node --transpile-only fuzz/ts/gen/show.ts <entry> <seed> --emit /tmp/p.bin
-./repro.sh /tmp/p.bin
+./fuzz/repro.sh /tmp/p.bin
 ```
 
 ## The two tiers
@@ -87,13 +113,13 @@ never reached at all. Retention is bounded by size, because mutation adds
 far more often than it deletes and an unbounded corpus drifts until
 everything in it sits against `PROGRAM_MAX`.
 
-Parsing dominates the inner loop — by measurement, essentially all of it,
-and roughly 2x per level of expression nesting, so a deeply nested body can
-cost hundreds of milliseconds on its own. The print/reparse round trip is
-therefore checked out of band: at each batch boundary the driver spends
-`--verify-ms` (default 250) walking the corpus round-robin. The corpus is
-the better population for it than a uniform sample of candidates, being
-where the shapes that only exist several mutations deep accumulate.
+Every candidate goes through `parse(print(ast))` and is lowered from the
+**reparsed** tree, so the program that runs is provably the one a report
+prints. This used to be a sampled sweep over the corpus instead, because
+parsing dominated the inner loop and cost roughly 2x per level of expression
+nesting — which turned out to be two grammar rules parsing their operand
+twice rather than anything about the parser generator. Fixed in mog-core, it
+now costs a few percent of a campaign, and the sampling is gone.
 
 Both sinks read the **same batch file** (`exec_runner.cpp`'s format), so a
 campaign feeds them from one artefact. A crashing batch is bisected down to
@@ -128,6 +154,18 @@ later generation by a fixed pad.
 *procedure graph*, since the grammar has no function-declaration node;
 procedure `i` is named `p<i>` and may only call a higher index, which is
 isa-core.md §8.2's acyclicity held as a representation invariant.
+
+A seed earns its place by coverage, so `fuzz.sh` judges every seed at
+startup and says `keep` or `drop` per name. Target edges first, one QEMU
+boot each and no `gcovr`, which is what makes it affordable every run. Only
+the seeds that axis finds idle are put to the host axis, which is the
+expensive one — the two genuinely disagree, `ext_memcmp` having no unique
+host line and four unique target edges. Leave-one-out is how the host axis
+measures, so a mutually-redundant *pair* hides from it: each covers the
+other, both score zero, and dropping both loses what the pair reached. One
+further run over all the zero-scoring seeds at once catches that, and the
+verdict becomes `keep one of`. `ts/seed_value.ts` is the same measurement
+per seed rather than per suspect, plus a greedy minimal covering subset.
 
 `ub.ts` drops programs whose operands are unsequenced with conflicting
 effects. The DSL leaves a binary operator's operands unsequenced exactly as
@@ -211,24 +249,20 @@ doing what it claims.
 `diff.ts` runs the inner tier alone, over as many mutants as asked, with no
 emulator.
 
-## Regression corpus (`seeds/`)
+## Replaying saved programs (`ts/qemu-exec.ts`)
 
-`ts/qemu-exec.ts` runs saved programs on the target against the reference
-VM — one QEMU boot per batch. `seeds/` keeps one program per fixed finding
-from the earlier byte-level campaign (docs/fuzzing-campaign.md), so
+Runs encoded programs on the target against the reference VM, one QEMU boot
+per batch, over any directory given on the command line:
 
 ```sh
-npx ts-node --transpile-only fuzz/ts/qemu-exec.ts seeds
+npx ts-node --transpile-only fuzz/ts/qemu-exec.ts <dir>
 ```
 
-is a standing check on all of them. `ts/make_seeds.ts` owns that directory
-and is the only thing that writes there; every seed goes through
-`validateProgram` before being written, because one that does not validate
-is silently discarded on every execution.
-
-`ts/minimize-exec.ts` is the instruction-level counterpart to
-`gen/minimize.ts`, for a finding that arrives as an encoded program rather
-than as a tree.
+Used for a finding under investigation. There is deliberately no standing
+corpus of past findings: a fixed bug is pinned by a test in `test/host` or
+`test/qemu`, where it is checked on every build and cannot rot into a file
+nobody reads. What the seed corpus (`ts/gen/corpus.ts`) is for is coverage,
+not history — see `ts/seed_value.ts`.
 
 ## The extension
 
@@ -255,18 +289,35 @@ that slot back.
 dispatch path, `runtime.S`, the landing sequences:
 
 ```sh
-make -C src/qemu-exec COV=1
+make -C fuzz/src/qemu-exec COV=1
 npx ts-node --transpile-only fuzz/ts/driver.ts --rounds 3000 \
     --qemu-elf fuzz/src/qemu-exec/exec_runner_cov.elf
 ```
 
-`-fsanitize-coverage=trace-pc` hashes each basic block's return address into
-a 2048-bit bitmap in `.bss`, dumped per boot and unioned by the driver.
-AFL's mechanism, none of AFL's plumbing. It says *whether* new edges are
-still turning up, not which are cold — `trace-pc-guard` would say the second
-and wants four bytes of RAM per edge, which this budget has not got. It
-plateaus fast, and that is the finding: 600 bits at 1000 candidates, 619 at
-3000, 620 at 10000.
+`-fsanitize-coverage=trace-pc` calls `cov_rt.cpp` once per basic block.
+AFL's mechanism, none of AFL's plumbing — and without AFL's collisions.
+AFL hashes the return address into a small bitmap and lives with the
+aliasing; a 32KB rom does not have to. Every instrumented block opens with a
+4-byte `bl`, so no two return addresses are closer than four bytes and one
+bit per four bytes of rom indexes every block uniquely, in 1KB of `.bss`.
+
+That makes the map exact in both directions. `ts/lib/cov_map.ts` turns a bit
+number back into an address, a function and a source line, so a campaign
+reports `710 of 740 basic blocks` and then names the 30 — which is the
+number worth acting on. The `-g` on the COV build is what resolves the
+lines, and costs the image nothing.
+
+`ts/cov_check.ts` calibrates the two halves against each other before any
+campaign trusts them: the index is injective on this image, every block's
+bit fits `g_covBitmap`, and every bit a live boot sets belongs to a block
+the ELF knows. Nothing is mirrored by hand — the bitmap's size comes from
+the symbol table and the block addresses from the disassembly — so an image
+that moves is followed rather than misreported.
+
+Two things the map cannot show. Anything that runs after `covReport` dumps
+the bitmap (`semihostExit`) can never be recorded. And `trace-pc-guard`,
+the usual way to get a dense per-block index, is Clang-only; this is GCC,
+which offers `trace-pc` and `trace-cmp` and nothing else.
 
 `coverage.sh` runs a campaign against the coverage build of the host sink
 (`make -C src/driver COV=1`) and reports which translator lines it never

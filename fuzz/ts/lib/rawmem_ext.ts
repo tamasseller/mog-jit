@@ -81,13 +81,13 @@ export interface RawMemExtension extends Extension
 // ── DSL surface ─────────────────────────────────────────────────────────
 //
 // Without a `rules()` hook the extension is reachable only from hand-written
-// RTL (make_seeds.ts's `extInstr`), so nothing starting from DSL source could
+// RTL (`extInstr`), so nothing starting from DSL source could
 // emit an EXT op and the whole seam would be unreachable to an AST-level
 // producer.
 //
 // Operand order is `exec`'s own read backwards — it pops in reverse, so a
 // call's arguments push in source order. A store takes its address off the
-// stack and its value from acc, matching `st`/`ld` in make_seeds.ts.
+// stack and its value from acc, matching the DSL's own `st`/`ld`.
 
 /** Compose N tiled arguments followed by one extension opcode — the
  *  multi-operand counterpart to rules.ts's `unaryNode`, which carries only

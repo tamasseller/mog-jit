@@ -43,11 +43,21 @@ const ALL_TYPES: PrimType[] = ["u32", "u16", "u8", "i32", "i16", "i8"]
 
 /** How tall a generated expression may get. Mutation wraps far more often
  *  than it unwraps, so across generations a corpus that fed itself back
- *  would nest without limit — and lowering a tree of depth 20 costs orders
- *  of magnitude more than one of depth 8, which is where a campaign's whole
- *  budget goes. Above this only the rewrites that do not grow the tree are
- *  offered. */
-const MAX_EXPR_HEIGHT = 8
+ *  would nest without limit; above this only the rewrites that do not grow
+ *  the tree are offered.
+ *
+ *  That is the whole reason. It used to say lowering a tree of depth 20 cost
+ *  orders of magnitude more than one of depth 8, and separately mog-core's
+ *  own TODO blamed parse time — neither survives measurement. Parsing was
+ *  two grammar rules parsing their operand twice, fixed in mog-core; and
+ *  lowering is linear in tree *size* and flat in *depth*, measured to 32 on
+ *  three shapes including one that forces operand stacking, where
+ *  `totalDepth` stayed at 2 throughout. So the bound is only against
+ *  unbounded drift, and the number wants to be as high as that allows: deep
+ *  expressions are how a campaign reaches the translator's own recursion
+ *  guard (`RESOURCE_EXHAUSTED_TRANSLATOR_STACK`), which it should reach
+ *  rather than be fenced away from. */
+const MAX_EXPR_HEIGHT = 32
 
 /** Values that sit on an edge of something: a word boundary, a shift's
  *  defined range (isa-core.md §4.1 stops at 31), a byte or halfword mask. */

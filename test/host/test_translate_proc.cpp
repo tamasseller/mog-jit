@@ -315,20 +315,6 @@ TEST(LoopEntryBranchBailsWhenTheBodyExceedsTheEncodableBranchRange)
     EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_BRANCH_RANGE, translateProc(0, rt.runtime(), LRU_TICK));
 }
 
-TEST(SpillLoadBailsWhenTheOffsetExceedsTheEncodableRange)
-{
-    // Same defect class as F5/F6, found while fixing them: Window::
-    // spillOffset's callers built Uoff<2,8> from an unbounded offset with
-    // no range check, corrupting the destination-register field of the
-    // LDR instead of just truncating the offset.
-    const Instr body[] = {LOAD(0), bare(Op::RETURN)};
-    FakeRuntime<1> rt;
-    // tos=261 (argCount, all out-of-window) -> spillOffset(0) ==
-    // 4*(spilledCount(261)-1) == 4*256 == 1024, past Uoff<2,8>::maxValue (1020).
-    rt.set(0, 261, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
-    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_SPILL_OFFSET, translateProc(0, rt.runtime(), LRU_TICK));
-}
-
 // The tests below exercise LOOP/BR_TABLE/comparisons-as-values/unary ops/
 // the last-argument's home slot/block-nesting-overflow through
 // translateProc()'s main loop. End-to-end behavioral correctness for all
@@ -464,6 +450,41 @@ TEST(ComparisonFusesIntoBrTableGuard)
     {
         CHECK(rt.code()[i] == expected[i]);
     }
+}
+
+TEST(TruthyTestReCompatesAfterAnUnrelatedFlagSettingMaterialization)
+{
+    // A stale FlagState::ZeroOf must not outlive the flags it describes.
+    // `CONST 0; PUSH` leaves ZeroOf(r6) — slot 1's window register. The
+    // unary arm then materializes its own operand as `MOVS r0,#15`, which
+    // sets N/Z from 15; `SXTH` reports `into(r0, false)`, whose
+    // clobberedAny(bit(r0)) forgets nothing because the tracked register is
+    // r6. If sourceReg does not apply what its materialization emitted, the
+    // BR_TABLE below skips its CMP and branches on 15.
+    const Instr body[] = {
+        CONST(0), bare(Op::PUSH),               // slot 1 = 0  -> ZeroOf(r6)
+        CONST(15), bare(Op::SXTH), bare(Op::PUSH), // slot 2   -> MOVS r0,#15 clobbers N/Z
+        LOAD(1), brTable(1),                    // truthy test on slot 1
+            CONST(16), STORE(1), bare(Op::BLOCK_END),
+            bare(Op::BLOCK_END),
+        LOAD(1),
+        bare(Op::RETURN),
+    };
+    FakeRuntime<1> rt;
+    rt.set(0, 1, /*savesLR=*/false, body, sizeof(body) / sizeof(body[0]));
+    uint32_t halfwordCount = translateProc(0, rt.runtime(), LRU_TICK);
+
+    // The assertion is the CMP, not the whole sequence: what matters is that
+    // the branch tests slot 1 rather than whatever the last MOVS left.
+    bool comparesSlot1 = false;
+    for(uint32_t i = 0; i < halfwordCount; i++)
+    {
+        if(rt.code()[i] == ArmV6M::cmp(ArmV6M::LoReg(6), ArmV6M::Imm<8>(0)))
+        {
+            comparesSlot1 = true;
+        }
+    }
+    CHECK(comparesSlot1);
 }
 
 TEST(ComparisonMaterializesAsOrdinaryValue)

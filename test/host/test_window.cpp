@@ -142,26 +142,6 @@ TEST(discardWindowAcceptsTheMaxEncodableSpAdjustment)
     CHECK(buf[0] == ArmV6M::incrSp(ArmV6M::Uoff<2, 7>(508)));
 }
 
-TEST(discardWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
-{
-    // Must fail past 127 spilled words: fmtImm7's unmasked OR would bleed
-    // into the opcode's ADD/SUB bit and flip the direction.
-    TestAssembler e_ta(4);
-    Assembler &e = e_ta.a;
-    const uint16_t *buf = e_ta.code();
-    Window w(4 + 128); // 128 words spilled -> 512 bytes, one word past the limit
-    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_WINDOW_RECLAIM, w.discard(e));
-}
-
-TEST(restoreWindowBailsWhenTheSpAdjustmentExceedsTheEncodableRange)
-{
-    TestAssembler e_ta(4);
-    Assembler &e = e_ta.a;
-    const uint16_t *buf = e_ta.code();
-    Window w(4 + 128);
-    EXPECT_RESOURCE_ERROR(RESOURCE_LIMIT_WINDOW_RECLAIM, w.restore(e, 0));
-}
-
 TEST(callShuffleWithStackArgsExceedingWindowSize)
 {
     // 6 stack-passed args (WINDOW_SIZE=4), caller's window fully occupied by

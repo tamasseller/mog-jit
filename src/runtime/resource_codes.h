@@ -22,14 +22,9 @@
 #define RESOURCE_EXHAUSTED_TRANSLATOR_STACK 0x52452300u /* the translator's own recursion reached the live stack floor */
 #define RESOURCE_EXHAUSTED_SCAN_STACK 0x52452400u       /* ditto, in the pre-pass that builds the directory */
 
-#define RESOURCE_LIMIT_WINDOW_RECLAIM 0x52453100u /* frame reclaim past ADD sp,#imm's reach — TOS depth over 131 */
-#define RESOURCE_LIMIT_SPILL_OFFSET 0x52453200u   /* SP-relative spill slot past LDR/STR [sp,#imm]'s 1020 bytes */
 #define RESOURCE_LIMIT_BRANCH_RANGE 0x52453300u   /* a forward fixup resolved beyond Bcc/B reach */
 #define RESOURCE_LIMIT_LOOP_BACK_EDGE 0x52453400u /* a LOOP body outgrew B's own backward reach */
-#define RESOURCE_LIMIT_ARG_COUNT 0x52453500u      /* arg_count over ProcSlot's own field width */
-#define RESOURCE_LIMIT_PROC_COUNT 0x52453700u     /* proc_count over the call record's own procIdx field */
 #define RESOURCE_LIMIT_RESUME_OFFSET 0x52453800u  /* resume offset over the call record's own field */
-#define RESOURCE_LIMIT_BODY_BYTES 0x52453600u /* body size over ProcSlot's own field width */
 
 #ifdef __cplusplus
 
@@ -42,10 +37,8 @@ constexpr uint32_t RESOURCE_CODES[] = {
     RESOURCE_PROGRAM_EXT_UNKNOWN, RESOURCE_PROGRAM_EXT_UNSUPPORTED,
     RESOURCE_EXHAUSTED_ARENA, RESOURCE_EXHAUSTED_STACK_BUDGET,
     RESOURCE_EXHAUSTED_TRANSLATOR_STACK, RESOURCE_EXHAUSTED_SCAN_STACK,
-    RESOURCE_LIMIT_WINDOW_RECLAIM, RESOURCE_LIMIT_SPILL_OFFSET,
     RESOURCE_LIMIT_BRANCH_RANGE, RESOURCE_LIMIT_LOOP_BACK_EDGE,
-    RESOURCE_LIMIT_ARG_COUNT, RESOURCE_LIMIT_BODY_BYTES,
-    RESOURCE_LIMIT_PROC_COUNT, RESOURCE_LIMIT_RESUME_OFFSET,
+    RESOURCE_LIMIT_RESUME_OFFSET,
 };
 
 constexpr bool resourceCodesDistinct()

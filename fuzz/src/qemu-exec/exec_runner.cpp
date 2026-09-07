@@ -121,7 +121,7 @@ static constexpr uint32_t BATCH_MAGIC = 0x50504C42u; /* "PPLB" */
  * check. Running out is still a legitimate outcome the comparison skips
  * rather than a failure — there just shouldn't be that much of it. */
 static constexpr uint32_t PROGRAM_MAX = 4096;
-/* driver.ts's own REALISTIC_MAX_ARG_COUNT — the entry-argument staging
+/* driver.ts's own HARNESS_MAX_ARG_COUNT — the entry-argument staging
  * buffer below is sized off it, so a batch naming more is rejected rather
  * than truncated. */
 static constexpr uint32_t ENTRY_ARGS_MAX = 16;
@@ -130,6 +130,7 @@ static constexpr uint32_t ENTRY_ARGS_MAX = 16;
 #endif
 static constexpr uint32_t CODE_ARENA_BYTES = PPL_CODE_ARENA_BYTES;
 
+extern uint8_t __bss_end;
 static uint8_t g_codeArena[CODE_ARENA_BYTES] __attribute__((aligned(4)));
 
 /* FNV-1a-32 over the extension buffer, matching rawmem_ext.ts's own. */
@@ -217,10 +218,14 @@ int main(void)
          * distinct region rather than the same memory the translator's own
          * recursion runs on, so a deep compilation cannot quietly corrupt
          * the arena it is writing into, and a RESOURCE_ERROR here means
-         * what it says. stackLimit is the floor this excursion may reach
-         * below the current sp; everything under g_codeArena is other
-         * .bss, so anchoring it at the arena's own top keeps the two from
-         * ever meeting.
+         * what it says.
+         *
+         * stackLimit is __bss_end, not the arena's top: the two are not the
+         * same address unless the arena is the last object linked into .bss,
+         * and a floor below __bss_end lets a deep translation descend over
+         * whatever is. The coverage build is where that bites — its bitmap
+         * lands above the arena and every basic block writes to it, so a
+         * frame overlapping it is rewritten under itself.
          *
          * interruptReserve 0: no interrupts are enabled in this image. */
         /* The extension's buffer is static and outlives one program;
@@ -232,7 +237,7 @@ int main(void)
 
         ProgramResult r = Executor::split(
                 (uint32_t)(uintptr_t)g_codeArena, CODE_ARENA_BYTES,
-                /*stackLimit=*/(uint32_t)(uintptr_t)(g_codeArena + CODE_ARENA_BYTES),
+                /*stackLimit=*/(uint32_t)(uintptr_t)&__bss_end,
                 /*interruptReserve=*/0)
             .run(bcMapped(programBytes), len, entryArgs, argCount);
 

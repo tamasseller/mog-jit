@@ -1,4 +1,4 @@
-/* fuzz — target-side edge coverage.
+/* fuzz — target-side block coverage.
  *
  * Host coverage (fuzz/coverage.sh) can only see what an x86 build links:
  * src/compiler, and the part of src/runtime that compiles off-target. The
@@ -7,11 +7,16 @@
  * stopped finding anything new.
  *
  * AFL's mechanism without AFL's plumbing: `-fsanitize-coverage=trace-pc`
- * calls this once per basic block, and the return address is hashed into a
- * bitmap. Not attributable to a source line — the question it answers is
- * "still finding new edges?", not "which line is cold". `trace-pc-guard`
- * would answer the second, and wants four bytes of RAM per edge, which this
- * budget does not have.
+ * calls this once per basic block. AFL hashes the return address into a
+ * small bitmap and lives with the collisions; there is no need to here.
+ * Rom is 32KB and a block cannot start every two bytes — each opens with a
+ * 4-byte `bl` — so a bit per four bytes of rom indexes every block
+ * uniquely in 1KB of .bss. That makes the map exact in both directions: a
+ * clear bit proves its block never ran, and `fuzz/ts/lib/cov_map.ts` turns
+ * a bit number back into the address, function and source line.
+ *
+ * `trace-pc-guard` is the usual answer to the same problem and would cost
+ * four bytes of ram per block; it is also Clang-only, and this is GCC.
  */
 
 #include <stdint.h>
@@ -26,10 +31,11 @@ uint8_t g_covBitmap[COV_BITMAP_BYTES];
    instrumented anyway — which is a `bl` to itself as its first instruction. */
 extern "C" __attribute__((no_sanitize_coverage)) void __sanitizer_cov_trace_pc(void)
 {
+    /* The Thumb bit does not need masking off: the return address of a
+     * 2-aligned `bl` is 0 or 2 mod 4, so setting bit 0 never crosses the
+     * boundary this shift divides on. */
     const uint32_t pc = (uint32_t)(uintptr_t)__builtin_return_address(0);
-    /* Knuth's multiplicative hash, high bits taken: the low bits of a Thumb
-     * return address are mostly instruction alignment. */
-    const uint32_t bit = (uint32_t)(pc * 2654435761u) >> (32 - COV_BITMAP_BITS_LOG2);
+    const uint32_t bit = (pc >> 2) & (COV_BITMAP_BYTES * 8u - 1u);
     g_covBitmap[bit >> 3] |= (uint8_t)(1u << (bit & 7u));
 }
 
@@ -43,20 +49,21 @@ __attribute__((no_sanitize_coverage)) void covReport(void)
     }
     semihostWriteTagged("COVBITS:", set);
 
-    /* The bitmap itself, so the host can union it across boots and see
-     * whether a campaign is still turning up edges. Eight hex digits per
-     * four bytes, one line, which is 512 characters for 256 bytes. */
-    char buf[2 * COV_BITMAP_BYTES + 8];
+    /* The bitmap itself, so the host can union it across boots and name what
+     * a campaign never reached. Emitted in chunks: one buffer for the whole
+     * map would be 2KB of stack in an image that has about 3KB of it. */
+    static const char HEX[] = "0123456789abcdef";
+    char buf[65];
+    semihostWrite0("COV:");
     uint32_t at = 0;
-    buf[at++] = 'C'; buf[at++] = 'O'; buf[at++] = 'V'; buf[at++] = ':';
     for(uint32_t i = 0; i < COV_BITMAP_BYTES; i++)
     {
         const uint8_t v = g_covBitmap[i];
-        const uint32_t hi = v >> 4, lo = v & 0xf;
-        buf[at++] = (char)(hi < 10 ? '0' + hi : 'a' + hi - 10);
-        buf[at++] = (char)(lo < 10 ? '0' + lo : 'a' + lo - 10);
+        buf[at++] = HEX[v >> 4];
+        buf[at++] = HEX[v & 0xf];
+        if(at == sizeof(buf) - 1) { buf[at] = '\0'; semihostWrite0(buf); at = 0; }
     }
-    buf[at++] = '\n';
     buf[at] = '\0';
     semihostWrite0(buf);
+    semihostWrite0("\n");
 }

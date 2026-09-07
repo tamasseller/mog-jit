@@ -19,17 +19,30 @@ the byte-mutation fuzzer's validator gate was finding nothing but noise
 in: `argCount = 972` is a perfectly valid, `validateProgram`-approved
 program that no real caller would ever construct, and chasing what happens
 to it finds ABI-encoding-width bugs, not `mog-jit` bugs. Generating at DSL
-level does not wander there on its own, so the caps below are now an
-assertion rather than a gate — tripping one means the generator has drifted
-outside the profile this document describes.
+level does not wander there on its own, so a violation means a producer has
+drifted outside the profile this document describes, and is reported as
+such rather than silently filtered.
 
 This document collects those target-specific "realistic profile" limits —
 constants worth reasoning about deliberately, checking somewhere, and
-extending as more are found — separately from generic ISA validation.
-`mog-core`'s own `Extension` hook (isa-core.md §5.1, `extension.ts`)
-is the natural long-term home for a "target profile" extension a validator
-call could take alongside the generic checks; for now these live here and
-in `fuzz/ts/driver.ts`, both by hand.
+extending as more are found — separately from generic ISA validation. They
+are *not* an `Extension`: that interface carries ISA semantics (rules,
+effects, exec, codec) for a capability the machine gains, and this JIT is a
+generic target that accommodates any extension bound to a translator half.
+A profile is the orthogonal dimension — what one deployment can encode, on
+an ISA it fully implements.
+
+The carrier is mog-core's `profile.ts`: a `TargetProfile` is a plain value,
+`checkProfile` reads the quantities `validateProgram` already returns, and
+this target's own instance is `ARMV6M_PROFILE` in `jit-armv6m.ts`.
+`encodeJitEnvelope` enforces it, which is what lets the target assert on
+these bounds instead of reporting them (design.md §12). The numbers below
+are the reasoning behind each field; the field is where they are stated.
+
+`fuzz/ts/driver.ts` keeps two constants of its own, and they are not a
+profile: `HARNESS_MAX_ARG_COUNT` and `HARNESS_MAX_PROC_COUNT` are the sinks'
+capacity, sized off 8KB of target RAM (`exec_runner.cpp`'s `ENTRY_ARGS_MAX`,
+`harness.cpp`'s `MAX_PROC_COUNT`).
 
 ## TOS depth (argCount included) vs. the window's stack-reclaim encoding
 
@@ -64,48 +77,42 @@ or a bailout), it just asserts.
 
 | | value | meaning |
 |---|---|---|
-| Hard ABI ceiling | `argCount ≤ 131` | above this, `discardWindow`'s single-instruction reclaim can't encode the byte count at all and the translator bails with `RESOURCE_LIMIT_WINDOW_RECLAIM` (see below) — a capability limit, not a policy choice |
-| Realistic-profile cap | `argCount ≤ 16` | `driver.ts`'s own assertion (`REALISTIC_MAX_ARG_COUNT`) — no real procedure needs more than a handful of parameters; keeping the fuzz search inside this band means every crash it finds is worth investigating on its own terms, not "well, nobody would ever call it with 900 arguments anyway" |
+| Hard ABI ceiling | `localPeak ≤ 131` | above this, `discardWindow`'s single-instruction reclaim can't encode the byte count at all — a capability limit, not a policy choice, and therefore `ARMV6M_PROFILE.maxLocalDepth` |
+| Harness capacity | `argCount ≤ 16` | `driver.ts`'s `HARNESS_MAX_ARG_COUNT`, mirroring `exec_runner.cpp`'s `ENTRY_ARGS_MAX`. Not a profile: the sink stages entry arguments in a fixed buffer sized off 8KB of target RAM |
 
-**Closed:** `discardWindow` now range-checks the reclaim and calls
-`Assembler::fail(RESOURCE_LIMIT_WINDOW_RECLAIM)` instead of asserting, so
-the hard ceiling is a clean, specifically-named bail rather than an abort.
-Measured directly (`fuzz/dump_code.sh` on hand-built one-instruction
-procedures): `argCount = 131` compiles, and 132 / 500 / 972 / 2047 all
-bail. `restoreWindow` carries the same guard on the same encoding, and
-reports the same code — which of the two fired is a detail-payload
-question, not a separate reason. Note `RESOURCE_LIMIT_ARG_COUNT` is a
-different answer for a different ceiling: past 2047 a procedure is rejected
-by `Runtime::init` and never reaches translation at all.
+**Closed:** the bound is `ARMV6M_PROFILE.maxLocalDepth`, and
+`encodeJitEnvelope` refuses a program past it by name — "procedure 3:
+localPeak 132 exceeds the armv6m profile's maxLocalDepth of 131". Both
+reclaim sites (`Window::discard` and `Window::restore`, on the same
+encoding) and `spillImm` therefore assert rather than bail; the three
+`RESOURCE_LIMIT_*` codes they used to report are gone. Measured directly
+(`fuzz/dump_code.sh` on hand-built one-instruction procedures) before the
+demotion: `argCount = 131` compiles, and 132 / 500 / 972 / 2047 all bailed.
 
-What remains is a *capability* limit, not a crash: `ProcSlot::MAX_ARG_COUNT`
-(2047) still admits far more than this ABI sequence can reclaim, so a
-procedure between 132 and 2047 arguments simply cannot be compiled. Lifting
-that needs a real multi-instruction reclaim, and nothing needs one today.
-The realistic-profile cap below is therefore about keeping the fuzzer's
-search somewhere interesting, not about avoiding an abort.
+`ProcSlot::MAX_ARG_COUNT` (2047) still admits far more than this ABI
+sequence can reclaim, so a procedure between 132 and 2047 arguments simply
+cannot be compiled. Lifting that needs a real multi-instruction reclaim, and
+nothing needs one today.
 
 **It is not really about argCount.** `discardWindow` reclaims the whole
 spilled frame, so 131 caps *total TOS depth* — arguments and pushed operands
 together. That is the same number for a procedure with 131 arguments and for
 one with none that pushes 132 operands, and the second is the case that
 actually matters: it is what a fuzzer produces by the thousand.
-`driver.ts` asserts it (`REALISTIC_MAX_TOTAL_DEPTH = 128`, against
-`validateProgram`'s own whole-program `totalDepth`) for a measured reason —
-unbounded, **84% of a real fuzz corpus landed above the ceiling**, so 84% of
-the fuzzer's budget went to programs that could only ever bail, and whose
-emitted code neither half of `fuzz/` could look at. `fuzz/src/qemu-exec` is what
-made that ratio visible; the crash-only harness had no way to tell a bail
-from a pass.
+`ARMV6M_PROFILE.maxLocalDepth` states it per procedure, which is the axis
+`discardWindow` actually reclaims on. `driver.ts` used to fence the campaign
+off at `totalDepth ≤ 128` instead, for a measured reason — unbounded, **84%
+of a real fuzz corpus landed above the ceiling**, so 84% of the fuzzer's
+budget went to programs that could only ever bail, and whose emitted code
+neither half of `fuzz/` could look at. `fuzz/src/qemu-exec` is what made that
+ratio visible; the crash-only harness had no way to tell a bail from a pass.
+The profile supersedes that fence, on the right quantity.
 
-**A consequence worth recording:** `translate_proc.cpp`'s `spillImm` guards
-an SP-relative offset against `Uoff<2, 8>`'s 1020-byte ceiling, i.e. 255
-words — which is *unreachable*, because `discardWindow`'s much tighter
-7-bit reclaim bails first on any program deep enough to get there. It is
-defence in depth with nothing behind it. Left in place (the cost is one
-comparison, and the two ceilings are independent things that could move),
-but no test or fuzz input can exercise it, and one shouldn't be written on
-the assumption that it can.
+**A consequence worth recording:** `spillImm` guards an SP-relative offset
+against `Uoff<2, 8>`'s 1020-byte ceiling, i.e. 255 words — twice what the
+7-bit reclaim admits, so the profile's 131 makes it unreachable. It is an
+assert on the same bound, not a second ceiling, and no test or fuzz input
+can exercise it.
 
 ## The window holds four TOS entries, whatever they are
 
@@ -274,25 +281,23 @@ a frame whose out-of-window arguments sit below a pushed record) and by the
 
 ## Whole-program procedure count
 
-`ProcSlot`'s directory is sized by `procCount` with no ceiling of its own
-beyond storage. `driver.ts` caps it at 16
-(`REALISTIC_MAX_PROC_COUNT`), the same kind of realistic-profile bound as
-`REALISTIC_MAX_ARG_COUNT` above: a fuzzer left unbounded spends its budget
-on hundred-procedure programs whose procedures are one instruction each,
-which exercises `Runtime::init`'s loop and nothing else.
-`harness.cpp` mirrors the constant, since its `Runtime` storage buffer is
-sized off it.
+`ProcSlot`'s directory is sized by `procCount`, and the call record's own
+`procIdx` field is what bounds it: `ARMV6M_PROFILE.maxProcCount` is
+`MAX_PROC_IDX + 1`. `driver.ts` caps its own campaign much lower at 16
+(`HARNESS_MAX_PROC_COUNT`, mirroring `harness.cpp`'s `MAX_PROC_COUNT`, whose
+`Runtime` storage buffer is sized off it) — harness capacity again, and
+useful in its own right: a fuzzer left unbounded spends its budget on
+hundred-procedure programs whose procedures are one instruction each, which
+exercises `Runtime::init`'s loop and nothing else.
 
 ## The entry procedure's own arg_count
 
 Nothing above is entry-specific, and that is now true of the runtime too:
 `Executor::run` takes the entry procedure's whole argument vector
 (`design.md` §9), so procedure 0's `arg_count` behaves exactly like any
-callee's. The `argCount <= 131` hard ceiling and
-`RESOURCE_LIMIT_WINDOW_RECLAIM` apply to it unchanged — it is the same
-compiled prologue and epilogue either way — and
-`REALISTIC_MAX_ARG_COUNT = 16` already bounds the fuzz search. No separate
-cap was added.
+callee's. `maxLocalDepth` applies to it unchanged — it is the same compiled
+prologue and epilogue either way — and `HARNESS_MAX_ARG_COUNT = 16` already
+bounds the fuzz search. No separate cap was added.
 
 Worth recording because it did not used to be true. A single `argIn` word
 could only express the acc-borne last argument (isa-core.md §4.6), so an
@@ -309,6 +314,7 @@ wire, so it is the validator's guarantee and the frame's binding.
 
 When the fuzzer (or anything else) turns up another "validator says yes,
 no real program would ever do this, and here's what breaks" case: measure
-the actual hard limit the way the section above does (don't guess), pick a
-realistic-profile cap comfortably under it, add both to the table pattern
-above, and wire the cap into `driver.ts`'s own profile assertion.
+the actual hard limit the way the section above does (don't guess), record
+it in the table pattern above, and — if it is a static property of the
+program — add a field for it to `TargetProfile` and `ARMV6M_PROFILE`. That
+is what lets the target-side check demote to an assert.
